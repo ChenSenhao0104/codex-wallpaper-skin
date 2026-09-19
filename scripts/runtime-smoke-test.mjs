@@ -126,6 +126,7 @@ class MockElement {
       this.videoWidth = 1920;
       this.videoHeight = 1080;
     }
+    if (typeof this.onload === 'function') this.onload();
   }
   get src() { return this._src; }
 }
@@ -325,9 +326,13 @@ const captureLease = 'capturelease1234567890';
 assert(window.__codexWallpaperSkinBeginCapturedStream(captureLease) === true, 'native capture lease was rejected');
 window.__codexWallpaperSkinSetCapturedFrame(captureLease, btoa('mock-jpeg-frame'));
 windowListeners.get('pointermove')?.({ clientX: 300, clientY: 600 });
+windowListeners.get('pointerdown')?.({ clientX: 300, clientY: 600, buttons: 1 });
+windowListeners.get('wheel')?.({ clientX: 300, clientY: 600, deltaY: -120 });
 const capturedPointer = window.__codexWallpaperSkinSetCapturedFrame(captureLease, btoa('mock-jpeg-frame-2'));
 assert(capturedPointer && Math.abs(capturedPointer.x - .25) < .001 && Math.abs(capturedPointer.y - .75) < .001,
   'native capture pointer coordinates were not normalized');
+assert(capturedPointer.buttons === 1 && capturedPointer.wheel === 120,
+  'native capture button/wheel state was not preserved');
 assert(window.__codexWallpaperSkin.media.src.startsWith('data:image/jpeg;base64,'),
   'native capture frame was not committed to the background image');
 assert(window.__codexWallpaperSkinSetCapturedFrame('stalelease123456789', btoa('stale')) === false,

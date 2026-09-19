@@ -7,7 +7,7 @@ using System.Windows.Media.Imaging;
 
 namespace CodexWallpaperSkin;
 
-public sealed record CapturedPointer(double X, double Y, bool Down, bool Hidden);
+public sealed record CapturedPointer(double X, double Y, int Buttons, int WheelDelta, bool Hidden);
 
 /// <summary>
 /// Uses Wallpaper Engine itself as the renderer for Scene projects. Frames are
@@ -23,7 +23,16 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private const uint WmMouseMove = 0x0200;
     private const uint WmLeftButtonDown = 0x0201;
     private const uint WmLeftButtonUp = 0x0202;
+    private const uint WmRightButtonDown = 0x0204;
+    private const uint WmRightButtonUp = 0x0205;
+    private const uint WmMiddleButtonDown = 0x0207;
+    private const uint WmMiddleButtonUp = 0x0208;
+    private const uint WmMouseWheel = 0x020A;
+    private const uint CwpSkipDisabled = 0x0002;
+    private const uint CwpSkipTransparent = 0x0004;
     private const nuint MkLeftButton = 0x0001;
+    private const nuint MkRightButton = 0x0002;
+    private const nuint MkMiddleButton = 0x0010;
     private const int MaximumFrameBytes = 2 * 1024 * 1024;
     private readonly string _engineExecutable;
     private readonly string _windowName;
@@ -35,7 +44,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private bool _lastPageHidden;
     private readonly double _baseRate;
     private readonly double _baseVolume;
-    private bool _lastPointerDown;
+    private int _lastPointerButtons;
     private bool _disposed;
 
     private WallpaperEngineCaptureSession(
@@ -63,7 +72,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     public Task Completion => _streamTask ?? Task.CompletedTask;
 
     public static bool CanUse(WallpaperEntry wallpaper) =>
-        wallpaper.IsScene
+        wallpaper.IsWallpaperEngineScene
         && !string.IsNullOrWhiteSpace(wallpaper.ProjectPath)
         && TryResolveEngine(wallpaper.ProjectPath, out _, out _);
 
@@ -76,9 +85,9 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(wallpaper);
         ArgumentNullException.ThrowIfNull(settings);
-        if (!wallpaper.IsScene || string.IsNullOrWhiteSpace(wallpaper.ProjectPath))
+        if (!wallpaper.IsWallpaperEngineScene || string.IsNullOrWhiteSpace(wallpaper.ProjectPath))
         {
-            throw new InvalidDataException("Wallpaper Engine capture requires a validated Scene project.");
+            throw new InvalidDataException("Wallpaper Engine capture requires a contained Scene project.");
         }
         if (!TryResolveEngine(wallpaper.ProjectPath, out var engineRoot, out var executable))
         {
@@ -117,8 +126,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                 await RunPropertyControlWithRetryAsync(controlExecutable, json, windowName, cancellationToken);
             }
 
-            await Task.Delay(350, cancellationToken);
-            var initialFrame = await Task.Run(() => CaptureJpeg(handle), cancellationToken);
+            var initialFrame = await CaptureFirstGoodFrameAsync(handle, cancellationToken);
             return new WallpaperEngineCaptureSession(
                 controlExecutable, windowName, handle, initialFrame, settings.SceneFrameRate,
                 settings.PauseWhenHidden, baseRate, baseVolume);
@@ -184,7 +192,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                 catch
                 {
                     consecutiveFailures++;
-                    if (consecutiveFailures >= 3) break;
+                    await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(1000, 75 * consecutiveFailures)), cancellationToken);
                 }
 
                 var elapsed = Stopwatch.GetElapsedTime(started);
@@ -207,14 +215,92 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         var height = Math.Max(1, rect.Bottom - rect.Top);
         var x = Math.Clamp((int)Math.Round(pointer.X * (width - 1)), 0, width - 1);
         var y = Math.Clamp((int)Math.Round(pointer.Y * (height - 1)), 0, height - 1);
-        var lParam = (nint)((y << 16) | (x & 0xffff));
-        var keyState = pointer.Down ? MkLeftButton : 0;
-        PostMessage(_windowHandle, WmMouseMove, keyState, lParam);
-        if (pointer.Down != _lastPointerDown)
+        var target = FindPointerTarget(_windowHandle, x, y, out var targetPoint);
+        var lParam = PackPoint(targetPoint.X, targetPoint.Y);
+        var keyState = PointerKeyState(pointer.Buttons);
+        PostMessage(target, WmMouseMove, keyState, lParam);
+        ForwardButton(target, lParam, pointer.Buttons, 1, WmLeftButtonDown, WmLeftButtonUp, keyState);
+        ForwardButton(target, lParam, pointer.Buttons, 2, WmRightButtonDown, WmRightButtonUp, keyState);
+        ForwardButton(target, lParam, pointer.Buttons, 4, WmMiddleButtonDown, WmMiddleButtonUp, keyState);
+        if (pointer.WheelDelta != 0)
         {
-            PostMessage(_windowHandle, pointer.Down ? WmLeftButtonDown : WmLeftButtonUp, keyState, lParam);
-            _lastPointerDown = pointer.Down;
+            var screenPoint = new NativePoint { X = x, Y = y };
+            ClientToScreen(_windowHandle, ref screenPoint);
+            var wheelState = keyState | ((nuint)(ushort)(short)Math.Clamp(pointer.WheelDelta, -1200, 1200) << 16);
+            PostMessage(target, WmMouseWheel, wheelState, PackPoint(screenPoint.X, screenPoint.Y));
         }
+        _lastPointerButtons = pointer.Buttons;
+    }
+
+    private void ForwardButton(
+        IntPtr target,
+        nint lParam,
+        int buttons,
+        int flag,
+        uint downMessage,
+        uint upMessage,
+        nuint keyState)
+    {
+        var wasDown = (_lastPointerButtons & flag) != 0;
+        var isDown = (buttons & flag) != 0;
+        if (wasDown != isDown)
+        {
+            PostMessage(target, isDown ? downMessage : upMessage, keyState, lParam);
+        }
+    }
+
+    private static nuint PointerKeyState(int buttons)
+    {
+        nuint result = 0;
+        if ((buttons & 1) != 0) result |= MkLeftButton;
+        if ((buttons & 2) != 0) result |= MkRightButton;
+        if ((buttons & 4) != 0) result |= MkMiddleButton;
+        return result;
+    }
+
+    private static IntPtr FindPointerTarget(IntPtr root, int x, int y, out NativePoint targetPoint)
+    {
+        var target = root;
+        targetPoint = new NativePoint { X = x, Y = y };
+        for (var depth = 0; depth < 8; depth++)
+        {
+            var child = ChildWindowFromPointEx(target, targetPoint, CwpSkipDisabled | CwpSkipTransparent);
+            if (child == IntPtr.Zero || child == target || !BelongsToSameProcess(root, child)) break;
+            var screenPoint = targetPoint;
+            if (!ClientToScreen(target, ref screenPoint) || !ScreenToClient(child, ref screenPoint)) break;
+            target = child;
+            targetPoint = screenPoint;
+        }
+        return target;
+    }
+
+    private static bool BelongsToSameProcess(IntPtr first, IntPtr second)
+    {
+        GetWindowThreadProcessId(first, out var firstProcess);
+        GetWindowThreadProcessId(second, out var secondProcess);
+        return firstProcess != 0 && firstProcess == secondProcess;
+    }
+
+    private static nint PackPoint(int x, int y) => (nint)(((ushort)y << 16) | (ushort)x);
+
+    private static async Task<byte[]> CaptureFirstGoodFrameAsync(IntPtr handle, CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(8);
+        Exception? lastFailure = null;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                return await Task.Run(() => CaptureJpeg(handle), cancellationToken);
+            }
+            catch (InvalidDataException exception)
+            {
+                lastFailure = exception;
+                await Task.Delay(120, cancellationToken);
+            }
+        }
+        throw new InvalidDataException("Wallpaper Engine did not produce a complete, usable frame within 8 seconds.", lastFailure);
     }
 
     private static byte[] CaptureJpeg(IntPtr handle)
@@ -251,6 +337,10 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
             var source = Imaging.CreateBitmapSourceFromHBitmap(
                 bitmapHandle, IntPtr.Zero, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
             source.Freeze();
+            if (!CapturedFrameQuality.IsAcceptable(source))
+            {
+                throw new InvalidDataException("Wallpaper Engine returned an empty or uniform transient frame.");
+            }
             var encoded = EncodeJpeg(source, 85);
             if (encoded.Length > MaximumFrameBytes) encoded = EncodeJpeg(source, 65);
             if (encoded.Length is <= 0 or > MaximumFrameBytes)
@@ -552,6 +642,13 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         public int Bottom;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X;
+        public int Y;
+    }
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr FindWindow(string? className, string windowName);
 
@@ -570,6 +667,15 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
 
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+
+    [DllImport("user32.dll")]
+    private static extern bool ClientToScreen(IntPtr window, ref NativePoint point);
+
+    [DllImport("user32.dll")]
+    private static extern bool ScreenToClient(IntPtr window, ref NativePoint point);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr ChildWindowFromPointEx(IntPtr parent, NativePoint point, uint flags);
 
     [DllImport("user32.dll")]
     private static extern bool PostMessage(IntPtr window, uint message, nuint wParam, nint lParam);
@@ -594,6 +700,61 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
 
     [DllImport("gdi32.dll")]
     private static extern bool DeleteDC(IntPtr deviceContext);
+}
+
+internal static class CapturedFrameQuality
+{
+    private const int SampleColumns = 32;
+    private const int SampleRows = 20;
+
+    public static bool IsAcceptable(BitmapSource source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        if (source.PixelWidth < 64 || source.PixelHeight < 64) return false;
+
+        var converted = new FormatConvertedBitmap(source, System.Windows.Media.PixelFormats.Bgra32, null, 0);
+        converted.Freeze();
+        var stride = converted.PixelWidth * 4;
+        var pixels = new byte[stride];
+
+        double sum = 0, sumSquares = 0, chroma = 0;
+        var minimum = 255d;
+        var maximum = 0d;
+        var count = 0;
+        for (var row = 0; row < SampleRows; row++)
+        {
+            var y = Math.Min(converted.PixelHeight - 1,
+                (int)Math.Round((row + .5) * converted.PixelHeight / SampleRows - .5));
+            converted.CopyPixels(new Int32Rect(0, y, converted.PixelWidth, 1), pixels, stride, 0);
+            for (var column = 0; column < SampleColumns; column++)
+            {
+                var x = Math.Min(converted.PixelWidth - 1,
+                    (int)Math.Round((column + .5) * converted.PixelWidth / SampleColumns - .5));
+                var offset = x * 4;
+                var blue = pixels[offset];
+                var green = pixels[offset + 1];
+                var red = pixels[offset + 2];
+                var luminance = red * .2126 + green * .7152 + blue * .0722;
+                sum += luminance;
+                sumSquares += luminance * luminance;
+                chroma += Math.Max(red, Math.Max(green, blue)) - Math.Min(red, Math.Min(green, blue));
+                minimum = Math.Min(minimum, luminance);
+                maximum = Math.Max(maximum, luminance);
+                count++;
+            }
+        }
+
+        var mean = sum / count;
+        var variance = Math.Max(0, sumSquares / count - mean * mean);
+        var deviation = Math.Sqrt(variance);
+        var averageChroma = chroma / count;
+        var dynamicRange = maximum - minimum;
+
+        // PrintWindow intermittently yields a uniform black/white/gray surface
+        // while the real DirectX frame is being presented. Never publish that
+        // transient over the last known-good frame.
+        return !(deviation < 2.25 && dynamicRange < 8 && averageChroma < 2.5);
+    }
 }
 
 internal static class WallpaperEnginePropertyReader

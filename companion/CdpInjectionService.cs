@@ -93,7 +93,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
         timeout.CancelAfter(MaximumApplyDuration);
         var operationToken = timeout.Token;
         var path = wallpaper.EffectivePath;
-        if (!wallpaper.CanApply || string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        if (!wallpaper.CanApply)
         {
             throw new FileNotFoundException("The selected wallpaper media is unavailable.", path);
         }
@@ -104,7 +104,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
         Exception? nativeCaptureFailure = null;
         try
         {
-            if (wallpaper.IsScene)
+            if (wallpaper.IsWallpaperEngineScene)
             {
                 if (WallpaperEngineCaptureSession.CanUse(wallpaper))
                 {
@@ -146,24 +146,31 @@ public sealed class CdpInjectionService : IAsyncDisposable
                         nativeCaptureFailure = exception;
                     }
                 }
-                try
+                if (wallpaper.IsScene)
                 {
-                    await using var sceneStream = WallpaperCatalog.OpenValidatedMediaFile(wallpaper);
-                    var sceneOptions = SceneRuntimeAssets.Load(wallpaper);
-                    var limited = await UploadAsync(
-                        client, sceneStream, path, wallpaper.MediaMode, settings, sceneOptions,
-                        progress, operationToken);
-                    return nativeCaptureFailure is null ? limited : limited with
+                    try
                     {
-                        Warning = "Wallpaper Engine high-fidelity rendering was unavailable; the limited built-in Scene renderer was used. "
-                            + LimitMessage(nativeCaptureFailure.Message)
-                    };
+                        await using var sceneStream = WallpaperCatalog.OpenValidatedMediaFile(wallpaper);
+                        var sceneOptions = SceneRuntimeAssets.Load(wallpaper);
+                        var limited = await UploadAsync(
+                            client, sceneStream, path!, wallpaper.MediaMode, settings, sceneOptions,
+                            progress, operationToken);
+                        return nativeCaptureFailure is null ? limited : limited with
+                        {
+                            Warning = "Wallpaper Engine high-fidelity rendering was unavailable; the limited built-in Scene renderer was used. "
+                                + LimitMessage(nativeCaptureFailure.Message)
+                        };
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception sceneError)
+                    {
+                        nativeCaptureFailure ??= sceneError;
+                    }
                 }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch (Exception sceneError) when (!string.IsNullOrWhiteSpace(wallpaper.PreviewPath))
+                if (!string.IsNullOrWhiteSpace(wallpaper.PreviewPath))
                 {
                     progress?.Report(0);
                     await using var previewStream = WallpaperCatalog.OpenValidatedPreviewFile(wallpaper);
@@ -176,12 +183,19 @@ public sealed class CdpInjectionService : IAsyncDisposable
                     return fallback with
                     {
                         Mode = fallbackMode,
-                        Warning = "Live scene rendering was unavailable; a validated Workshop preview was used. "
-                            + LimitMessage(nativeCaptureFailure?.Message ?? sceneError.Message)
+                        Warning = "Native Wallpaper Engine rendering was unavailable; a low-resolution Workshop preview was used. "
+                            + LimitMessage(nativeCaptureFailure?.Message ?? "No compatible native renderer was available.")
                     };
                 }
+                throw new InvalidOperationException(
+                    "Native Wallpaper Engine rendering failed and this Scene has no safe fallback.",
+                    nativeCaptureFailure);
             }
 
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            {
+                throw new FileNotFoundException("The selected wallpaper media is unavailable.", path);
+            }
             await using var stream = WallpaperCatalog.OpenValidatedMediaFile(wallpaper);
             return await UploadAsync(
                 client, stream, path, wallpaper.MediaMode, settings, null,
@@ -407,7 +421,8 @@ public sealed class CdpInjectionService : IAsyncDisposable
             return new CapturedPointer(
                 Math.Clamp(value.GetProperty("x").GetDouble(), 0, 1),
                 Math.Clamp(value.GetProperty("y").GetDouble(), 0, 1),
-                value.GetProperty("down").GetBoolean(),
+                Math.Clamp(value.GetProperty("buttons").GetInt32(), 0, 7),
+                Math.Clamp(value.GetProperty("wheel").GetInt32(), -1200, 1200),
                 value.GetProperty("hidden").GetBoolean());
         }
         catch (InvalidOperationException)
@@ -585,7 +600,8 @@ public sealed class CdpInjectionService : IAsyncDisposable
             try { state.capturePointerHandlers && window.removeEventListener('pointermove', state.capturePointerHandlers.move, true); } catch (_) {}
             try { state.capturePointerHandlers && window.removeEventListener('pointerdown', state.capturePointerHandlers.down, true); } catch (_) {}
             try { state.capturePointerHandlers && window.removeEventListener('pointerup', state.capturePointerHandlers.up, true); } catch (_) {}
-            try { state.capturePointerHandlers && window.removeEventListener('pointercancel', state.capturePointerHandlers.up, true); } catch (_) {}
+            try { state.capturePointerHandlers && window.removeEventListener('pointercancel', state.capturePointerHandlers.cancel, true); } catch (_) {}
+            try { state.capturePointerHandlers && window.removeEventListener('wheel', state.capturePointerHandlers.wheel, true); } catch (_) {}
             try { state.pendingCancel && state.pendingCancel(); } catch (_) {}
             try { state.pendingMedia && state.pendingMedia.pause && state.pendingMedia.pause(); } catch (_) {}
             try { state.pendingSceneController && state.pendingSceneController.dispose && state.pendingSceneController.dispose(); } catch (_) {}
@@ -710,7 +726,8 @@ public sealed class CdpInjectionService : IAsyncDisposable
             try { old.capturePointerHandlers && window.removeEventListener('pointermove', old.capturePointerHandlers.move, true); } catch (_) {}
             try { old.capturePointerHandlers && window.removeEventListener('pointerdown', old.capturePointerHandlers.down, true); } catch (_) {}
             try { old.capturePointerHandlers && window.removeEventListener('pointerup', old.capturePointerHandlers.up, true); } catch (_) {}
-            try { old.capturePointerHandlers && window.removeEventListener('pointercancel', old.capturePointerHandlers.up, true); } catch (_) {}
+            try { old.capturePointerHandlers && window.removeEventListener('pointercancel', old.capturePointerHandlers.cancel, true); } catch (_) {}
+            try { old.capturePointerHandlers && window.removeEventListener('wheel', old.capturePointerHandlers.wheel, true); } catch (_) {}
             try { old.pendingCancel && old.pendingCancel(); } catch (_) {}
             try { old.pendingMedia && old.pendingMedia.pause && old.pendingMedia.pause(); } catch (_) {}
             try { old.pendingSceneController && old.pendingSceneController.dispose && old.pendingSceneController.dispose(); } catch (_) {}
@@ -832,8 +849,8 @@ public sealed class CdpInjectionService : IAsyncDisposable
             pendingMedia: null, pendingUrl: null, pendingCancel: null,
             uploads: new Map(), marked: new Set(), settings: null, rawPalette: null,
             palette: null, observer: null, rafId: 0, visibilityHandler: null, nativeSurface,
-            capturePointer: { x: .5, y: .5, down: false }, capturePointerHandlers: null,
-            captureFrameBusy: false, captureToken: null,
+            capturePointer: { x: .5, y: .5, buttons: 0, wheel: 0 }, capturePointerHandlers: null,
+            captureFrameBusy: false, captureStaging: null, captureToken: null,
             styleText, helpers: null
           };
 
@@ -1056,6 +1073,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
             if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/.test(token)) return false;
             state.captureToken = token;
             state.captureFrameBusy = false;
+            state.captureStaging = null;
             return true;
           };
           window.__codexWallpaperSkinSetCapturedFrame = (token, encoded) => {
@@ -1075,25 +1093,49 @@ public sealed class CdpInjectionService : IAsyncDisposable
                 state.capturePointer.x = clamp(event.clientX / Math.max(1, innerWidth), 0, 1);
                 state.capturePointer.y = clamp(event.clientY / Math.max(1, innerHeight), 0, 1);
               };
-              const down = event => { update(event); state.capturePointer.down = true; };
-              const up = event => { update(event); state.capturePointer.down = false; };
-              state.capturePointerHandlers = { move: update, down, up };
+              const down = event => { update(event); state.capturePointer.buttons = event.buttons & 7; };
+              const up = event => { update(event); state.capturePointer.buttons = event.buttons & 7; };
+              const cancel = event => { update(event); state.capturePointer.buttons = 0; };
+              const wheel = event => {
+                update(event);
+                state.capturePointer.wheel = Math.round(clamp(
+                  state.capturePointer.wheel - event.deltaY, -1200, 1200));
+              };
+              state.capturePointerHandlers = { move: update, down, up, cancel, wheel };
               window.addEventListener('pointermove', update, { passive: true, capture: true });
               window.addEventListener('pointerdown', down, { passive: true, capture: true });
               window.addEventListener('pointerup', up, { passive: true, capture: true });
-              window.addEventListener('pointercancel', up, { passive: true, capture: true });
+              window.addEventListener('pointercancel', cancel, { passive: true, capture: true });
+              window.addEventListener('wheel', wheel, { passive: true, capture: true });
             }
             if (!state.captureFrameBusy) {
               state.captureFrameBusy = true;
-              const release = () => { state.captureFrameBusy = false; };
-              media.onload = release;
-              media.onerror = release;
-              media.src = `data:image/jpeg;base64,${encoded}`;
+              const nextSource = `data:image/jpeg;base64,${encoded}`;
+              const staging = document.createElement('img');
+              state.captureStaging = staging;
+              const release = () => {
+                if (state.captureStaging === staging) state.captureStaging = null;
+                state.captureFrameBusy = false;
+              };
+              staging.onload = () => {
+                if (!state.disposed && token === state.captureToken && state.media === media) {
+                  // Decode away from the visible element first. Assigning a
+                  // browser-cached image keeps the previous good frame visible
+                  // until the replacement is ready instead of flashing blank.
+                  media.src = nextSource;
+                }
+                release();
+              };
+              staging.onerror = release;
+              staging.src = nextSource;
             }
+            const wheelDelta = state.capturePointer.wheel;
+            state.capturePointer.wheel = 0;
             return {
               x: state.capturePointer.x,
               y: state.capturePointer.y,
-              down: state.capturePointer.down,
+              buttons: state.capturePointer.buttons,
+              wheel: wheelDelta,
               hidden: !!document.hidden
             };
           };
@@ -1221,7 +1263,8 @@ public sealed class CdpInjectionService : IAsyncDisposable
                       try { state.capturePointerHandlers && window.removeEventListener('pointermove', state.capturePointerHandlers.move, true); } catch (_) {}
                       try { state.capturePointerHandlers && window.removeEventListener('pointerdown', state.capturePointerHandlers.down, true); } catch (_) {}
                       try { state.capturePointerHandlers && window.removeEventListener('pointerup', state.capturePointerHandlers.up, true); } catch (_) {}
-                      try { state.capturePointerHandlers && window.removeEventListener('pointercancel', state.capturePointerHandlers.up, true); } catch (_) {}
+                      try { state.capturePointerHandlers && window.removeEventListener('pointercancel', state.capturePointerHandlers.cancel, true); } catch (_) {}
+                      try { state.capturePointerHandlers && window.removeEventListener('wheel', state.capturePointerHandlers.wheel, true); } catch (_) {}
                       try { state.pendingCancel && state.pendingCancel(); } catch (_) {}
                       try { state.pendingMedia && state.pendingMedia.pause && state.pendingMedia.pause(); } catch (_) {}
                       try { state.pendingSceneController && state.pendingSceneController.dispose && state.pendingSceneController.dispose(); } catch (_) {}
@@ -1275,7 +1318,8 @@ public sealed class CdpInjectionService : IAsyncDisposable
             try { current.capturePointerHandlers && window.removeEventListener('pointermove', current.capturePointerHandlers.move, true); } catch (_) {}
             try { current.capturePointerHandlers && window.removeEventListener('pointerdown', current.capturePointerHandlers.down, true); } catch (_) {}
             try { current.capturePointerHandlers && window.removeEventListener('pointerup', current.capturePointerHandlers.up, true); } catch (_) {}
-            try { current.capturePointerHandlers && window.removeEventListener('pointercancel', current.capturePointerHandlers.up, true); } catch (_) {}
+            try { current.capturePointerHandlers && window.removeEventListener('pointercancel', current.capturePointerHandlers.cancel, true); } catch (_) {}
+            try { current.capturePointerHandlers && window.removeEventListener('wheel', current.capturePointerHandlers.wheel, true); } catch (_) {}
             try { current.pendingCancel && current.pendingCancel(); } catch (_) {}
             try { current.pendingMedia && current.pendingMedia.pause && current.pendingMedia.pause(); } catch (_) {}
             try { current.pendingSceneController && current.pendingSceneController.dispose && current.pendingSceneController.dispose(); } catch (_) {}

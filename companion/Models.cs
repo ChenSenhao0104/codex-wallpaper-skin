@@ -45,7 +45,16 @@ public sealed class WallpaperEntry
     public string Note { get; set; } = string.Empty;
 
     [JsonIgnore]
-    public bool CanApply => Support != WallpaperSupport.Rejected && !string.IsNullOrWhiteSpace(EffectivePath);
+    public bool IsWallpaperEngineProject =>
+        Source.Equals("Wallpaper Engine", StringComparison.OrdinalIgnoreCase)
+        && !string.IsNullOrWhiteSpace(ProjectPath);
+
+    [JsonIgnore]
+    public bool IsWallpaperEngineScene => IsWallpaperEngineProject && Kind == WallpaperKind.Scene;
+
+    [JsonIgnore]
+    public bool CanApply => IsWallpaperEngineScene
+        || (Support != WallpaperSupport.Rejected && !string.IsNullOrWhiteSpace(EffectivePath));
 
     [JsonIgnore]
     public string? EffectivePath => Support is WallpaperSupport.Direct or WallpaperSupport.LiveScene
@@ -66,7 +75,7 @@ public sealed class WallpaperEntry
     {
         get
         {
-            var badge = Support switch
+            var badge = IsWallpaperEngineScene ? "WE SCENE" : Support switch
             {
                 WallpaperSupport.Direct => Kind == WallpaperKind.Video ? "VIDEO" : "IMAGE",
                 WallpaperSupport.LiveScene => "WE LIVE SCENE",

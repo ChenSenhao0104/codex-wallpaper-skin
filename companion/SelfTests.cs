@@ -219,6 +219,47 @@ public static class SelfTests
                 Directory.Delete(directory, recursive: true);
             }
         });
+        Check("native Scene eligibility is independent from safe package parsing", () =>
+        {
+            var entry = new WallpaperEntry
+            {
+                Source = "Wallpaper Engine",
+                ProjectPath = Path.Combine(Path.GetTempPath(), "workshop", "project.json"),
+                PreviewPath = Path.Combine(Path.GetTempPath(), "workshop", "preview.gif"),
+                Kind = WallpaperKind.Scene,
+                Support = WallpaperSupport.AnimatedPreview
+            };
+            True(entry.IsWallpaperEngineScene);
+            True(entry.CanApply);
+            True(!entry.IsScene);
+            True(entry.DisplayLabel.EndsWith("[WE SCENE]", StringComparison.Ordinal));
+        });
+        Check("captured transient frames fail closed", () =>
+        {
+            const int width = 64, height = 64, stride = width * 4;
+            var uniform = new byte[stride * height];
+            Array.Fill(uniform, (byte)31);
+            for (var index = 3; index < uniform.Length; index += 4) uniform[index] = 255;
+            var uniformBitmap = System.Windows.Media.Imaging.BitmapSource.Create(
+                width, height, 96, 96, System.Windows.Media.PixelFormats.Bgra32, null, uniform, stride);
+            True(!CapturedFrameQuality.IsAcceptable(uniformBitmap));
+
+            var detailed = new byte[stride * height];
+            for (var y = 0; y < height; y++)
+            {
+                for (var x = 0; x < width; x++)
+                {
+                    var offset = y * stride + x * 4;
+                    detailed[offset] = (byte)(x * 4);
+                    detailed[offset + 1] = (byte)(y * 4);
+                    detailed[offset + 2] = (byte)((x + y) * 2);
+                    detailed[offset + 3] = 255;
+                }
+            }
+            var detailedBitmap = System.Windows.Media.Imaging.BitmapSource.Create(
+                width, height, 96, 96, System.Windows.Media.PixelFormats.Bgra32, null, detailed, stride);
+            True(CapturedFrameQuality.IsAcceptable(detailedBitmap));
+        });
         Check("scene.pkg rejects virtual path traversal", () =>
         {
             using var stream = new MemoryStream(CreateScenePackage("../scene.json", "{\"objects\":[]}"u8.ToArray()));
@@ -333,6 +374,9 @@ public static class SelfTests
             True(SceneRuntimeSource.Script.TrimEnd().EndsWith(';'));
             True(!CdpInjectionService.BootstrapScript.Contains("fetch(", StringComparison.Ordinal));
             True(!CdpInjectionService.BootstrapScript.Contains("XMLHttpRequest", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("captureStaging", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("capturePointer.buttons", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("capturePointer.wheel", StringComparison.Ordinal));
         });
 
         return new SelfTestResult(passed, failed, messages);

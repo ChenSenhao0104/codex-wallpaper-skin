@@ -312,16 +312,16 @@ public static class WallpaperCatalog
                 {
                     mediaPath = scenePackagePath;
                     support = WallpaperSupport.LiveScene;
-                    note = $"Browser-native 2D scene renderer ({packageInfo!.Version}, {packageInfo.EntryCount:N0} assets). Unsupported particles, 3D, text, audio and components are omitted; failures fall back safely.";
+                    note = $"Wallpaper Engine native rendering is preferred. Safe built-in 2D fallback is available ({packageInfo!.Version}, {packageInfo.EntryCount:N0} assets); unsupported fallback features are omitted.";
                 }
                 else
                 {
                     support = PreviewSupportFor(previewPath);
                     note = support switch
                     {
-                        WallpaperSupport.AnimatedPreview => "scene.pkg was unavailable or invalid; using the low-resolution animated Workshop preview.",
-                        WallpaperSupport.StaticPreview => "scene.pkg was unavailable or invalid; using the static Workshop preview.",
-                        _ => "Scene project rejected because neither a valid scene.pkg nor a safe preview was found."
+                        WallpaperSupport.AnimatedPreview => "Native Wallpaper Engine rendering will be attempted; the low-resolution animated Workshop preview is only the final fallback.",
+                        WallpaperSupport.StaticPreview => "Native Wallpaper Engine rendering will be attempted; the static Workshop preview is only the final fallback.",
+                        _ => "Native Wallpaper Engine rendering will be attempted; no safe browser-side fallback is available."
                     };
                 }
                 break;
