@@ -1,7 +1,7 @@
 name: Parallel implementation experiment
 description: Give multiple branches one product specification and convergence target.
 title: "[Experiment]: "
-labels: ["type:experiment", "status:needs-comparison"]
+labels: ["type:experiment", "status:needs-convergence"]
 body:
   - type: markdown
     attributes:
