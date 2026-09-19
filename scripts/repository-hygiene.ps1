@@ -1,0 +1,49 @@
+[CmdletBinding()]
+param()
+
+$ErrorActionPreference = 'Stop'
+$root = Split-Path -Parent $PSScriptRoot
+Push-Location $root
+try {
+  $tracked = @(git ls-files)
+  if ($LASTEXITCODE -ne 0) { throw 'Unable to enumerate tracked files.' }
+
+  $forbidden = @($tracked | Where-Object {
+    $_ -match '(^|/)(artifacts|dist|bin|obj|diagnostics|local-state|local-test-data)/' -or
+    $_ -match '(^|/)scene-(smoke|isolate|pointer|ripple)-' -or
+    $_ -match '\.(pfx|p12)$'
+  })
+  if ($forbidden.Count -gt 0) {
+    throw "Forbidden generated or sensitive paths are tracked:`n$($forbidden -join "`n")"
+  }
+
+  $media = @($tracked | Where-Object { $_ -match '(?i)\.(png|jpe?g|gif|webp|mp4|webm|mov|avi)$' })
+  if ($media.Count -gt 0) {
+    throw "Media files require explicit licensing review and are not accepted by the baseline policy:`n$($media -join "`n")"
+  }
+
+  $large = foreach ($path in $tracked) {
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+      $item = Get-Item -LiteralPath $path
+      if ($item.Length -gt 10MB) { $path }
+    }
+  }
+  if (@($large).Count -gt 0) {
+    throw "Tracked files exceed 10 MiB:`n$(@($large) -join "`n")"
+  }
+
+  $secretPattern = '(github' + '_pat_|gh[pousr]_[A-Za-z0-9_]{20,}|sk' + '-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{20,}|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY)'
+  $privatePattern = '@(gmail|qq|outlook|hotmail|163|126)\.com|[A-Za-z]:\\Users\\[^\\/]+\\'
+  foreach ($pattern in @($secretPattern, $privatePattern)) {
+    $hits = @(& git grep -n -I -E $pattern -- . ':(exclude)scripts/repository-hygiene.ps1' 2>$null)
+    if ($LASTEXITCODE -gt 1) { throw 'Repository content scan failed.' }
+    if ($hits.Count -gt 0) {
+      throw "Potential credential or personal-data pattern found. Review these locations before committing:`n$($hits -join "`n")"
+    }
+  }
+
+  Write-Output "Repository hygiene: PASS ($($tracked.Count) tracked files, no forbidden paths, media, large files, credentials, private emails, or user-profile paths)."
+}
+finally {
+  Pop-Location
+}

@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  windows-validation:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check repository hygiene
+        shell: pwsh
+        run: ./scripts/repository-hygiene.ps1
+
+      - name: Build companion
+        shell: pwsh
+        run: ./scripts/build-companion.ps1
+
+      - name: Run companion self-tests
+        shell: pwsh
+        run: dotnet ./companion/bin/Debug/net8.0-windows/win-x64/CodexWallpaperSkin.dll --self-test
+
+      - name: Run injection runtime smoke test
+        shell: pwsh
+        run: node ./scripts/runtime-smoke-test.mjs

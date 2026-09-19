@@ -1,0 +1,36 @@
+name: Feature request
+description: Propose a product improvement with measurable acceptance criteria.
+title: "[Feature]: "
+labels: ["type:feature"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Describe the user need, not only a preferred implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired product outcome
+      description: What observable behavior would make the feature successful?
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Safety, compatibility, and performance constraints
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      placeholder: List testable pass/fail criteria.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

@@ -1,0 +1,48 @@
+name: Bug report
+description: Report a reproducible display, interaction, recovery, or safety problem.
+title: "[Bug]: "
+labels: ["type:bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Do not attach API keys, private conversations, personal paths, or redistributed Workshop files.
+  - type: textarea
+    id: problem
+    attributes:
+      label: User-visible problem
+      description: What happened, and what should have happened?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      placeholder: Include the selected backend/type and the order in which Codex and the companion were opened.
+    validations:
+      required: true
+  - type: dropdown
+    id: wallpaper_type
+    attributes:
+      label: Wallpaper type
+      options: [Local image, Local video, Wallpaper Engine video, Wallpaper Engine scene, Wallpaper Engine web, Application, Unknown]
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Windows, Codex, companion, Wallpaper Engine, and display scaling versions/settings.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Paste only the minimum sanitized error text. Keep local paths and personal information out.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: I removed credentials, private content, personal paths, and copyrighted wallpaper files from this report.
+          required: true

@@ -1,0 +1,62 @@
+name: Parallel implementation experiment
+description: Give multiple branches one product specification and convergence target.
+title: "[Experiment]: "
+labels: ["type:experiment", "status:needs-comparison"]
+body:
+  - type: markdown
+    attributes:
+      value: The purpose is product convergence, not ranking contributors, models, or tools.
+  - type: textarea
+    id: product_goal
+    attributes:
+      label: Shared product goal
+    validations:
+      required: true
+  - type: textarea
+    id: current_problem
+    attributes:
+      label: Current behavior and reproduction
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: In scope
+    validations:
+      required: true
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: Explicit non-goals
+    validations:
+      required: true
+  - type: textarea
+    id: shared_interfaces
+    attributes:
+      label: Shared interfaces and constraints
+    validations:
+      required: true
+  - type: textarea
+    id: gates
+    attributes:
+      label: Hard product gates
+      description: These apply equally to every candidate and to the final converged implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Required tests and evidence
+    validations:
+      required: true
+  - type: checkboxes
+    id: handling
+    attributes:
+      label: Repository boundaries
+      options:
+        - label: Real Workshop media stays local and will not be committed.
+          required: true
+        - label: Secrets, personal paths, private screenshots, and API keys will not be committed.
+          required: true
+        - label: The final result may adopt either candidate, a hybrid, or neither.
+          required: true
