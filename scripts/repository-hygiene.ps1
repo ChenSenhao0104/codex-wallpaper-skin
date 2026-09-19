@@ -47,3 +47,7 @@ try {
 finally {
   Pop-Location
 }
+
+# `git grep` uses exit code 1 for a clean no-match result. Make the script's
+# successful contract explicit for CI runners that preserve native exit codes.
+exit 0
