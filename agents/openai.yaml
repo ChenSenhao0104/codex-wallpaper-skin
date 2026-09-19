@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Wallpaper Skin"
+  short_description: "Load and color-coordinate Codex wallpaper backgrounds"
+  default_prompt: "Use $codex-wallpaper-skin to preview, color-coordinate, and safely apply an independent Wallpaper Engine background to Codex Desktop."

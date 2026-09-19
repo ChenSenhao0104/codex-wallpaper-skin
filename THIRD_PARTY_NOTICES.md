@@ -1,0 +1,24 @@
+# Third-party notices
+
+The project does not bundle Codex, Steam, Wallpaper Engine, Workshop media, Node.js, FFmpeg, or Wallpaper Engine's proprietary runtime assets. Shader files are read only from the user's own local Wallpaper Engine installation or selected scene package and are transferred in memory for rendering.
+
+## Bundled renderer code
+
+The application bundles modified JavaScript source from **we-scene**, pinned to commit `6b503a36b952f91dbab5e6f378f632f87baf05cc`, under the MIT License:
+
+- Upstream project: <https://github.com/meslzy/we-scene>
+- Bundled license: `companion/ThirdParty/we-scene/LICENSE`
+
+Local changes add bounded package/texture/shader handling, browser lifecycle cleanup, WebGL resource limits, additional built-in material metadata, and HLSL-to-GLSL compatibility fixes. The portable release includes the license as `WE-SCENE-LICENSE.txt`.
+
+## Technical references
+
+The following open-source projects were consulted as primary technical references for the independently implemented loopback-CDP architecture:
+
+- **Backdrop for Codex**, Apache License 2.0: <https://github.com/TogawaSakiko-desuwa/backdrop-for-codex>
+- **Codex Dynamic Skin**, MIT License: <https://github.com/CCDawn/Codex-Dynamic-Skin>
+- **Codex Dream Skin**, MIT License: <https://github.com/Fei-Away/Codex-Dream-Skin>
+
+No wallpapers or screenshots from those projects are included.
+
+OpenAI, Codex, Steam, Valve, and Wallpaper Engine are trademarks of their respective owners. Their names are used only to describe compatibility.

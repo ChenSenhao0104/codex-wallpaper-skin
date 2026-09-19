@@ -1,0 +1,39 @@
+# .NET build outputs
+**/bin/
+**/obj/
+dist/
+
+# IDE and user-local files
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Local diagnostics and temporary files
+*.log
+*.tmp
+TestResults/
+
+# Local visual tests, diagnostics and user state
+/artifacts/
+/diagnostics/
+/local-state/
+/local-test-data/
+
+# Local Wallpaper Engine rendering experiments
+/scene-smoke-*/
+/scene-isolate-*/
+/scene-pointer-*/
+/scene-ripple-*/
+
+# Local environment variables and signing credentials
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+
+# OS metadata
+Thumbs.db
+Desktop.ini
+.DS_Store

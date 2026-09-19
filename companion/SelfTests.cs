@@ -1,0 +1,430 @@
+using System.Text.Json;
+
+namespace CodexWallpaperSkin;
+
+public sealed record SelfTestResult(int Passed, int Failed, IReadOnlyList<string> Messages)
+{
+    public bool Success => Failed == 0;
+}
+
+public static class SelfTests
+{
+    public static SelfTestResult Run()
+    {
+        var passed = 0;
+        var failed = 0;
+        var messages = new List<string>();
+
+        Check("MIME types", () =>
+        {
+            Equal("image/webp", WallpaperCatalog.MimeTypeFor("x.WEBP"));
+            Equal("image/gif", WallpaperCatalog.MimeTypeFor("animated.GIF"));
+            Equal("video/webm", WallpaperCatalog.MimeTypeFor("movie.webm"));
+            Equal("application/x-wallpaper-engine-scene", WallpaperCatalog.MimeTypeFor("scene.pkg"));
+            Equal(256L * 1024 * 1024, WallpaperCatalog.MaximumVideoBytes);
+        });
+        Check("loopback endpoint policy", () =>
+        {
+            True(CdpEndpoint.IsLoopbackHttp("http://127.0.0.1:9222"));
+            True(CdpEndpoint.IsLoopbackHttp("http://127.0.0.1:9222/"));
+            True(!CdpEndpoint.IsLoopbackHttp("http://localhost:9333"));
+            True(!CdpEndpoint.IsLoopbackHttp("http://[::1]:9333"));
+            True(!CdpEndpoint.IsLoopbackHttp("http://127.1:9222"));
+            True(!CdpEndpoint.IsLoopbackHttp("http://2130706433:9222"));
+            True(!CdpEndpoint.IsLoopbackHttp("http://0177.0.0.1:9222"));
+            True(!CdpEndpoint.IsLoopbackHttp("http://127.000.000.001:9222"));
+            True(!CdpEndpoint.IsLoopbackHttp("http://127.0.0.1"));
+            True(!CdpEndpoint.IsLoopbackHttp("http://127.0.0.1:09222"));
+            True(!CdpEndpoint.IsLoopbackHttp(" http://127.0.0.1:9222"));
+            True(!CdpEndpoint.IsLoopbackHttp("https://127.0.0.1:9222"));
+            True(!CdpEndpoint.IsLoopbackHttp("http://192.168.1.5:9222"));
+            True(!CdpEndpoint.IsLoopbackHttp("http://127.0.0.1:9222/json/list"));
+            True(!CdpEndpoint.IsLoopbackHttp("http://user@127.0.0.1:9222"));
+            True(!CdpEndpoint.IsLoopbackHttp("http://127.0.0.1:9222/?redirect=true"));
+            True(!CdpEndpoint.IsLoopbackHttp("file:///C:/temp"));
+            var client = new CdpClient();
+            try
+            {
+                True(client.IsProxyDisabled);
+            }
+            finally
+            {
+                client.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            }
+        });
+        Check("settings normalization", () =>
+        {
+            var settings = new WallpaperSettings
+            {
+                FocusX = -50,
+                FocusY = 500,
+                Opacity = 5,
+                BlackOverlay = -1,
+                PaletteStrength = 4,
+                PanelOpacity = 0.1,
+                Blur = 80,
+                Brightness = 4,
+                Contrast = 0,
+                Saturation = 5,
+                PlaybackRate = 0,
+                SceneFrameRate = 44,
+                SceneResolutionScale = 0.1
+            }.Normalize();
+            Equal(0d, settings.FocusX);
+            Equal(100d, settings.FocusY);
+            Equal(1d, settings.Opacity);
+            Equal(0d, settings.BlackOverlay);
+            Equal(1d, settings.PaletteStrength);
+            Equal(0.2d, settings.PanelOpacity);
+            Equal(30d, settings.Blur);
+            Equal(1.5d, settings.Brightness);
+            Equal(0.5d, settings.Contrast);
+            Equal(2d, settings.Saturation);
+            Equal(0.25d, settings.PlaybackRate);
+            Equal(15, settings.SceneFrameRate);
+            Equal(0.5d, settings.SceneResolutionScale);
+        });
+        Check("state catalog overflow fails closed", () =>
+        {
+            var state = new AppState
+            {
+                Wallpapers = Enumerable.Range(0, 5_001)
+                    .Select(index => new WallpaperEntry
+                    {
+                        Id = "test:" + index,
+                        Title = "Test " + index,
+                        Source = "Test",
+                        Note = string.Empty
+                    })
+                    .ToList()
+            };
+            Throws<InvalidDataException>(() => StateStore.ValidateStateForSave(state));
+        });
+        Check("last applied wallpaper resolves safely", () =>
+        {
+            var remembered = new WallpaperEntry
+            {
+                Id = "local:test",
+                Title = "Remembered",
+                Source = "Local",
+                Note = string.Empty,
+                Support = WallpaperSupport.StaticPreview
+            };
+            var state = new AppState
+            {
+                LastAppliedWallpaperId = remembered.Id,
+                Wallpapers = [remembered]
+            };
+            Equal(remembered, AutoRestoreService.ResolveLastWallpaper(state));
+            state.LastAppliedWallpaperId = "missing";
+            True(AutoRestoreService.ResolveLastWallpaper(state) is null);
+        });
+        Check("fit mapping", () =>
+        {
+            Equal("cover", CdpInjectionService.FitToCss(WallpaperFit.Cover));
+            Equal("scale-down", CdpInjectionService.FitToCss(WallpaperFit.ScaleDown));
+        });
+        Check("application wallpapers rejected", () =>
+        {
+            using var json = JsonDocument.Parse("{\"type\":\"application\",\"title\":\"Unsafe\",\"file\":\"run.exe\"}");
+            var entry = WallpaperCatalog.ParseProjectDocument(json.RootElement, @"C:\wallpaper", @"C:\wallpaper\project.json");
+            Equal(WallpaperSupport.Rejected, entry.Support);
+            True(entry.Note.Contains("never launched", StringComparison.OrdinalIgnoreCase));
+        });
+        Check("multi-root catalog scan", () =>
+        {
+            var directory = Path.Combine(Path.GetTempPath(), "codex-wallpaper-skin-scan-tests", Guid.NewGuid().ToString("N"));
+            var firstProject = Path.Combine(directory, "first-root", "100");
+            var secondProject = Path.Combine(directory, "second-root", "200");
+            Directory.CreateDirectory(firstProject);
+            Directory.CreateDirectory(secondProject);
+            try
+            {
+                File.WriteAllText(Path.Combine(firstProject, "project.json"), "{\"type\":\"application\",\"title\":\"First\"}");
+                File.WriteAllText(Path.Combine(secondProject, "project.json"), "{\"type\":\"application\",\"title\":\"Second\"}");
+                var results = WallpaperCatalog.ScanWorkshopRoots(
+                    [Path.Combine(directory, "first-root"), Path.Combine(directory, "second-root")]);
+                Equal(2, results.Count);
+                True(results.All(item => item.Support == WallpaperSupport.Rejected));
+            }
+            finally
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        });
+        Check("media signatures are enforced", () =>
+        {
+            var directory = Path.Combine(Path.GetTempPath(), "codex-wallpaper-skin-tests", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                var validPng = Path.Combine(directory, "valid.png");
+                File.WriteAllBytes(validPng, CreatePngHeader(1920, 1080));
+                WallpaperCatalog.ValidateMediaFile(validPng, isVideo: false);
+
+                var disguisedPng = Path.Combine(directory, "disguised.png");
+                File.WriteAllText(disguisedPng, "not a png");
+                Throws<InvalidDataException>(() => WallpaperCatalog.ValidateMediaFile(disguisedPng, isVideo: false));
+
+                var oversizedPng = Path.Combine(directory, "oversized.png");
+                File.WriteAllBytes(oversizedPng, CreatePngHeader(16384, 16384));
+                Throws<InvalidDataException>(() => WallpaperCatalog.ValidateMediaFile(oversizedPng, isVideo: false));
+            }
+            finally
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        });
+        Check("GIF previews are bounded and accepted", () =>
+        {
+            var directory = Path.Combine(Path.GetTempPath(), "codex-wallpaper-skin-gif-tests", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                var validGif = Path.Combine(directory, "preview.gif");
+                File.WriteAllBytes(validGif, CreateGif(192, 108));
+                WallpaperCatalog.ValidateMediaFile(validGif, isVideo: false);
+                var truncatedGif = Path.Combine(directory, "truncated.gif");
+                File.WriteAllBytes(truncatedGif, "GIF89a"u8.ToArray());
+                Throws<InvalidDataException>(() => WallpaperCatalog.ValidateMediaFile(truncatedGif, isVideo: false));
+            }
+            finally
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        });
+        Check("scene.pkg is preferred over Workshop thumbnails", () =>
+        {
+            var directory = Path.Combine(Path.GetTempPath(), "codex-wallpaper-skin-scene-tests", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                var projectPath = Path.Combine(directory, "project.json");
+                File.WriteAllText(projectPath, "{\"type\":\"scene\",\"title\":\"Scene test\",\"file\":\"scene.json\",\"preview\":\"preview.gif\"}");
+                File.WriteAllBytes(Path.Combine(directory, "preview.gif"), CreateGif(192, 192));
+                File.WriteAllBytes(Path.Combine(directory, "scene.pkg"), CreateScenePackage("scene.json", "{\"objects\":[]}"u8.ToArray()));
+                var entry = WallpaperCatalog.ParseProject(projectPath);
+                Equal(WallpaperSupport.LiveScene, entry.Support);
+                True(entry.IsScene);
+                True(entry.MediaPath!.EndsWith("scene.pkg", StringComparison.OrdinalIgnoreCase));
+                using (WallpaperCatalog.OpenValidatedMediaFile(entry)) { }
+
+                File.Delete(Path.Combine(directory, "scene.pkg"));
+                entry = WallpaperCatalog.ParseProject(projectPath);
+                Equal(WallpaperSupport.AnimatedPreview, entry.Support);
+                True(entry.CanApply);
+            }
+            finally
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        });
+        Check("scene.pkg rejects virtual path traversal", () =>
+        {
+            using var stream = new MemoryStream(CreateScenePackage("../scene.json", "{\"objects\":[]}"u8.ToArray()));
+            Throws<InvalidDataException>(() => ScenePackageValidator.Validate(stream));
+        });
+        Check("missing media fails closed", () =>
+        {
+            var missing = Path.Combine(Path.GetTempPath(), "codex-wallpaper-skin-missing", Guid.NewGuid().ToString("N"), "missing.png");
+            Throws<FileNotFoundException>(() => WallpaperCatalog.CreateLocal(missing));
+        });
+        Check("Wallpaper Engine media remains inside its project", () =>
+        {
+            var directory = Path.Combine(Path.GetTempPath(), "codex-wallpaper-skin-containment-tests", Guid.NewGuid().ToString("N"));
+            var projectDirectory = Path.Combine(directory, "project");
+            Directory.CreateDirectory(projectDirectory);
+            try
+            {
+                var projectPath = Path.Combine(projectDirectory, "project.json");
+                File.WriteAllText(projectPath, "{\"type\":\"image\"}");
+                var inside = Path.Combine(projectDirectory, "inside.png");
+                var outside = Path.Combine(directory, "outside.png");
+                File.WriteAllBytes(inside, CreatePngHeader(1920, 1080));
+                File.WriteAllBytes(outside, CreatePngHeader(1920, 1080));
+                var entry = new WallpaperEntry
+                {
+                    Source = "Wallpaper Engine",
+                    ProjectPath = projectPath,
+                    MediaPath = inside,
+                    Kind = WallpaperKind.Image,
+                    Support = WallpaperSupport.Direct
+                };
+                using (WallpaperCatalog.OpenValidatedMediaFile(entry)) { }
+                entry.MediaPath = outside;
+                Throws<InvalidDataException>(() =>
+                {
+                    using var stream = WallpaperCatalog.OpenValidatedMediaFile(entry);
+                });
+            }
+            finally
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        });
+        Check("CDP target selection fails closed", () =>
+        {
+            var valid = new CdpTarget("codex", "page", "Codex", "app://codex/", "ws://127.0.0.1:9222/devtools/page/codex");
+            var browser = new CdpTarget("browser", "page", "Browser", "https://example.com", "ws://127.0.0.1:9222/devtools/page/browser");
+            Equal(valid, CdpDiscovery.SelectCodexPage(new[] { browser, valid }));
+            Throws<InvalidOperationException>(() => CdpDiscovery.SelectCodexPage(new[] { browser }));
+        });
+        Check("official Codex package identity policy", () =>
+        {
+            const string packageFamily = "OpenAI.Codex_2p2nqsd0c76g0";
+            const string packageFullName = "OpenAI.Codex_26.908.9136.0_x64__2p2nqsd0c76g0";
+            True(CdpProcessIdentity.IsOfficialPackageIdentity(packageFamily, packageFullName));
+            True(!CdpProcessIdentity.IsOfficialPackageIdentity("OpenAI.Codex_wrongpublisher", packageFullName));
+            True(!CdpProcessIdentity.IsOfficialPackageIdentity(packageFamily,
+                "OpenAI.Codex_26.908.9136.0_arm64__2p2nqsd0c76g0"));
+            True(!CdpProcessIdentity.IsOfficialPackageIdentity(packageFamily,
+                "OpenAI.ChatGPT_26.908.9136.0_x64__2p2nqsd0c76g0"));
+
+            var secondaryDriveRoot = Path.Combine(@"E:\WindowsApps", packageFullName);
+            var systemDriveRoot = Path.Combine(@"C:\Program Files\WindowsApps", packageFullName);
+            True(CdpProcessIdentity.HasExpectedCodexExecutableLayout(
+                Path.Combine(secondaryDriveRoot, "app", "ChatGPT.exe"), packageFullName));
+            True(CdpProcessIdentity.HasExpectedCodexExecutableLayout(
+                Path.Combine(systemDriveRoot, "app", "Codex.exe"), packageFullName));
+            True(!CdpProcessIdentity.HasExpectedCodexExecutableLayout(
+                @"C:\Program Files\Google\Chrome\Application\chrome.exe", packageFullName));
+            True(!CdpProcessIdentity.HasExpectedCodexExecutableLayout(
+                Path.Combine(secondaryDriveRoot, "nested", "app", "ChatGPT.exe"), packageFullName));
+            True(!CdpProcessIdentity.HasExpectedCodexExecutableLayout(
+                Path.Combine(secondaryDriveRoot, "app", "ChatGPT.exe.bak"), packageFullName));
+            True(AppActivation.IsOfficialAumid("OpenAI.Codex_2p2nqsd0c76g0!App"));
+            True(!AppActivation.IsOfficialAumid("OpenAI.Codex_wrongpublisher!App"));
+            Throws<ArgumentException>(() => AppActivation.ActivateWithCdpAsync(
+                "OpenAI.Codex_wrongpublisher!App",
+                "http://127.0.0.1:9222").GetAwaiter().GetResult());
+            Throws<ArgumentException>(() => AppActivation.ActivateWithCdpAsync(
+                AppActivation.OfficialAumid,
+                "http://localhost:9222").GetAwaiter().GetResult());
+        });
+        Check("palette runtime is one-shot and reversible", () =>
+        {
+            True(CdpInjectionService.BootstrapScript.Contains("pointer-events: none", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("z-index: -1", StringComparison.Ordinal));
+            True(!CdpInjectionService.BootstrapScript.Contains("body > :not", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("canvas.width = 32", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("cws-palette", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("existing.version === 12", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinBeginCapturedStream", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinSetCapturedFrame", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("pointermove", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("--app-color-background-surface: transparent", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("setProperty('--cws-root-alpha', '0')", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("markedAncestor", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("removeProperty(name)", StringComparison.Ordinal));
+            True(CdpInjectionService.NativeSurfaceProbeScript.Contains("active.nativeSurface", StringComparison.Ordinal));
+            True(CdpInjectionService.NativeSurfaceProbeScript.Contains("cws-active", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("cancelAnimationFrame", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("await waitForMedia", StringComparison.Ordinal));
+            True(!CdpInjectionService.BootstrapScript.Contains("setInterval", StringComparison.Ordinal));
+            True(CdpInjectionService.CleanupScript.Contains("__codexWallpaperSkinCleanup", StringComparison.Ordinal));
+            True(!CdpInjectionService.CleanupVerificationScript.Contains("nativeThemeMarker", StringComparison.Ordinal));
+            True(CdpInjectionService.CleanupVerificationScript.Contains("[data-cws-surface]", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains(".cws-media, .cws-overlay", StringComparison.Ordinal));
+            True(!CdpInjectionService.BootstrapScript.Contains("require(", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains(SceneRuntimeSource.UpstreamRevision, StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("__cwsCreateSceneWallpaper", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("application/x-wallpaper-engine-scene", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("256 * 1024 * 1024", StringComparison.Ordinal));
+            True(SceneRuntimeSource.Script.TrimEnd().EndsWith(';'));
+            True(!CdpInjectionService.BootstrapScript.Contains("fetch(", StringComparison.Ordinal));
+            True(!CdpInjectionService.BootstrapScript.Contains("XMLHttpRequest", StringComparison.Ordinal));
+        });
+
+        return new SelfTestResult(passed, failed, messages);
+
+        void Check(string name, Action test)
+        {
+            try
+            {
+                test();
+                passed++;
+                messages.Add("PASS " + name);
+            }
+            catch (Exception exception)
+            {
+                failed++;
+                messages.Add("FAIL " + name + ": " + exception.Message);
+            }
+        }
+    }
+
+    private static void True(bool value)
+    {
+        if (!value)
+        {
+            throw new InvalidOperationException("Expected true.");
+        }
+    }
+
+    private static void Equal<T>(T expected, T actual)
+    {
+        if (!EqualityComparer<T>.Default.Equals(expected, actual))
+        {
+            throw new InvalidOperationException($"Expected {expected}, got {actual}.");
+        }
+    }
+
+    private static void Throws<TException>(Action action) where TException : Exception
+    {
+        try
+        {
+            action();
+        }
+        catch (TException)
+        {
+            return;
+        }
+        throw new InvalidOperationException($"Expected {typeof(TException).Name}.");
+    }
+
+    private static byte[] CreatePngHeader(int width, int height) =>
+    [
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+        (byte)(width >> 24), (byte)(width >> 16), (byte)(width >> 8), (byte)width,
+        (byte)(height >> 24), (byte)(height >> 16), (byte)(height >> 8), (byte)height
+    ];
+
+    private static byte[] CreateGif(ushort width, ushort height)
+    {
+        using var stream = new MemoryStream();
+        stream.Write("GIF89a"u8);
+        Span<byte> word = stackalloc byte[2];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(word, width);
+        stream.Write(word);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(word, height);
+        stream.Write(word);
+        stream.Write([0, 0, 0]);
+        stream.WriteByte(0x2C);
+        stream.Write([0, 0, 0, 0]);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(word, width);
+        stream.Write(word);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(word, height);
+        stream.Write(word);
+        stream.WriteByte(0);
+        stream.Write([2, 2, 0x44, 0x01, 0, 0x3B]);
+        return stream.ToArray();
+    }
+
+    private static byte[] CreateScenePackage(string entryName, byte[] payload)
+    {
+        var name = System.Text.Encoding.UTF8.GetBytes(entryName);
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true);
+        writer.Write(8u);
+        writer.Write("PKGV0022"u8);
+        writer.Write(1u);
+        writer.Write((uint)name.Length);
+        writer.Write(name);
+        writer.Write(0u);
+        writer.Write((uint)payload.Length);
+        writer.Write(payload);
+        writer.Flush();
+        return stream.ToArray();
+    }
+}

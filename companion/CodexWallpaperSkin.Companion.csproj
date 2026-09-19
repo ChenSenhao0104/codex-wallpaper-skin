@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>CodexWallpaperSkin</AssemblyName>
+    <RootNamespace>CodexWallpaperSkin</RootNamespace>
+    <Version>0.3.0</Version>
+    <Authors>Codex Wallpaper Skin contributors</Authors>
+    <Description>Reversible local and Wallpaper Engine backgrounds for Codex Desktop.</Description>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <StartupObject>CodexWallpaperSkin.Program</StartupObject>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="ThirdParty\we-scene\src\**\*.js" />
+    <EmbeddedResource Include="Runtime\scene-host.js" />
+  </ItemGroup>
+</Project>
