@@ -2,21 +2,33 @@ using Microsoft.Win32;
 
 namespace CodexWallpaperSkin;
 
+public enum StartupRegistrationStatus
+{
+    Disabled,
+    CurrentExecutable,
+    StaleExecutable
+}
+
 public static class StartupRegistration
 {
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private const string ValueName = "CodexWallpaperSkin.AutoRestore";
 
-    public static bool IsEnabled()
+    public static bool IsEnabled() => GetStatus() == StartupRegistrationStatus.CurrentExecutable;
+
+    public static StartupRegistrationStatus GetStatus()
     {
         if (!OperatingSystem.IsWindows())
         {
-            return false;
+            return StartupRegistrationStatus.Disabled;
         }
         using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
         var saved = key?.GetValue(ValueName) as string;
+        if (string.IsNullOrWhiteSpace(saved)) return StartupRegistrationStatus.Disabled;
         return string.Equals(saved, BuildCommand(), StringComparison.OrdinalIgnoreCase)
-            || string.Equals(saved, BuildLegacyCommand(), StringComparison.OrdinalIgnoreCase);
+            || string.Equals(saved, BuildLegacyCommand(), StringComparison.OrdinalIgnoreCase)
+            ? StartupRegistrationStatus.CurrentExecutable
+            : StartupRegistrationStatus.StaleExecutable;
     }
 
     public static void SetEnabled(bool enabled)

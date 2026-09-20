@@ -116,8 +116,29 @@ public static class SelfTests
                 Wallpapers = [remembered]
             };
             Equal(remembered, AutoRestoreService.ResolveLastWallpaper(state));
+            var pending = new WallpaperEntry
+            {
+                Id = "local:pending",
+                Title = "Pending",
+                Source = "Local",
+                Note = string.Empty,
+                Support = WallpaperSupport.StaticPreview
+            };
+            state.Wallpapers.Add(pending);
+            state.PendingActivation = true;
+            state.PendingWallpaperId = pending.Id;
+            Equal(pending, AutoRestoreService.ResolveLastWallpaper(state));
+            state.PendingActivation = false;
             state.LastAppliedWallpaperId = "missing";
             True(AutoRestoreService.ResolveLastWallpaper(state) is null);
+        });
+        Check("running-without-CDP message is actionable and non-technical", () =>
+        {
+            var exception = new CodexAlreadyRunningWithoutCdpException([42]);
+            True(exception.Message.Contains("only when Codex starts", StringComparison.OrdinalIgnoreCase));
+            True(exception.Message.Contains("not interrupted", StringComparison.OrdinalIgnoreCase));
+            True(!exception.Message.Contains("listener process", StringComparison.OrdinalIgnoreCase));
+            Equal(42, exception.ProcessIds.Single());
         });
         Check("fit mapping", () =>
         {

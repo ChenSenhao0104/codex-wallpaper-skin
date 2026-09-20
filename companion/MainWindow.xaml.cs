@@ -12,6 +12,7 @@ namespace CodexWallpaperSkin;
 
 public partial class MainWindow : Window
 {
+    private const string StaleStartupWarning = "Windows sign-in restore points to another copy of this controller. Turn the sign-in restore option on to update it to this executable.";
     private readonly ObservableCollection<WallpaperEntry> _wallpapers = [];
     private readonly CdpInjectionService _injection = new();
     private readonly DispatcherTimer _settingsTimer;
@@ -50,7 +51,12 @@ public partial class MainWindow : Window
         AutoRestoreCheck.IsChecked = _state.AutoRestoreOnLaunch;
         try
         {
-            StartupRestoreCheck.IsChecked = StartupRegistration.IsEnabled();
+            var startupStatus = StartupRegistration.GetStatus();
+            StartupRestoreCheck.IsChecked = startupStatus == StartupRegistrationStatus.CurrentExecutable;
+            if (startupStatus == StartupRegistrationStatus.StaleExecutable)
+            {
+                _stateWarning = StaleStartupWarning;
+            }
         }
         catch
         {
@@ -66,8 +72,13 @@ public partial class MainWindow : Window
         UpdateSettingLabels();
         if (!string.IsNullOrWhiteSpace(StateStore.LastLoadWarning))
         {
-            _stateWarning = StateStore.LastLoadWarning;
-            SetStatus("State recovery needs attention.");
+            _stateWarning = string.IsNullOrWhiteSpace(_stateWarning)
+                ? StateStore.LastLoadWarning
+                : _stateWarning + Environment.NewLine + StateStore.LastLoadWarning;
+        }
+        if (!string.IsNullOrWhiteSpace(_stateWarning))
+        {
+            SetStatus("Startup/state recovery needs attention.");
         }
         Closing += MainWindow_Closing;
         Closed += MainWindow_Closed;
@@ -77,7 +88,7 @@ public partial class MainWindow : Window
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
         Loaded -= MainWindow_Loaded;
-        if (!_state.AutoRestoreOnLaunch || string.IsNullOrWhiteSpace(_state.LastAppliedWallpaperId))
+        if (!_state.AutoRestoreOnLaunch || AutoRestoreService.ResolveLastWallpaper(_state) is null)
         {
             return;
         }
@@ -125,12 +136,32 @@ public partial class MainWindow : Window
             {
                 throw new InvalidOperationException("Use a loopback endpoint such as http://127.0.0.1:9222. Remote CDP endpoints are intentionally blocked.");
             }
-            SetStatus("Connecting to Codex CDP…");
-            var target = await _injection.ConnectAsync(endpoint, cancellationToken);
             _state.CdpBaseUrl = endpoint;
+            SetStatus("Connecting to Codex. If it is closed, the verified local wallpaper channel will be started automatically…");
+            CdpConnectionResult connection;
+            try
+            {
+                connection = await AutoRestoreService.ConnectOrActivateAsync(
+                    _state, _injection, activateIfNeeded: true, cancellationToken);
+            }
+            catch (CodexAlreadyRunningWithoutCdpException)
+            {
+                if (_state.PendingActivation && AutoRestoreService.ResolveLastWallpaper(_state) is not null)
+                {
+                    try { DeferredRestoreLauncher.EnsureRunning(); } catch { }
+                    SetQueuedStatus();
+                }
+                else
+                {
+                    SetStatus("Codex is open without the wallpaper channel. Its Chromium process can enable this channel only at startup. Your current task was left untouched; select a wallpaper and click Apply to queue it, or close Codex normally and click Connect again.");
+                }
+                return;
+            }
             SaveState();
+            EndpointTextBox.Text = _state.CdpBaseUrl;
+            AumidTextBox.Text = _state.Aumid ?? string.Empty;
             ConnectButton.Content = "Reconnect";
-            if (_state.AutoRestoreOnLaunch && !string.IsNullOrWhiteSpace(_state.LastAppliedWallpaperId))
+            if (_state.AutoRestoreOnLaunch)
             {
                 _state.Wallpapers = _wallpapers.ToList();
                 var remembered = AutoRestoreService.ResolveLastWallpaper(_state);
@@ -146,7 +177,9 @@ public partial class MainWindow : Window
                     return;
                 }
             }
-            SetStatus($"Connected: {target.Title} — {target.Url}");
+            SetStatus(connection.ActivatedCodex
+                ? $"Codex was started with the verified wallpaper channel and connected: {connection.Target.Title}."
+                : $"Connected: {connection.Target.Title} — {connection.Target.Url}");
         });
     }
 
@@ -548,6 +581,16 @@ public partial class MainWindow : Window
         try
         {
             StartupRegistration.SetEnabled(enabled);
+            if (enabled && !string.IsNullOrWhiteSpace(_stateWarning))
+            {
+                var remainingWarnings = _stateWarning
+                    .Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries)
+                    .Where(line => !line.Equals(StaleStartupWarning, StringComparison.Ordinal))
+                    .ToArray();
+                _stateWarning = remainingWarnings.Length == 0
+                    ? null
+                    : string.Join(Environment.NewLine, remainingWarnings);
+            }
             SetStatus(enabled
                 ? "Windows sign-in restore enabled. It will restore immediately when possible, or wait without interrupting an already-open Codex task."
                 : "Windows sign-in restore disabled.");
@@ -710,8 +753,15 @@ public partial class MainWindow : Window
             UploadProgress.Visibility = Visibility.Collapsed;
             if (!_closeRequested)
             {
-                try { DeferredRestoreLauncher.EnsureRunning(); } catch { }
-                SetStatus(exception.Message);
+                if (_state.PendingActivation && AutoRestoreService.ResolveLastWallpaper(_state) is not null)
+                {
+                    try { DeferredRestoreLauncher.EnsureRunning(); } catch { }
+                    SetQueuedStatus();
+                }
+                else
+                {
+                    SetStatus(exception.Message);
+                }
             }
         }
         catch (Exception exception)
@@ -742,7 +792,12 @@ public partial class MainWindow : Window
         _state.PendingActivation = true;
         SaveState();
         DeferredRestoreLauncher.EnsureRunning();
-        SetStatus("Codex is already running without the wallpaper channel. The selected wallpaper is queued; the current task will not be interrupted, and it will be restored automatically after Codex is next closed normally.");
+        SetQueuedStatus();
+    }
+
+    private void SetQueuedStatus()
+    {
+        SetStatus("Queued — the wallpaper is not applied yet. Codex is currently running without its startup-only wallpaper channel, so the current task was left untouched. The controller will retry after Codex closes normally; click Restore Codex background to cancel the queue.");
     }
 
     private void Upsert(WallpaperEntry entry)
