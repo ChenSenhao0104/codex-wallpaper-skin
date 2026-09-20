@@ -31,7 +31,8 @@ internal sealed class GpuMediaPipeline : IDisposable
         int width,
         int height,
         int frameRate,
-        byte[] firstFramePixels)
+        byte[] firstFramePixels,
+        string? frameRateLimitReason = null)
     {
         _capture = capture;
         _encoder = encoder;
@@ -40,6 +41,7 @@ internal sealed class GpuMediaPipeline : IDisposable
         Height = height;
         FrameRate = frameRate;
         _firstFramePixels = firstFramePixels;
+        FrameRateLimitReason = frameRateLimitReason;
         Diagnostics = new GpuStreamDiagnostics(streamId, TransportName, width, height, frameRate)
         {
             EncoderMode = encoder.EncoderMode
@@ -57,6 +59,13 @@ internal sealed class GpuMediaPipeline : IDisposable
 
     /// <summary>Exact Media Source Extensions codec string, available once the initialisation segment has been read.</summary>
     public string? Codec { get; private set; }
+
+    /// <summary>
+    /// Set when the pipeline declined to declare the requested rate for a measured
+    /// stability reason, so the caller can explain the fallback instead of
+    /// attributing it to the source.
+    /// </summary>
+    public string? FrameRateLimitReason { get; private set; }
 
     /// <summary>
     /// Hands over the first captured frame once, so the caller can paint an
@@ -127,6 +136,27 @@ internal sealed class GpuMediaPipeline : IDisposable
             var measuredFrameRate = MeasureCaptureFrameRate(capture, requestedFrameRate);
             var frameRate = GpuStreamStatusLabel.AlignFrameRate(measuredFrameRate, requestedFrameRate);
 
+            // Measured on this machine: the Media Foundation hardware H.264 encoder
+            // accepts 1920x1080 at 60 FPS for about 260 frames and then stops
+            // accepting frames indefinitely, while 1920x1080 at 30 FPS is stable for
+            // a whole run and the same 1080p60 configuration without the
+            // hardware-transform preference was stable for a whole run too. Where
+            // hardware is known to wedge, the software encoder carries the
+            // resolution rather than the cadence being dropped: 60 FPS is the
+            // product goal, and a labeled software encoder is a better answer than a
+            // labeled 30 FPS stream. Priming cannot catch the wedge, because it needs
+            // several seconds of sustained encoding to appear.
+            var preferHardware = true;
+            string? frameRateLimitReason = null;
+            if (MediaFoundationH264Encoder.IsUnstableHardwareRate(width, height, frameRate))
+            {
+                preferHardware = false;
+                frameRateLimitReason =
+                    $"the hardware H.264 encoder is not stable at {width}x{height} above "
+                    + $"{GpuStreamStatusLabel.FallbackFrameRate} FPS on this machine (it stops accepting frames after a "
+                    + "few seconds), so the software encoder carries this resolution instead of dropping the cadence";
+            }
+
             var bitrate = Math.Clamp(
                 (int)(width * (long)height * frameRate * 0.09),
                 3_000_000,
@@ -137,14 +167,16 @@ internal sealed class GpuMediaPipeline : IDisposable
                 frameRate,
                 bitrate,
                 TopDownRows: true,
-                MinimumFragmentDuration: TimeSpan.FromMilliseconds(100));
+                MinimumFragmentDuration: TimeSpan.FromMilliseconds(100),
+                PreferHardware: preferHardware);
             if (!MediaFoundationH264Encoder.TryCreate(options, out encoder, out failure) || encoder is null)
             {
                 return false;
             }
 
             var instance = new GpuMediaPipeline(
-                capture, encoder, Guid.NewGuid().ToString("N"), width, height, frameRate, firstFrame!);
+                capture, encoder, Guid.NewGuid().ToString("N"), width, height, frameRate, firstFrame!,
+                frameRateLimitReason);
             // The first frame is submitted so the encoder writes the
             // initialisation segment immediately: the page cannot create its
             // Media Source buffer until ftyp and moov have arrived. Media
@@ -281,6 +313,8 @@ internal sealed class GpuMediaPipeline : IDisposable
             }
             _batcher.Add(chunk);
             drained = true;
+            _submittedAtLastFragment = _encoder.SubmittedFrames;
+            _lastFragmentAt = DateTimeOffset.UtcNow;
             Diagnostics.CountEncodedFragment(chunk.Bytes.Length);
             // The coded frame count comes from the fragment's own table: Media
             // Foundation may repeat frames to fill the declared rate, so this is
@@ -464,34 +498,108 @@ internal sealed class GpuMediaPipeline : IDisposable
     }
 
     /// <summary>
-    /// Feeds frames until the encoder has emitted a complete initialisation
-    /// segment, or the budget expires. Bounded, so a machine whose encoder never
-    /// produces a streamable header is diagnosed instead of hanging the apply.
+    /// Runs the priming loop on its own thread under a hard budget.
+    ///
+    /// Priming submits real frames, so a hardware encoder that blocks would
+    /// otherwise hang the caller that is applying a wallpaper. A blocked call
+    /// cannot be cancelled, so the thread is abandoned and the pipeline is marked
+    /// stalled: the caller sees a clear failure and selects the compatibility
+    /// backend instead of freezing.
     /// </summary>
     private bool PrimeForInitialisationSegment(TimeSpan budget, out string failure)
     {
         failure = string.Empty;
+        var completed = new ManualResetEventSlim(false);
+        var primeFailure = string.Empty;
+        var worker = new Thread(() =>
+        {
+            try
+            {
+                primeFailure = PrimeCore(budget);
+            }
+            catch (Exception exception)
+            {
+                primeFailure = exception.Message;
+            }
+            finally
+            {
+                completed.Set();
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "cws-gpu-encoder-prime"
+        };
+        worker.Start();
+
+        if (!completed.Wait(budget + TimeSpan.FromSeconds(3)))
+        {
+            _encoder.MarkStalled(
+                $"the hardware encoder stopped accepting frames while priming {Width}x{Height}; "
+                + "the resolution or the encoder configuration is not usable here");
+            failure = _encoder.FailureReason ?? "The encoder stalled while priming.";
+            return false;
+        }
+        failure = primeFailure;
+        return primeFailure.Length == 0;
+    }
+
+    private string PrimeCore(TimeSpan budget)
+    {
         var deadline = DateTimeOffset.UtcNow + budget;
         while (DateTimeOffset.UtcNow < deadline)
         {
             DrainFragments(0, out _);
             if (Codec is not null)
             {
-                return true;
+                _submittedAtLastFragment = _encoder.SubmittedFrames;
+                _lastFragmentAt = DateTimeOffset.UtcNow;
+                return string.Empty;
             }
             if (HasFailed)
             {
-                failure = FailureReason ?? "The GPU media pipeline failed while priming the encoder.";
-                return false;
+                return FailureReason ?? "The GPU media pipeline failed while priming the encoder.";
             }
             // CaptureAndSubmit enforces the size and quality gates and is
             // harmless when the scene is momentarily static.
             CaptureAndSubmit(120, out _);
         }
-        failure = "The encoder produced no streamable initialisation segment within "
+        return "The encoder produced no streamable initialisation segment within "
             + $"{budget.TotalSeconds:F0} seconds.";
-        return false;
     }
+
+    /// <summary>
+    /// Detects an encoder that accepted frames and then stopped producing anything,
+    /// which is how a blocked Media Foundation call presents itself from outside.
+    /// Returns false once the pipeline must be abandoned.
+    /// </summary>
+    public bool CheckForStall(DateTimeOffset now, out string failure)
+    {
+        failure = string.Empty;
+        if (_disposed || HasFailed)
+        {
+            failure = FailureReason ?? "The GPU media pipeline is closed.";
+            return false;
+        }
+        var submittedSinceFragment = _encoder.SubmittedFrames - _submittedAtLastFragment;
+        if (submittedSinceFragment >= MinimumSubmittedFramesForStallCheck
+            && now - _lastFragmentAt > StallThreshold)
+        {
+            _encoder.MarkStalled(
+                $"the hardware encoder stopped producing output after {submittedSinceFragment} accepted frames at "
+                + $"{Width}x{Height}; the stream is being abandoned");
+            failure = _encoder.FailureReason ?? "The encoder stalled.";
+            return false;
+        }
+        return true;
+    }
+
+    /// <summary>Frames that must be accepted with no output before the encoder is called stalled.</summary>
+    private const long MinimumSubmittedFramesForStallCheck = 3;
+
+    private static readonly TimeSpan StallThreshold = TimeSpan.FromSeconds(4);
+    private long _submittedAtLastFragment;
+    private DateTimeOffset _lastFragmentAt = DateTimeOffset.UtcNow;
 
     public void Finish() => _encoder.Finish();
 

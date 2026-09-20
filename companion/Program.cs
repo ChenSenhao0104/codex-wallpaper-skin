@@ -172,8 +172,13 @@ public static class Program
                     CreateOnly: args.Contains("--create-only", StringComparer.OrdinalIgnoreCase),
                     PreferHardware: !args.Contains("--no-hardware", StringComparer.OrdinalIgnoreCase),
                     LowLatency: !args.Contains("--no-low-latency", StringComparer.OrdinalIgnoreCase),
-                    HintFragmentDuration: !args.Contains("--no-fragment-hint", StringComparer.OrdinalIgnoreCase));
-                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(180));
+                    HintFragmentDuration: !args.Contains("--no-fragment-hint", StringComparer.OrdinalIgnoreCase),
+                    AllowUnstableRate: args.Contains("--allow-unstable-rate", StringComparer.OrdinalIgnoreCase));
+                // The budget covers the requested duration plus start-up, priming,
+                // finalisation and the decode check, so a long soak is not cut short
+                // by the CLI itself.
+                using var timeout = new CancellationTokenSource(
+                    TimeSpan.FromSeconds(Math.Max(180, options.Seconds + 180)));
                 GpuEncoderSmokeResult result;
                 try
                 {

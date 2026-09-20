@@ -404,6 +404,15 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                 // Waiting on the encoder queue is the pacing signal: no spin, no
                 // fixed sleep, and a fragment is delivered as soon as it exists.
                 pipeline.DrainFragments(15, out _);
+                if (!pipeline.CheckForStall(DateTimeOffset.UtcNow, out var stallFailure))
+                {
+                    // A blocked hardware encoder cannot be cancelled, so the stream
+                    // is abandoned with a diagnosed reason; the last confirmed good
+                    // frame stays on screen and the next apply falls back.
+                    _gpuFailure = stallFailure;
+                    Volatile.Write(ref _stopRequested, 1);
+                    break;
+                }
                 var now = DateTimeOffset.UtcNow;
                 if (!pipeline.ShouldFlushBatch(now))
                 {
@@ -509,13 +518,25 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
             && GpuStreamStatusLabel.IsBelowRequested(effective, requested))
         {
             var cap = Volatile.Read(ref _engineFrameRateCap);
-            var cappedNote = cap > 0 && Math.Abs(effective - cap) <= Math.Max(2, cap * 0.15)
-                ? $"Wallpaper Engine is configured to {cap} FPS in its own settings, which caps the captured cadence; "
-                    + "raise that setting for a higher rate"
-                : $"the Wallpaper Engine capture surface sustains about {effective} frames per second at "
+            string reason;
+            if (pipeline.FrameRateLimitReason is not null)
+            {
+                // A stability limit is the reason, not the source cadence, so it
+                // must not be reported as a slow Scene.
+                reason = pipeline.FrameRateLimitReason;
+            }
+            else if (cap > 0 && Math.Abs(effective - cap) <= Math.Max(2, cap * 0.15))
+            {
+                reason = $"Wallpaper Engine is configured to {cap} FPS in its own settings, which caps the "
+                    + "captured cadence; raise that setting for a higher rate";
+            }
+            else
+            {
+                reason = $"the Wallpaper Engine capture surface sustains about {effective} frames per second at "
                     + $"{pipeline.Width}x{pipeline.Height}; the Scene itself is the limit, and the rate is "
                     + "independent of the render scale";
-            GpuStatusNote = cappedNote
+            }
+            GpuStatusNote = reason
                 + $" (this session runs a {effective} FPS GPU mode, not the {requested} FPS target)";
         }
         else

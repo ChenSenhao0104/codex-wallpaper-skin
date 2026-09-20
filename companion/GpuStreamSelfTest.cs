@@ -18,7 +18,12 @@ internal sealed record GpuEncoderSmokeOptions(
     bool CreateOnly = false,
     bool PreferHardware = true,
     bool LowLatency = true,
-    bool HintFragmentDuration = true);
+    bool HintFragmentDuration = true,
+    bool AllowUnstableRate = false,
+    // Retained bytes are capped so a soak run can measure a long stream without
+    // holding the whole thing in memory: the prefix is enough for the structural
+    // and decode checks, and the rest is counted and discarded.
+    long RetainedBytes = 8L * 1024 * 1024);
 
 internal sealed record GpuEncoderSmokeResult(
     bool Passed,
@@ -71,9 +76,9 @@ internal static class GpuStreamSelfTest
         {
             return new GpuEncoderSmokeResult(false, "The smoke test frame rate must be 30 or 60.", details);
         }
-        if (options.Seconds is < 0.5 or > 120)
+        if (options.Seconds is < 0.5 or > 900)
         {
-            return new GpuEncoderSmokeResult(false, "The smoke test duration must be between 0.5 and 120 seconds.", details);
+            return new GpuEncoderSmokeResult(false, "The smoke test duration must be between 0.5 and 900 seconds.", details);
         }
 
         var comResult = CoInitializeEx(IntPtr.Zero, CoInitMultithreaded);
@@ -102,7 +107,8 @@ internal static class GpuStreamSelfTest
             MinimumFragmentDuration: TimeSpan.FromMilliseconds(options.FragmentMilliseconds),
             PreferHardware: options.PreferHardware,
             LowLatency: options.LowLatency,
-            HintFragmentDuration: options.HintFragmentDuration);
+            HintFragmentDuration: options.HintFragmentDuration,
+            AllowUnstableRate: options.AllowUnstableRate);
         Stage($"COM initialised (0x{comResult:X8}); Media Foundation {MediaFoundationInterop.MfVersion:X8} started.");
         Stage($"encoder request: {options.Width}x{options.Height}@{options.FrameRate} bitrate={bitrate} "
             + $"fragment={options.FragmentMilliseconds}ms seconds={options.Seconds} "
@@ -111,8 +117,34 @@ internal static class GpuStreamSelfTest
         if (!MediaFoundationH264Encoder.TryCreate(encoderOptions, out var created, out var createFailure)
             || created is null)
         {
-            return new GpuEncoderSmokeResult(
-                false, "The Media Foundation H.264 encoder could not be created: " + createFailure, details);
+            // A refused hardware configuration is not the end of the story: the
+            // software encoder was measured stable at the same resolution and rate,
+            // so it is tried before the run is reported as a failure. The refusal is
+            // recorded either way, because it is the reason the mode is not hardware.
+            if (options.PreferHardware && !options.AllowUnstableRate)
+            {
+                Stage("hardware encoder refused: " + createFailure);
+                var fallbackOptions = encoderOptions with { PreferHardware = false, AllowUnstableRate = true };
+                if (MediaFoundationH264Encoder.TryCreate(fallbackOptions, out created, out var fallbackFailure)
+                    && created is not null)
+                {
+                    Stage("retried with the software encoder, which was measured stable for this configuration");
+                    encoderOptions = fallbackOptions;
+                }
+                else
+                {
+                    return new GpuEncoderSmokeResult(
+                        false,
+                        "The Media Foundation H.264 encoder could not be created with hardware or software: "
+                        + fallbackFailure,
+                        details);
+                }
+            }
+            else
+            {
+                return new GpuEncoderSmokeResult(
+                    false, "The Media Foundation H.264 encoder could not be created: " + createFailure, details);
+            }
         }
 
         var stalled = false;
@@ -139,19 +171,51 @@ internal static class GpuStreamSelfTest
 
             var chunks = new List<Mp4Chunk>();
             var fragmentArrival = new List<double>();
+            var retainedBytes = 0L;
+            var retentionClosed = false;
+            var mediaChunks = 0;
+            byte[]? initChunk = null;
+            long totalStreamBytes = 0;
             drainCancellation = new CancellationTokenSource();
             var drainClock = Stopwatch.StartNew();
             var drainToken = drainCancellation.Token;
             var drain = Task.Run(() =>
             {
+                void Collect(Mp4Chunk chunk)
+                {
+                    totalStreamBytes += chunk.Bytes.Length;
+                    if (chunk.Kind == Mp4ChunkKind.Init)
+                    {
+                        initChunk = chunk.Bytes;
+                    }
+                    else
+                    {
+                        mediaChunks++;
+                    }
+                    // Keep only a bounded, contiguous prefix, so a soak run cannot
+                    // grow the test's own memory and invalidate what it measures.
+                    // Retention stops for good once the cap is reached: resuming for
+                    // a later, smaller chunk would leave a sequence gap and make the
+                    // ordering check report a defect that does not exist.
+                    if (!retentionClosed && retainedBytes + chunk.Bytes.Length <= options.RetainedBytes)
+                    {
+                        retainedBytes += chunk.Bytes.Length;
+                        chunks.Add(chunk);
+                    }
+                    else
+                    {
+                        retentionClosed = true;
+                    }
+                    fragmentArrival.Add(drainClock.Elapsed.TotalMilliseconds);
+                }
+
                 while (!drainToken.IsCancellationRequested)
                 {
                     if (created.TryTakeChunk(out var chunk, 100) && chunk is not null)
                     {
                         lock (chunks)
                         {
-                            chunks.Add(chunk);
-                            fragmentArrival.Add(drainClock.Elapsed.TotalMilliseconds);
+                            Collect(chunk);
                         }
                     }
                     else if (created.HasFailed)
@@ -163,12 +227,12 @@ internal static class GpuStreamSelfTest
                 {
                     lock (chunks)
                     {
-                        chunks.Add(tail);
-                        fragmentArrival.Add(drainClock.Elapsed.TotalMilliseconds);
+                        Collect(tail);
                     }
                 }
             }, CancellationToken.None);
 
+            var workingSetBefore = Environment.WorkingSet;
             var frameBytes = checked(options.Width * options.Height * 4);
             var baseFrame = new byte[frameBytes];
             var frame = new byte[frameBytes];
@@ -255,8 +319,12 @@ internal static class GpuStreamSelfTest
             Thread.Sleep(400);
             drainCancellation.Cancel();
             drain.Wait(TimeSpan.FromSeconds(5));
-            Stage($"drained {chunks.Count} chunk(s)");
+            var workingSetAfter = Environment.WorkingSet;
+            Stage($"drained {totalStreamBytes} bytes in {mediaChunks + (initChunk is null ? 0 : 1)} chunk(s); "
+                + $"working set {(workingSetBefore / 1048576d):F1} MiB -> {(workingSetAfter / 1048576d):F1} MiB");
 
+            // The retained prefix is what the structural and decode checks can see;
+            // a soak run deliberately keeps only a bounded part of the stream.
             var stream = new byte[chunks.Sum(chunk => chunk.Bytes.Length)];
             var offset = 0;
             foreach (var chunk in chunks)
@@ -266,27 +334,19 @@ internal static class GpuStreamSelfTest
             }
 
             var initChunks = chunks.Count(chunk => chunk.Kind == Mp4ChunkKind.Init);
-            var mediaChunks = chunks.Count(chunk => chunk.Kind == Mp4ChunkKind.Media);
             var initIsFirst = chunks.Count > 0 && chunks[0].Kind == Mp4ChunkKind.Init;
-            var ordered = true;
-            for (var index = 0; index < chunks.Count; index++)
-            {
-                if (chunks[index].Sequence != index)
-                {
-                    ordered = false;
-                    break;
-                }
-            }
+            var ordered = IsOrdered(chunks);
 
             var report = Mp4StreamInspector.Inspect(stream);
             var digest = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+            var retainedFraction = totalStreamBytes > 0 ? (double)stream.Length / totalStreamBytes : 0;
             Stage($"chunks: init={initChunks} media={mediaChunks} initFirst={initIsFirst} ordered={ordered} "
-                + $"bytes={stream.Length} sha256={digest}");
-            if (mediaChunks > 1)
+                + $"streamBytes={totalStreamBytes} retained={stream.Length} ({retainedFraction:P1}) sha256={digest}");
+            if (fragmentArrival.Count > 1)
             {
                 var span = fragmentArrival[^1] - fragmentArrival[0];
-                Stage($"fragment cadence: {span / (mediaChunks - 1):F1} ms per media fragment "
-                    + $"(requested {options.FragmentMilliseconds:F0} ms)");
+                Stage($"fragment cadence: {span / (fragmentArrival.Count - 1):F1} ms average over "
+                    + $"{fragmentArrival.Count} chunks (requested {options.FragmentMilliseconds:F0} ms)");
             }
             Stage(report.Describe());
             var avc = Mp4StreamInspector.InspectAvcBitstream(stream);
@@ -295,6 +355,9 @@ internal static class GpuStreamSelfTest
                 stream, options.Width, options.Height, orientationExpected: true, out var decodeSummary, out var decodeFailure);
             Stage(decoded ? decodeSummary : "decode check: " + decodeFailure);
             Stage(created.StreamDiagnostics);
+            var sustained = submitted / Math.Max(0.001, elapsed.TotalSeconds);
+            Stage($"sustained input {sustained:F1} fps of a requested {options.FrameRate} fps at "
+                + $"{options.Width}x{options.Height} for {elapsed.TotalSeconds:F1}s");
 
             if (!string.IsNullOrWhiteSpace(options.OutputPath))
             {
@@ -318,10 +381,12 @@ internal static class GpuStreamSelfTest
                 && report.Height == options.Height
                 && report.SampleCount > 0
                 && avc.IsDecodable
-                && decoded;
+                && decoded
+                && sustained >= options.FrameRate - 2;
             var summary = passed
                 ? $"PASS GPU H.264 encoder ({created.EncoderMode}, {options.Width}x{options.Height}@{options.FrameRate}, "
-                    + $"{report.SampleCount} samples, {mediaChunks} fragments, {stream.Length} bytes, "
+                    + $"{submitted} frames in {elapsed.TotalSeconds:F1}s = {sustained:F1} fps sustained, "
+                    + $"{mediaChunks} fragments, {totalStreamBytes} bytes, "
                     + $"{avc.NalUnits} AVC NAL units, sps={avc.SequenceParameterSets} pps={avc.PictureParameterSets} idr={avc.InstantaneousRefreshFrames}, "
                     + $"decode verified with orientation)"
                 : "FAIL GPU H.264 encoder: " + DescribeFailure(created, submitted, totalFrames, initChunks, mediaChunks, report, avc, decodeFailure);
@@ -391,7 +456,29 @@ internal static class GpuStreamSelfTest
         {
             builder.Append("the AVC elementary stream failed validation: ").Append(avc.Describe()).Append("; ");
         }
+        // Conditions that are not covered by a counter or a report must still be
+        // named, otherwise a failing run reports "unspecified" and cannot be diagnosed.
+        if (builder.Length == 0)
+        {
+            builder.Append("one of the ordering, geometry or cadence checks failed while every counter looked healthy: ")
+                .Append($"initFirst={initChunks == 1}, mediaChunks={mediaChunks}, ")
+                .Append($"reported={report.Width}x{report.Height}, samples={report.SampleCount}, ")
+                .Append($"mseCompatible={report.IsMseCompatible}, avcDecodable={avc.IsDecodable}");
+        }
         return builder.Length == 0 ? "unspecified encoder failure." : builder.ToString();
+    }
+
+    /// <summary>True when the retained fragment prefix is contiguous from sequence zero.</summary>
+    private static bool IsOrdered(IReadOnlyList<Mp4Chunk> chunks)
+    {
+        for (var index = 0; index < chunks.Count; index++)
+        {
+            if (chunks[index].Sequence != index)
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     /// <summary>Deterministic, redistributable test pattern with a high-contrast top-left marker.</summary>

@@ -17,7 +17,11 @@ internal sealed record GpuEncoderOptions(
     // obstacle instead of guessing.
     bool PreferHardware = true,
     bool LowLatency = true,
-    bool HintFragmentDuration = true);
+    bool HintFragmentDuration = true,
+    // Diagnostics only. The hardware encoder wedges above 720p when asked for more
+    // than the 30 FPS fallback, so that combination is refused unless a probe
+    // explicitly asks to reproduce the failure.
+    bool AllowUnstableRate = false);
 
 /// <summary>
 /// Encodes captured BGRA frames to hardware-accelerated H.264 inside a
@@ -92,8 +96,7 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
         GpuEncoderOptions options,
         out MediaFoundationH264Encoder? encoder,
         out string failure)
-    {
-        encoder = null;
+    {        encoder = null;
         if (options.Width < 64 || options.Height < 64
             || options.Width > 4096 || options.Height > 4096
             || (long)options.Width * options.Height > 10_000_000)
@@ -110,6 +113,21 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
         if (options.BitrateBitsPerSecond < 500_000 || options.BitrateBitsPerSecond > 80_000_000)
         {
             failure = "The requested GPU encode bitrate is outside the supported window.";
+            return false;
+        }
+        // Measured on this machine: the hardware H.264 encoder accepts 1920x1080 at
+        // 60 FPS for about 260 frames and then stops accepting frames indefinitely.
+        // A wedged encoder cannot be cancelled, so the combination is refused up
+        // front for hardware; the software encoder was measured stable at 60 FPS
+        // and 1080p, so the caller can retry without hardware. Kept as a pure
+        // predicate so the policy is unit tested without creating an encoder.
+        if (options.PreferHardware
+            && !options.AllowUnstableRate
+            && IsUnstableHardwareRate(options.Width, options.Height, options.FrameRate))
+        {
+            failure = $"The Media Foundation hardware encoder is not stable above 720p at more than "
+                + $"{GpuStreamStatusLabel.FallbackFrameRate} FPS on this machine: it stops accepting frames after "
+                + "about four seconds of sustained encoding. Select the 30 FPS fallback, or retry with the software encoder.";
             return false;
         }
 
@@ -245,6 +263,18 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
         MediaFoundationInterop.SetAttributeUInt32(
             mediaType, MediaFoundationInterop.InterlaceMode, MediaFoundationInterop.VideoInterlaceProgressive);
     }
+
+    /// <summary>
+    /// True when the hardware encoder is known to be unstable for this size and rate.
+    ///
+    /// Measured on the development machine: hardware H.264 accepts 1920x1080 at
+    /// 60 FPS for about 260 frames and then stops accepting frames indefinitely,
+    /// while 1920x1080 at 30 FPS and 1280x720 at 60 FPS are stable for whole runs.
+    /// The threshold is the 30 FPS fallback rather than 1080p60 specifically, so a
+    /// larger capture at 60 FPS is refused for the same measured reason.
+    /// </summary>
+    internal static bool IsUnstableHardwareRate(int width, int height, int frameRate) =>
+        frameRate > GpuStreamStatusLabel.FallbackFrameRate && (long)width * height > 1280L * 720;
 
     /// <summary>
     /// Reports whether the encoder Media Foundation actually instantiated is an
@@ -458,6 +488,25 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
     }
 
     /// <summary>
+    /// Marks the encoder as unusable after a call that never returned.
+    ///
+    /// A hardware encoder that stops accepting frames blocks inside Media
+    /// Foundation, and a blocked native call cannot be cancelled. Once that has
+    /// happened the only safe behaviour is to record the failure, abandon the
+    /// thread and never call back into the encoder: finalising a stalled pipeline
+    /// would block the caller that is trying to tear the session down.
+    /// </summary>
+    internal void MarkStalled(string reason)
+    {
+        Interlocked.Exchange(ref _stalled, 1);
+        Fail(reason);
+    }
+
+    private int _stalled;
+
+    public bool IsStalled => Volatile.Read(ref _stalled) != 0;
+
+    /// <summary>
     /// Ends the input stream so Media Foundation flushes the encoder and the
     /// final fragment. The encoder stays usable for draining afterwards, which is
     /// what lets a test prove the last fragment is a well-formed one.
@@ -471,6 +520,11 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
                 return;
             }
             _finalized = true;
+        }
+        if (IsStalled)
+        {
+            // Calling into a blocked pipeline would block this caller too.
+            return;
         }
         try
         {

@@ -765,6 +765,20 @@ public static class SelfTests
             Equal(4, samples);
             True(!Mp4StreamInspector.TryReadFragmentSampleCount(new byte[] { 0, 0, 0, 8, 0x66, 0x72, 0x65, 0x65 }, out _));
 
+            // The hardware encoder wedges above 720p when asked for more than the
+            // 30 FPS fallback, so that combination is refused before any Media
+            // Foundation object is created and the caller can retry with the
+            // software encoder or the fallback rate.
+            True(MediaFoundationH264Encoder.IsUnstableHardwareRate(1920, 1080, 60));
+            True(MediaFoundationH264Encoder.IsUnstableHardwareRate(2560, 1440, 60));
+            True(!MediaFoundationH264Encoder.IsUnstableHardwareRate(1920, 1080, 30));
+            True(!MediaFoundationH264Encoder.IsUnstableHardwareRate(1280, 720, 60));
+            True(!MediaFoundationH264Encoder.IsUnstableHardwareRate(960, 540, 60));
+            True(!MediaFoundationH264Encoder.TryCreate(
+                new GpuEncoderOptions(1920, 1080, 60, 12_000_000, true, TimeSpan.FromMilliseconds(100)),
+                out var unstable, out var unstableReason));
+            True(unstable is null && unstableReason.Contains("not stable above 720p", StringComparison.Ordinal));
+
             // The captured-frame gate is shared by both media paths.
             var uniform = new byte[64 * 64 * 4];
             for (var index = 3; index < uniform.Length; index += 4) uniform[index] = 255;
