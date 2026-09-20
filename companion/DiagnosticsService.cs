@@ -107,6 +107,7 @@ public static class DiagnosticsService
         {
             report.Notes.Add("Backend: " + backendStatus);
         }
+        report.Notes.Add("Capture backend: " + CaptureBackends.Describe(CaptureBackends.Availability));
         return report;
     }
 }

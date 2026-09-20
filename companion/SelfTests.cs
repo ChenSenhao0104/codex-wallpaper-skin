@@ -988,6 +988,53 @@ public static class SelfTests
             True(FrameSignature.Compute(first.AsSpan(0, first.Length - 4)) != firstSignature);
             True(!FrameSignature.ShouldPublish(0, 0, hasPublished: true));
         });
+        Check("capture backend selection documents the fallback", () =>
+        {
+            var supported = new CaptureBackendAvailability(true, 26200, true, "Windows Graphics Capture activates on Windows build 26200");
+            var unsupported = new CaptureBackendAvailability(true, 17763, false, "Windows build 17763 predates window capture (requires build 18362 or newer)");
+            var foreign = new CaptureBackendAvailability(false, 0, false, "this platform is not Windows");
+
+            // Windows Graphics Capture is preferred by the specification but is not
+            // implemented yet, so every configuration selects the documented
+            // fallback instead of pretending otherwise.
+            foreach (var availability in new[] { supported, unsupported, foreign })
+            {
+                Equal(CaptureBackends.ImplementedCaptureBackend, CaptureBackends.Select(availability));
+                Equal(CaptureBackend.PrintWindow, CaptureBackends.Select(availability));
+            }
+            True(CaptureBackends.ImplementedCaptureBackend != CaptureBackend.WindowsGraphicsCapture);
+
+            var whenAvailable = CaptureBackends.Describe(supported);
+            True(whenAvailable.Contains("PrintWindow", StringComparison.Ordinal));
+            True(whenAvailable.Contains("documented fallback", StringComparison.Ordinal));
+            True(whenAvailable.Contains("available on this system", StringComparison.Ordinal));
+            True(whenAvailable.Contains("not implemented by this build", StringComparison.Ordinal));
+
+            var whenUnavailable = CaptureBackends.Describe(unsupported);
+            True(whenUnavailable.Contains("documented fallback", StringComparison.Ordinal));
+            True(whenUnavailable.Contains("unavailable because", StringComparison.Ordinal));
+            // The reason must carry through so Doctor can explain the fallback.
+            True(whenUnavailable.Contains("18362", StringComparison.Ordinal));
+            True(CaptureBackends.Describe(foreign).Contains("not Windows", StringComparison.Ordinal));
+
+            foreach (var backend in Enum.GetValues<CaptureBackend>())
+            {
+                True(CaptureBackends.BackendName(backend).Length is > 0 and <= 64);
+            }
+            // The compile-time floor matches the documented Windows release.
+            Equal(18362, CaptureBackends.MinimumGraphicsCaptureBuild);
+
+            // The real probe must produce a self-consistent verdict on this machine.
+            var detected = CaptureBackends.Detect();
+            Equal(OperatingSystem.IsWindows(), detected.IsWindows);
+            if (detected.IsWindows)
+            {
+                True(detected.OsBuild > 0);
+                Equal(detected.GraphicsCaptureActivatable, detected.WindowsGraphicsCaptureSupported);
+                True(detected.Reason.Length is > 0 and <= 200);
+            }
+            True(!detected.WindowsGraphicsCaptureSupported || detected.OsBuild >= CaptureBackends.MinimumGraphicsCaptureBuild);
+        });
         Check("native frames are presented atomically", () =>
         {
             var bootstrap = CdpInjectionService.BootstrapScript;

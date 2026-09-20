@@ -18,6 +18,8 @@ Three increments are recorded here.
 
 **Increment 5** covers the part of section 3 that can be implemented and verified without a live Wallpaper Engine session: steady-state transport cost. A captured surface that is identical to the frame already on screen is no longer re-encoded or re-sent, one sampled pass now serves both the quality gate and the change check, and the skip is visible in Doctor as an `unchanged` counter.
 
+**Increment 6** completes section 3's *documented fallback* branch. `CaptureBackends` probes the machine with P/Invoke only (activating the `Windows.Graphics.Capture.GraphicsCaptureSession` runtime class on a dedicated MTA thread), records whether Windows Graphics Capture is actually usable and why, selects the implemented path explicitly, and reports it in Doctor and in the capture metrics — so the fallback is named at runtime rather than implied.
+
 ### Changed boundaries
 
 | Area | Before | After |
@@ -71,12 +73,21 @@ Codex is never terminated, and the coordinator never attaches to a listener that
 
 | Section 3 requirement | Status | Notes |
 | --- | --- | --- |
-| Prefer Windows Graphics Capture backed by D3D11 | **not implemented** | The production path is still `PrintWindow` on a private `-playInWindow` surface. See the decision request in the hand-off notes: hand-rolled WGC/D3D11 COM interop cannot be validated in this environment, and the alternative (a `Vortice.Windows` package reference) would add the project's first external dependency. |
-| Documented fallback where WGC is unavailable | documented | The `PrintWindow` path is the fallback and is described here and in section 8; nothing is silent about which path is active. |
+| Prefer Windows Graphics Capture backed by D3D11 | **not implemented** | The production path is still `PrintWindow`. The blocker is concrete and build-time, not conceptual: Windows Graphics Capture needs the `Microsoft.Windows.SDK.NET.Ref` projection (a `net8.0-windows10.0.19041.0` target), that targeting pack is not installed on this machine, and NuGet is unreachable from this environment, so such a project cannot be restored or built here. Hand-rolled WinRT/D3D11 interop would be ~600+ lines of native ABI code that cannot be executed or validated in this environment at all, so it is deliberately not committed untested. |
+| Documented fallback where WGC is unavailable | **implemented** | `CaptureBackends` probes the machine, selects the implemented backend explicitly, and reports it in Doctor and in the capture metrics line. Nothing about the active path is implicit. |
 | Avoid full-frame JPEG/Base64/CDP transfer in the steady state | **partly implemented** | An unchanged surface is no longer encoded or transported, and only genuinely changed frames are sent. Frames are still JPEG/Base64 over CDP when they do change. |
 | Preserve aspect ratio and composition at the actual viewport/DPI | implemented | The render window is created from the Codex viewport in device pixels; the pointer mapping reverses the resulting letterbox. Visual confirmation still needs the live session. |
 | Atomic presentation and last known-good frame | implemented | Off-screen decode plus `onload` swap; rejected and unchanged frames leave the visible frame untouched. |
 | Reject empty, uniform, stale, partial and low-resolution frames | **mostly implemented** | Empty, uniform/black/white, over/under-sized and over-budget frames are rejected before transport. A partially painted surface that is not uniform (for example half black) is not detected; detecting it reliably without rejecting legitimate flat regions needs live data. |
+
+Probe result on the development machine (Windows build 26200, recorded 2026-09-20):
+
+```
+Capture backend: PrintWindow on a private play-in-window surface (documented fallback;
+Windows Graphics Capture is available on this system but is not implemented by this build yet)
+```
+
+So the probe is exercised for real, not only against synthetic inputs: it successfully activates the capture runtime class on a machine where Windows Graphics Capture *is* available, which is exactly the environment where implementing it later will be verifiable.
 
 ## 5. How section 5 is satisfied
 
@@ -103,7 +114,7 @@ dotnet ./companion/bin/Debug/net8.0-windows/win-x64/CodexWallpaperSkin.dll --sel
 node ./scripts/runtime-smoke-test.mjs
 ```
 
-`--self-test` covers 38 checks, including the 21 recovery, queue, invocation, eligibility, input, backend-state and frame checks added by these increments. `scripts/runtime-smoke-test.mjs` additionally exercises the atomic native frame swap, the last-known-good retention on a failed decode, ordered input delivery (buttons, wheel, leave), movement coalescing, the existing image/video/scene/palette paths, hidden-document pause, cleanup and mismatch refusal.
+`--self-test` covers 39 checks, including the 22 recovery, queue, invocation, eligibility, input, backend-state, capture-backend and frame checks added by these increments. `scripts/runtime-smoke-test.mjs` additionally exercises the atomic native frame swap, the last-known-good retention on a failed decode, ordered input delivery (buttons, wheel, leave), movement coalescing, the existing image/video/scene/palette paths, hidden-document pause, cleanup and mismatch refusal.
 
 Synthetic fixtures only:
 
@@ -118,7 +129,7 @@ The local manual protocol in `docs/compatibility/WALLPAPER_ENGINE_MATRIX.md` req
 
 ## 8. Known limitations and fallbacks
 
-- The high-fidelity capture path still uses `PrintWindow` on a private `-playInWindow` surface. Windows Graphics Capture with D3D11 (section 3) is not implemented; the quality gate, unchanged-frame skip and atomic presentation mitigate the visible symptoms and the transport cost, but each changed frame is still a full-frame JPEG transfer.
+- The high-fidelity capture path still uses `PrintWindow` on a private `-playInWindow` surface. Windows Graphics Capture with D3D11 is not implemented because the `Microsoft.Windows.SDK.NET.Ref` projection cannot be restored in this environment (not installed locally, NuGet unreachable), and untested hand-rolled WinRT/D3D11 interop was deliberately not committed. The documented-fallback path is reported at runtime by `CaptureBackends`. Each changed frame is still a full-frame JPEG transfer; the unchanged-frame skip and atomic presentation mitigate the cost and the visible symptoms.
 - An unchanged surface is detected from a sampled fingerprint, not from a full-frame comparison, so a change confined entirely to unsampled rows could be missed until the next change in a sampled row. The sample covers up to 48 evenly spaced rows.
 - `-playInWindow` capture is capped at 1920x1200 and 10/15 FPS by the existing scene-quality controls.
 - Input is delivered by `PostMessage` to the private render window, which is what interactive Scenes consume; a Scene that requires real OS pointer capture may still behave differently, and that cannot be judged without the live session.

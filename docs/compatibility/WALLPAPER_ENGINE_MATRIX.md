@@ -72,6 +72,7 @@ Fill this table during product convergence; it evaluates behavior, not authors o
 | Product backend states (native / reduced / safe / preview / unsupported) |  | pass (auto) |  | `--self-test`: mode-to-state mapping and the five state names. |
 | Native capture degraded or stopped |  | pass (auto) |  | `--self-test`: reduced-frame-rate and failed classification, bounded backoff, and the shared labeled-fallback path. Live end-to-end recovery still needs a real Wallpaper Engine session. |
 | Unchanged surface is not re-transported |  | pass (auto) |  | `--self-test`: fingerprint stability, invalidation on a single changed sample, prefix separation and first-frame publication. |
+| Capture backend is named at runtime |  | pass (auto + probe) |  | `--self-test`: selection and description for supported, unsupported and non-Windows machines; the real probe runs in `--doctor` and reports `PrintWindow … documented fallback` with the Windows Graphics Capture verdict. |
 | Controller opened before Codex after Windows restart |  | pass (auto) |  | `--self-test`: coordinator activates the verified CDP flow, waits for readiness, then applies the queued wallpaper. |
 | Codex already open without CDP |  | pass (auto) |  | `--self-test`: no activation, no attach, wallpaper retained as queued, `LastAppliedWallpaperId` untouched. |
 | Empty/gray/transient frame |  | pass (auto) |  | `--self-test` frame-quality gate plus the Node smoke test's failed-decode last-known-good check. |

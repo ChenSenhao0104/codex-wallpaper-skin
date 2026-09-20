@@ -122,7 +122,8 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
 
     public string MetricsSummary =>
         $"capture {_windowWidth}x{_windowHeight} at {_frameRate} FPS ({EffectiveFrameRate:0.0} measured), "
-        + $"{PublishedFrameCount} published, {RejectedFrameCount} rejected, {SkippedUnchangedFrameCount} unchanged"
+        + $"{PublishedFrameCount} published, {RejectedFrameCount} rejected, {SkippedUnchangedFrameCount} unchanged, "
+        + $"backend {CaptureBackends.BackendName(CaptureBackends.ImplementedCaptureBackend)}"
         + (LastRejectionReason.Length == 0 ? string.Empty : $" (last: {LastRejectionReason})")
         + (FailureReason.Length == 0 ? string.Empty : $" (stopped: {FailureReason})");
 
