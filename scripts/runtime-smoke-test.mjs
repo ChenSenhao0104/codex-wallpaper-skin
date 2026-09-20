@@ -131,8 +131,31 @@ class MockElement {
   get src() { return this._src; }
 }
 
+class MockImageElement extends MockElement {
+  constructor() { super('img'); }
+}
+
+class MockCanvasElement extends MockElement {
+  constructor() {
+    super('canvas');
+    this.drawCount = 0;
+    this.context = {
+      drawImage: () => { this.drawCount++; },
+      getImageData: () => {
+        if (paletteReadFailures > 0) {
+          paletteReadFailures--;
+          throw new Error('mock frame is not paintable yet');
+        }
+        return { data: canvasPixels };
+      }
+    };
+  }
+  getContext() { return this.context; }
+}
+
 globalThis.HTMLElement = MockElement;
-globalThis.HTMLImageElement = MockElement;
+globalThis.HTMLImageElement = MockImageElement;
+globalThis.HTMLCanvasElement = MockCanvasElement;
 globalThis.innerWidth = 1200;
 globalThis.innerHeight = 800;
 const windowListeners = new Map();
@@ -184,20 +207,8 @@ globalThis.document = {
   body,
   hidden: false,
   createElement(tagName) {
-    if (tagName === 'canvas') {
-      const canvas = new MockElement('canvas');
-      canvas.getContext = () => ({
-        drawImage() {},
-        getImageData() {
-          if (paletteReadFailures > 0) {
-            paletteReadFailures--;
-            throw new Error('mock frame is not paintable yet');
-          }
-          return { data: canvasPixels };
-        }
-      });
-      return canvas;
-    }
+    if (tagName === 'canvas') return new MockCanvasElement();
+    if (tagName === 'img') return new MockImageElement();
     return new MockElement(tagName);
   },
   querySelectorAll(selector) {
@@ -323,12 +334,17 @@ assert(!navigation.hasAttribute('data-cws-surface'), 'nested semantic panel woul
 assert(!inertOverlay.hasAttribute('data-cws-surface'), 'pointer-inert overlay was incorrectly tinted');
 
 const captureLease = 'capturelease1234567890';
+const initialCaptureImage = window.__codexWallpaperSkin.media;
 assert(window.__codexWallpaperSkinBeginCapturedStream(captureLease) === true, 'native capture lease was rejected');
 const preCaptureMedia = window.__codexWallpaperSkin.media;
+assert(preCaptureMedia?.tagName === 'CANVAS' && !initialCaptureImage.isConnected,
+  'native capture did not install its persistent canvas');
+const drawCountBeforeFrame = preCaptureMedia.drawCount;
 assert(window.__codexWallpaperSkinSetCapturedFrame(captureLease, btoa('mock-jpeg-frame')) === true,
   'native capture frame was rejected');
-assert(window.__codexWallpaperSkin.media !== preCaptureMedia && !preCaptureMedia.isConnected,
-  'decoded native frame did not atomically replace the previous image element');
+assert(window.__codexWallpaperSkin.media === preCaptureMedia && preCaptureMedia.isConnected
+  && preCaptureMedia.drawCount > drawCountBeforeFrame,
+  'decoded native frame was not committed to the persistent canvas');
 windowListeners.get('pointermove')?.({ clientX: 300, clientY: 600 });
 windowListeners.get('pointerdown')?.({ clientX: 300, clientY: 600, buttons: 1 });
 windowListeners.get('wheel')?.({ clientX: 300, clientY: 600, deltaY: -120 });
@@ -350,19 +366,19 @@ assert(window.__codexWallpaperSkinSetCapturedFrame(captureLease, btoa('deferred-
 assert(window.__codexWallpaperSkin.media === lastGoodCaptureMedia,
   'an undecoded native frame replaced the last known-good frame');
 const deferredCaptureMedia = window.__codexWallpaperSkin.captureStaging;
+const drawCountBeforeDeferredFrame = lastGoodCaptureMedia.drawCount;
 globalThis.deferMediaDecode = false;
 deferredCaptureMedia.onload();
-assert(window.__codexWallpaperSkin.media === deferredCaptureMedia && !lastGoodCaptureMedia.isConnected,
-  'decoded native frame did not complete the atomic buffer swap');
-assert(window.__codexWallpaperSkin.media.src.startsWith('data:image/jpeg;base64,'),
-  'native capture frame was not committed to the background image');
+assert(window.__codexWallpaperSkin.media === lastGoodCaptureMedia && lastGoodCaptureMedia.isConnected
+  && lastGoodCaptureMedia.drawCount > drawCountBeforeDeferredFrame,
+  'decoded native frame did not update the persistent canvas');
 assert(window.__codexWallpaperSkinSetCapturedFrame('stalelease123456789', btoa('stale')) === false,
   'a stale native capture stream could overwrite the active lease');
 
 window.__codexWallpaperSkinSetSettings({ ...settings, autoPalette: false });
 assert(!root.classList.contains('cws-palette'), 'palette toggle did not turn off');
 assert(root.style.getPropertyValue('--cws-surface-rgb') === '', 'turning palette off retained stale palette variables');
-assert(window.__codexWallpaperSkin.media?.tagName === 'IMG', 'turning palette off removed the background');
+assert(window.__codexWallpaperSkin.media?.tagName === 'CANVAS', 'turning palette off removed the background');
 
 document.hidden = true;
 const videoToken = 'smoke-video';

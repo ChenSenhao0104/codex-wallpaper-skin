@@ -56,15 +56,18 @@ Automated/local backend evidence for the Codex candidate (not a substitute for t
 - Nine installed Scene projects (`2914257158`, `2935530316`, `3798584436`, `3801532994`, `3800850100`, `3799703549`, `3803167460`, `3799253558`, `3796846129`) each passed WGC/D3D11 initialization plus three consecutive encoded frames.
 - The real-Scene smoke route also exercises 30 Hz pointer movement, left-button transitions and a wheel event; visual interaction still requires the 60-second Codex UI protocol above.
 - Pastel (`3494484288`) and the Web project (`3756621387`) were not installed at the time of this run, so no new result is claimed for them.
+- Manual testing of commit `1a1c3c7` found periodic disappearance, a stale Makima frame appearing after switching to Saki, and visibly reduced Lofi frame rate. That commit therefore fails the product gate despite passing short capture tests.
+- The follow-up candidate binds an immutable stream lease to each Scene, invalidates it before replacement, uses one persistent Canvas instead of replacing DOM/texture nodes every frame, and preserves WGC after a no-new-frame timeout. Retest is required before marking these rows as passing.
+- Post-fix private-window soak evidence: Saki completed 60 seconds with 555 frames / 1368 pointer samples; Makima completed a subsequent 60-second run with 554 frames / 1364 pointer samples. This proves the private WGC source can remain alive, but it does not replace the Codex UI retest.
 - No Workshop media or captured frame was retained in the repository or test artifact.
 
 | Workshop ID / control | Codex candidate | DeepSeek candidate | Converged product | Notes/evidence |
 | --- | --- | --- | --- | --- |
-| 2935530316 |  |  |  |  |
+| 2935530316 | Retest pending; `1a1c3c7` failed stability |  |  |  |
 | 3494484288 |  |  |  |  |
-| 2914257158 |  |  |  |  |
-| 3798584436 |  |  |  |  |
-| 3801532994 |  |  |  |  |
+| 2914257158 | Retest pending; `1a1c3c7` showed stale Makima frame/disappearance |  |  |  |
+| 3798584436 | Retest pending; `1a1c3c7` had visibly low frame rate |  |  |  |
+| 3801532994 | Retest pending; `1a1c3c7` disappeared during playback |  |  |  |
 | 3800850100 |  |  |  |  |
 | 3799703549 |  |  |  |  |
 | 3803167460 |  |  |  |  |

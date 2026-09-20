@@ -70,8 +70,8 @@ public static class SelfTests
                 SceneFrameRate = 44,
                 SceneResolutionScale = 0.1
             }.Normalize();
-            Equal(0d, settings.FocusX);
-            Equal(100d, settings.FocusY);
+            Equal(-50d, settings.FocusX);
+            Equal(200d, settings.FocusY);
             Equal(1d, settings.Opacity);
             Equal(0d, settings.BlackOverlay);
             Equal(1d, settings.PaletteStrength);
@@ -370,7 +370,7 @@ public static class SelfTests
             True(!CdpInjectionService.BootstrapScript.Contains("body > :not", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("canvas.width = 32", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("cws-palette", StringComparison.Ordinal));
-            True(CdpInjectionService.BootstrapScript.Contains("existing.version === 13", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("existing.version === 14", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinBeginCapturedStream", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinSetCapturedFrame", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinGetCapturedPointer", StringComparison.Ordinal));
@@ -398,6 +398,7 @@ public static class SelfTests
             True(!CdpInjectionService.BootstrapScript.Contains("fetch(", StringComparison.Ordinal));
             True(!CdpInjectionService.BootstrapScript.Contains("XMLHttpRequest", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("captureStaging", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("HTMLCanvasElement", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("capturePointer.buttons", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("capturePointer.wheel", StringComparison.Ordinal));
         });

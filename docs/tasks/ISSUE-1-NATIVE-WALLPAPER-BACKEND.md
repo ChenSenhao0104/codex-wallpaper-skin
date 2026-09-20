@@ -14,6 +14,8 @@ This is one shared specification for the Codex and DeepSeek implementation branc
 4. Preview fallbacks are low-resolution GIF/JPEG assets. Displaying them with `cover` explains crop, enlargement and blur; it cannot reproduce real Scene behavior.
 5. The first native prototype captures with `PrintWindow`, encodes every frame as JPEG, transports Base64 through CDP and immediately replaces one image source. There is no robust empty/gray/transient-frame rejection or double-buffer/last-good-frame presentation, which is consistent with the reported periodic flashes.
 6. Pointer forwarding is incomplete and coupled to captured frames. It does not yet provide independent, correctly scaled move/down/up/wheel input suitable for the broad range of interactive scenes.
+7. A first WGC implementation still sends every frame as Base64 JPEG through serialized CDP evaluations. It is useful as a compatibility backend, but its 10–15 FPS ceiling and repeated CPU encode/browser decode path cannot match Wallpaper Engine's direct desktop compositor output.
+8. A mutable process-wide capture token allowed a slow frame from the previous Scene to borrow the replacement Scene's token. This explains a confirmed stale Makima frame appearing during Saki playback; stream identity must be immutable and bound to one session.
 
 ## Safety and privacy boundaries
 
@@ -52,6 +54,7 @@ This is one shared specification for the Codex and DeepSeek implementation branc
 
 - Prefer Windows Graphics Capture backed by D3D11 for the production high-fidelity path. A documented fallback may be retained for systems where WGC is unavailable.
 - Avoid full-frame JPEG/Base64/CDP transfer as the steady-state architecture where practical.
+- Treat the current JPEG/CDP route as reduced-frame-rate compatibility unless measured evidence shows otherwise. A future full-fidelity route must use a bounded hardware video/streaming path or another design that avoids per-frame Base64 evaluation; it must preserve the same security and Restore boundaries.
 - Preserve aspect ratio and source composition at the actual Codex viewport/DPI. Do not enlarge a Workshop preview to masquerade as a live scene.
 - Present frames atomically (for example, double buffering) and retain the last known-good frame.
 - Reject empty, uniform gray/black, obviously stale, partial and implausibly low-resolution frames without flashing them to the user.

@@ -112,8 +112,8 @@ public sealed class WallpaperSettings
 
     public WallpaperSettings Normalize()
     {
-        FocusX = Math.Clamp(FocusX, 0, 100);
-        FocusY = Math.Clamp(FocusY, 0, 100);
+        FocusX = Math.Clamp(FocusX, -100, 200);
+        FocusY = Math.Clamp(FocusY, -100, 200);
         Opacity = Math.Clamp(Opacity, 0, 1);
         BlackOverlay = Math.Clamp(BlackOverlay, 0, 0.9);
         PaletteStrength = Math.Clamp(PaletteStrength, 0, 1);

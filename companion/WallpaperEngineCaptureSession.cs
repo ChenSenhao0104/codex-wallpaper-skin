@@ -50,6 +50,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private int _frameRate;
     private bool _pauseWhenHidden;
     private volatile bool _lastPageHidden;
+    private byte[] _lastEncodedFrame;
     private readonly double _baseRate;
     private readonly double _baseVolume;
     private int _lastPointerButtons;
@@ -71,6 +72,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         _windowHandle = windowHandle;
         _graphicsCapture = graphicsCapture;
         InitialFrame = initialFrame;
+        _lastEncodedFrame = initialFrame;
         _frameRate = NormalizeFrameRate(frameRate);
         _pauseWhenHidden = pauseWhenHidden;
         _baseRate = baseRate;
@@ -246,16 +248,30 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private async Task<byte[]> CaptureNextFrameAsync(CancellationToken cancellationToken)
     {
         var graphicsCapture = _graphicsCapture;
-        if (graphicsCapture is null) return CaptureJpeg(_windowHandle);
+        if (graphicsCapture is null)
+        {
+            var compatibleFrame = CaptureJpeg(_windowHandle);
+            _lastEncodedFrame = compatibleFrame;
+            return compatibleFrame;
+        }
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(3));
-            return EncodeCapturedFrame(await graphicsCapture.ReadFrameAsync(timeout.Token));
+            var frame = EncodeCapturedFrame(await graphicsCapture.ReadFrameAsync(timeout.Token));
+            _lastEncodedFrame = frame;
+            return frame;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (OperationCanceledException)
+        {
+            // A Scene may intentionally stop producing new frames while it is
+            // visually static. Keep the last verified WGC frame instead of
+            // permanently downgrading the whole session to PrintWindow.
+            return _lastEncodedFrame;
         }
         catch
         {
@@ -265,7 +281,9 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
             {
                 await graphicsCapture.DisposeAsync();
             }
-            return CaptureJpeg(_windowHandle);
+            var compatibleFrame = CaptureJpeg(_windowHandle);
+            _lastEncodedFrame = compatibleFrame;
+            return compatibleFrame;
         }
     }
 

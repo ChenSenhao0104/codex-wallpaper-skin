@@ -125,9 +125,11 @@
                         <ComboBox x:Name="FitCombo" SelectionChanged="SettingsChanged" Margin="0,3,0,10"/>
 
                         <DockPanel><TextBlock Text="Focus X"/><TextBlock x:Name="FocusXValue" DockPanel.Dock="Right" Cursor="Hand" ToolTip="Click to enter an exact value" Tag="FocusXSlider|Focus X|%|2" MouseLeftButtonUp="NumericValue_Click"/></DockPanel>
-                        <Slider x:Name="FocusXSlider" Minimum="0" Maximum="100" ValueChanged="SettingsChanged"/>
+                        <Slider x:Name="FocusXSlider" Minimum="-100" Maximum="200" ValueChanged="SettingsChanged"
+                                ToolTip="50% is centered. Extended values allow intentional panning beyond the normal CSS edge range."/>
                         <DockPanel><TextBlock Text="Focus Y"/><TextBlock x:Name="FocusYValue" DockPanel.Dock="Right" Cursor="Hand" ToolTip="Click to enter an exact value" Tag="FocusYSlider|Focus Y|%|2" MouseLeftButtonUp="NumericValue_Click"/></DockPanel>
-                        <Slider x:Name="FocusYSlider" Minimum="0" Maximum="100" ValueChanged="SettingsChanged"/>
+                        <Slider x:Name="FocusYSlider" Minimum="-100" Maximum="200" ValueChanged="SettingsChanged"
+                                ToolTip="50% is centered. Extended values allow intentional panning beyond the normal CSS edge range."/>
 
                         <DockPanel><TextBlock Text="Background opacity"/><TextBlock x:Name="OpacityValue" DockPanel.Dock="Right" Cursor="Hand" ToolTip="Click to enter an exact value" Tag="OpacitySlider|Background opacity|%|2" MouseLeftButtonUp="NumericValue_Click"/></DockPanel>
                         <Slider x:Name="OpacitySlider" Minimum="0" Maximum="100" ValueChanged="SettingsChanged"/>

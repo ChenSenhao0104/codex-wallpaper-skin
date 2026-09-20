@@ -13,13 +13,15 @@ public sealed class CdpInjectionService : IAsyncDisposable
     };
 
     private CdpClient? _client;
-    private WallpaperEngineCaptureSession? _captureSession;
-    private string? _captureToken;
+    private CaptureLease? _captureLease;
+    private readonly SemaphoreSlim _transitionLock = new(1, 1);
 
     public bool IsConnected => _client?.IsConnected == true;
-    public bool HasActiveCapture => _captureSession?.IsRunning == true;
-    public Task ActiveCaptureCompletion => _captureSession?.Completion ?? Task.CompletedTask;
+    public bool HasActiveCapture => _captureLease?.Session.IsRunning == true;
+    public Task ActiveCaptureCompletion => _captureLease?.Session.Completion ?? Task.CompletedTask;
     public CdpTarget? Target => _client?.Target;
+
+    private sealed record CaptureLease(WallpaperEngineCaptureSession Session, string Token);
 
     public async Task<CdpTarget> ConnectAsync(string endpoint, CancellationToken cancellationToken = default)
     {
@@ -88,6 +90,23 @@ public sealed class CdpInjectionService : IAsyncDisposable
         IProgress<double>? progress = null,
         CancellationToken cancellationToken = default)
     {
+        await _transitionLock.WaitAsync(cancellationToken);
+        try
+        {
+            return await ApplyCoreAsync(wallpaper, settings, progress, cancellationToken);
+        }
+        finally
+        {
+            _transitionLock.Release();
+        }
+    }
+
+    private async Task<WallpaperApplyResult> ApplyCoreAsync(
+        WallpaperEntry wallpaper,
+        WallpaperSettings settings,
+        IProgress<double>? progress,
+        CancellationToken cancellationToken)
+    {
         var client = RequireClient();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(MaximumApplyDuration);
@@ -118,21 +137,24 @@ public sealed class CdpInjectionService : IAsyncDisposable
                         var initial = await UploadAsync(
                             client, initialFrame, "wallpaper-engine-capture.jpg", "image", settings, null,
                             progress, operationToken);
-                        _captureToken = Guid.NewGuid().ToString("N");
+                        var captureToken = Guid.NewGuid().ToString("N");
                         var captureStarted = await client.EvaluateAsync(
-                            $"window.__codexWallpaperSkinBeginCapturedStream({Js(_captureToken)})",
+                            $"window.__codexWallpaperSkinBeginCapturedStream({Js(captureToken)})",
                             operationToken);
                         if (!ReadBoolean(captureStarted))
                         {
                             throw new InvalidOperationException("Codex rejected the native capture stream lease.");
                         }
-                        _captureSession = session;
-                        session.StartStreaming(PublishCapturedFrameAsync, ReadCapturedPointerAsync);
+                        var lease = new CaptureLease(session, captureToken);
+                        _captureLease = lease;
+                        session.StartStreaming(
+                            (frame, token) => PublishCapturedFrameAsync(lease, frame, token),
+                            token => ReadCapturedPointerAsync(lease, token));
                         return initial with
                         {
                             Mode = "wallpaper-engine-capture",
                             Warning = session.UsesWindowsGraphicsCapture
-                                ? "Rendered by Wallpaper Engine and streamed through Windows Graphics Capture/D3D11. "
+                                ? "Rendered by Wallpaper Engine and streamed through Windows Graphics Capture/D3D11 at a reduced frame rate. "
                                     + "Keep this controller running while the animated wallpaper is active."
                                 : "Rendered by Wallpaper Engine with the compatibility capture path because Windows Graphics Capture was unavailable. "
                                     + "Keep this controller running while the animated wallpaper is active."
@@ -285,9 +307,10 @@ public sealed class CdpInjectionService : IAsyncDisposable
         {
             throw new InvalidOperationException("The wallpaper runtime is no longer connected; reconnect and apply the wallpaper again.");
         }
-        if (_captureSession is not null)
+        var lease = _captureLease;
+        if (lease is not null)
         {
-            await _captureSession.UpdateSettingsAsync(settings, cancellationToken);
+            await lease.Session.UpdateSettingsAsync(settings, cancellationToken);
         }
     }
 
@@ -404,15 +427,15 @@ public sealed class CdpInjectionService : IAsyncDisposable
     }
 
     private async Task PublishCapturedFrameAsync(
+        CaptureLease lease,
         byte[] frame,
         CancellationToken cancellationToken)
     {
+        EnsureCurrentCapture(lease);
         var client = RequireClient();
         var encoded = Convert.ToBase64String(frame);
-        var token = _captureToken
-            ?? throw new InvalidOperationException("The native capture stream lease is no longer active.");
         var evaluation = await client.EvaluateAsync(
-            $"window.__codexWallpaperSkinSetCapturedFrame({Js(token)}, {Js(encoded)})",
+            $"window.__codexWallpaperSkinSetCapturedFrame({Js(lease.Token)}, {Js(encoded)})",
             cancellationToken);
         if (!ReadBoolean(evaluation))
         {
@@ -420,13 +443,14 @@ public sealed class CdpInjectionService : IAsyncDisposable
         }
     }
 
-    private async Task<CapturedPointer?> ReadCapturedPointerAsync(CancellationToken cancellationToken)
+    private async Task<CapturedPointer?> ReadCapturedPointerAsync(
+        CaptureLease lease,
+        CancellationToken cancellationToken)
     {
+        EnsureCurrentCapture(lease);
         var client = RequireClient();
-        var token = _captureToken
-            ?? throw new InvalidOperationException("The native capture stream lease is no longer active.");
         var evaluation = await client.EvaluateAsync(
-            $"window.__codexWallpaperSkinGetCapturedPointer({Js(token)})",
+            $"window.__codexWallpaperSkinGetCapturedPointer({Js(lease.Token)})",
             cancellationToken);
         try
         {
@@ -452,11 +476,33 @@ public sealed class CdpInjectionService : IAsyncDisposable
 
     private async Task StopCaptureAsync()
     {
-        var capture = Interlocked.Exchange(ref _captureSession, null);
-        _captureToken = null;
-        if (capture is not null)
+        var lease = Interlocked.Exchange(ref _captureLease, null);
+        if (lease is not null)
         {
-            await capture.DisposeAsync();
+            await lease.Session.DisposeAsync();
+            var client = _client;
+            if (client is { IsConnected: true })
+            {
+                try
+                {
+                    await client.EvaluateAsync(
+                        $"(() => {{ const s = window.__codexWallpaperSkin; if (!s || s.captureToken !== {Js(lease.Token)}) return false; s.captureToken = null; s.captureFrameBusy = false; if (s.captureStaging) {{ try {{ s.captureStaging.src = ''; }} catch (_) {{}} s.captureStaging = null; }} return true; }})()",
+                        CancellationToken.None);
+                }
+                catch
+                {
+                    // The next bootstrap/upload validates ownership again. A
+                    // disconnected page does not need a best-effort invalidation.
+                }
+            }
+        }
+    }
+
+    private void EnsureCurrentCapture(CaptureLease lease)
+    {
+        if (!ReferenceEquals(Volatile.Read(ref _captureLease), lease))
+        {
+            throw new InvalidOperationException("The native capture stream lease is no longer active.");
         }
     }
 
@@ -704,7 +750,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
             throw new Error('Refusing to inject: this is not a ready Codex app:// page.');
           }
           const existing = window.__codexWallpaperSkin;
-          const existingHealthy = existing && existing.version === 13 && !existing.disposed
+          const existingHealthy = existing && existing.version === 14 && !existing.disposed
             && existing.host?.isConnected && existing.style?.isConnected && existing.overlay?.isConnected
             && document.getElementById('codex-wallpaper-skin-host') === existing.host
             && document.getElementById('codex-wallpaper-skin-style') === existing.style
@@ -871,7 +917,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
           document.body.appendChild(host);
 
           const state = window.__codexWallpaperSkin = {
-            version: 13, disposed: false, style, host, overlay, media: null, assetUrl: null,
+            version: 14, disposed: false, style, host, overlay, media: null, assetUrl: null,
             sceneController: null, pendingSceneController: null,
             pendingMedia: null, pendingUrl: null, pendingCancel: null,
             uploads: new Map(), marked: new Set(), settings: null, rawPalette: null,
@@ -1126,6 +1172,23 @@ public sealed class CdpInjectionService : IAsyncDisposable
           };
           window.__codexWallpaperSkinBeginCapturedStream = token => {
             if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/.test(token)) return false;
+            const source = state.media;
+            if (source instanceof HTMLImageElement) {
+              const width = Math.max(1, source.naturalWidth || source.width);
+              const height = Math.max(1, source.naturalHeight || source.height);
+              const canvas = document.createElement('canvas');
+              canvas.width = width; canvas.height = height;
+              canvas.className = source.className;
+              canvas.style.cssText = source.style.cssText;
+              const context = canvas.getContext('2d', { alpha: false });
+              if (!context) return false;
+              context.drawImage(source, 0, 0, width, height);
+              host.insertBefore(canvas, state.overlay);
+              state.media = canvas;
+              source.remove();
+            } else if (!(source instanceof HTMLCanvasElement)) {
+              return false;
+            }
             state.captureToken = token;
             state.captureFrameBusy = false;
             state.captureStaging = null;
@@ -1141,13 +1204,14 @@ public sealed class CdpInjectionService : IAsyncDisposable
               throw new Error('The wallpaper runtime is no longer active.');
             }
             const media = state.media;
-            if (!(media instanceof HTMLImageElement) || !media.isConnected || media.parentNode !== state.host) {
+            if (!(media instanceof HTMLCanvasElement) || !media.isConnected || media.parentNode !== state.host) {
               throw new Error('The native capture target is unavailable.');
             }
             if (!state.captureFrameBusy) {
               state.captureFrameBusy = true;
               const nextSource = `data:image/jpeg;base64,${encoded}`;
               const staging = document.createElement('img');
+              staging.decoding = 'async';
               state.captureStaging = staging;
               const release = () => {
                 if (state.captureStaging === staging) state.captureStaging = null;
@@ -1155,15 +1219,18 @@ public sealed class CdpInjectionService : IAsyncDisposable
               };
               staging.onload = () => {
                 if (!state.disposed && token === state.captureToken && state.media === media) {
-                  // Real double buffering: the previous visible frame stays in
-                  // the host until its replacement has fully decoded. Swapping
-                  // whole image elements avoids a transient empty texture when
-                  // Chromium uploads a new source to the existing element.
-                  staging.className = media.className;
-                  staging.style.cssText = media.style.cssText;
-                  host.insertBefore(staging, state.overlay);
-                  state.media = staging;
-                  media.remove();
+                  // Keep one persistent compositor surface. The JPEG is
+                  // decoded off-screen and copied only after it is complete,
+                  // avoiding per-frame DOM and texture replacement.
+                  const width = Math.max(1, staging.naturalWidth);
+                  const height = Math.max(1, staging.naturalHeight);
+                  const context = media.getContext('2d', { alpha: false });
+                  if (context) {
+                    if (media.width !== width || media.height !== height) {
+                      media.width = width; media.height = height;
+                    }
+                    context.drawImage(staging, 0, 0, width, height);
+                  }
                 }
                 release();
               };

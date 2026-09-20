@@ -76,6 +76,13 @@ public static class Program
 
             var wallpaperEngineTestIndex = Array.FindIndex(args,
                 value => value.Equals("--we-capture-smoke-test", StringComparison.OrdinalIgnoreCase));
+            var soakTest = false;
+            if (wallpaperEngineTestIndex < 0)
+            {
+                wallpaperEngineTestIndex = Array.FindIndex(args,
+                    value => value.Equals("--we-capture-soak-test", StringComparison.OrdinalIgnoreCase));
+                soakTest = wallpaperEngineTestIndex >= 0;
+            }
             if (wallpaperEngineTestIndex >= 0)
             {
                 if (wallpaperEngineTestIndex + 1 >= args.Length)
@@ -87,7 +94,7 @@ public static class Program
                 {
                     throw new InvalidDataException("The capture smoke test accepts Wallpaper Engine Scene projects only.");
                 }
-                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(35));
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(soakTest ? 90 : 35));
                 await using var session = await WallpaperEngineCaptureSession.StartAsync(
                     wallpaper,
                     new WallpaperSettings { Muted = true, SceneFrameRate = 10, SceneResolutionScale = .75 },
@@ -113,19 +120,26 @@ public static class Program
                         return Task.FromResult<CapturedPointer?>(
                             new CapturedPointer(x, y, buttons, wheel, Hidden: false, Inside: true));
                     });
-                var streamDeadline = DateTimeOffset.UtcNow.AddSeconds(5);
-                while ((Volatile.Read(ref streamedFrames) < 3 || Volatile.Read(ref pointerSamples) < 50)
-                    && DateTimeOffset.UtcNow < streamDeadline)
+                var streamDeadline = DateTimeOffset.UtcNow.AddSeconds(soakTest ? 60 : 5);
+                while (DateTimeOffset.UtcNow < streamDeadline
+                    && (soakTest
+                        || Volatile.Read(ref streamedFrames) < 3
+                        || Volatile.Read(ref pointerSamples) < 50))
                 {
                     await Task.Delay(100, timeout.Token);
                 }
-                if (Volatile.Read(ref streamedFrames) < 3 || Volatile.Read(ref pointerSamples) < 50)
+                var minimumFrames = soakTest ? 300 : 3;
+                var minimumPointerSamples = soakTest ? 900 : 50;
+                if (Volatile.Read(ref streamedFrames) < minimumFrames
+                    || Volatile.Read(ref pointerSamples) < minimumPointerSamples)
                 {
                     throw new TimeoutException(
-                        "Wallpaper Engine capture/input did not stream three usable frames and fifty pointer samples within 5 seconds.");
+                        $"Wallpaper Engine capture/input stopped below the test threshold: "
+                        + $"{streamedFrames}/{minimumFrames} frames, {pointerSamples}/{minimumPointerSamples} pointer samples, "
+                        + $"session running={session.IsRunning}.");
                 }
                 Console.WriteLine(
-                    $"PASS Wallpaper Engine capture/input ({(session.UsesWindowsGraphicsCapture ? "WGC/D3D11" : "compatibility")}, {session.InitialFrame.Length} initial bytes, {streamedFrames} streamed frames, {pointerSamples} pointer samples)");
+                    $"PASS Wallpaper Engine {(soakTest ? "60-second soak" : "capture/input")} ({(session.UsesWindowsGraphicsCapture ? "WGC/D3D11" : "compatibility")}, {session.InitialFrame.Length} initial bytes, {streamedFrames} streamed frames, {pointerSamples} pointer samples)");
                 return 0;
             }
 
@@ -177,7 +191,7 @@ public static class Program
                 return await DeferredRestoreLauncher.RunAsync();
             }
 
-            Console.Error.WriteLine("Usage: CodexWallpaperSkin [--doctor [--json] | --restore | --auto-restore | --wait-and-restore | --self-test | --wgc-smoke-test | --we-capture-smoke-test <project.json>]");
+            Console.Error.WriteLine("Usage: CodexWallpaperSkin [--doctor [--json] | --restore | --auto-restore | --wait-and-restore | --self-test | --wgc-smoke-test | --we-capture-smoke-test <project.json> | --we-capture-soak-test <project.json>]");
             return 64;
         }
         catch (Exception exception)

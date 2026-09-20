@@ -493,7 +493,7 @@ public partial class MainWindow : Window
                 "live-scene" => " Live 2D scene rendering is active.",
                 "scene-partial" => " Live 2D scene rendering is active with unsupported layers omitted.",
                 "scene-static" => " The renderer used the full-resolution scene texture fallback.",
-                "wallpaper-engine-capture" => " Wallpaper Engine high-fidelity rendering and pointer interaction are active.",
+                "wallpaper-engine-capture" => " Wallpaper Engine native rendering and pointer forwarding are active through a reduced-frame-rate capture stream.",
                 "animated-preview" => " The low-resolution animated Workshop preview is active.",
                 "static-preview" => " The static Workshop preview fallback is active.",
                 "video" => " Direct video playback is active.",
