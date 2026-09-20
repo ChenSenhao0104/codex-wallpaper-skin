@@ -1114,6 +1114,55 @@ public static class SelfTests
                 server.DisposeAsync().AsTask().GetAwaiter().GetResult();
             }
         });
+        Check("frame transport can switch between CDP and the direct stream", () =>
+        {
+            var bootstrap = CdpInjectionService.BootstrapScript;
+            True(bootstrap.Contains("__codexWallpaperSkinTryDirectStream", StringComparison.Ordinal));
+            True(bootstrap.Contains("__codexWallpaperSkinRevertDirectStream", StringComparison.Ordinal));
+            True(bootstrap.Contains("captureTransport", StringComparison.Ordinal));
+            True(bootstrap.Contains("captureStreamUrl", StringComparison.Ordinal));
+            // Only a canonical loopback URL is ever accepted from the controller.
+            True(bootstrap.Contains(
+                "http:\\/\\/127\\.0\\.0\\.1:\\d{2,5}\\/stream\\?t=[A-Za-z0-9]{16,64}",
+                StringComparison.Ordinal));
+            // A refused or timed-out probe must leave the CDP path untouched.
+            True(bootstrap.Contains("resolve('cdp')", StringComparison.Ordinal));
+            True(bootstrap.Contains("finish('cdp')", StringComparison.Ordinal));
+            True(bootstrap.Contains("setTimeout(() => finish('cdp'), 1500)", StringComparison.Ordinal));
+            True(bootstrap.Contains("/probe?", StringComparison.Ordinal));
+            True(CdpInjectionService.ArtifactProbeScript.Contains("__codexWallpaperSkinTryDirectStream", StringComparison.Ordinal));
+            True(CdpInjectionService.CleanupScript.Contains("delete window.__codexWallpaperSkinTryDirectStream", StringComparison.Ordinal));
+            True(CdpInjectionService.CleanupVerificationScript.Contains("__codexWallpaperSkinRevertDirectStream", StringComparison.Ordinal));
+
+            // The two sinks name themselves, and the stream sink really forwards
+            // into the loopback server while the CDP sink still carries frames.
+            var server = new FrameStreamServer();
+            try
+            {
+                server.Start();
+                var streamSink = new StreamFrameSink(server);
+                Equal("stream", streamSink.Name);
+                streamSink.PublishAsync(Encoding.ASCII.GetBytes("sink-frame"), CancellationToken.None)
+                    .GetAwaiter().GetResult();
+                Equal(1, server.CaptureFrames);
+
+                byte[]? relayed = null;
+                var cdpSink = new CdpFrameSink((frame, _) =>
+                {
+                    relayed = frame;
+                    return Task.CompletedTask;
+                });
+                Equal("cdp", cdpSink.Name);
+                cdpSink.PublishAsync(Encoding.ASCII.GetBytes("cdp-frame"), CancellationToken.None)
+                    .GetAwaiter().GetResult();
+                True(relayed is not null);
+                Equal("cdp-frame", Encoding.ASCII.GetString(relayed!));
+            }
+            finally
+            {
+                server.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            }
+        });
         Check("native frames are presented atomically", () =>
         {
             var bootstrap = CdpInjectionService.BootstrapScript;

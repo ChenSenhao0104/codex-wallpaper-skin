@@ -64,6 +64,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private double _effectiveFrameRate;
     private string? _lastRejectionReason;
     private string? _failureReason;
+    private ICaptureFrameSink? _frameSink;
 
     private WallpaperEngineCaptureSession(
         string engineExecutable,
@@ -126,7 +127,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     public string MetricsSummary =>
         $"capture {_windowWidth}x{_windowHeight} at {_frameRate} FPS ({EffectiveFrameRate:0.0} measured), "
         + $"{PublishedFrameCount} published, {RejectedFrameCount} rejected, {SkippedUnchangedFrameCount} unchanged, "
-        + $"backend {CaptureBackends.BackendName(CaptureBackends.ImplementedCaptureBackend)}"
+        + $"backend {CaptureBackends.BackendName(CaptureBackends.ImplementedCaptureBackend)}, transport {FrameSinkName}"
         + (LastRejectionReason.Length == 0 ? string.Empty : $" (last: {LastRejectionReason})")
         + (FailureReason.Length == 0 ? string.Empty : $" (stopped: {FailureReason})");
 
@@ -205,15 +206,30 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     }
 
     public void StartStreaming(
-        Func<byte[], CancellationToken, Task> publishFrame,
+        ICaptureFrameSink frameSink,
         Func<CancellationToken, Task<CapturedPointer?>> readPointer)
     {
-        ArgumentNullException.ThrowIfNull(publishFrame);
+        ArgumentNullException.ThrowIfNull(frameSink);
         ArgumentNullException.ThrowIfNull(readPointer);
         if (_disposed) throw new ObjectDisposedException(nameof(WallpaperEngineCaptureSession));
         if (_streamTask is not null) throw new InvalidOperationException("Wallpaper Engine capture is already streaming.");
-        _streamTask = Task.Run(() => StreamAsync(publishFrame, readPointer, _lifetime.Token));
+        _frameSink = frameSink;
+        _streamTask = Task.Run(() => StreamAsync(readPointer, _lifetime.Token));
     }
+
+    /// <summary>
+    /// Switches the frame transport while streaming. Used when the browser
+    /// reports that the direct MJPEG stream is unusable, so recovery never needs
+    /// to restart the capture session.
+    /// </summary>
+    public void SetFrameSink(ICaptureFrameSink frameSink)
+    {
+        ArgumentNullException.ThrowIfNull(frameSink);
+        Volatile.Write(ref _frameSink, frameSink);
+    }
+
+    /// <summary>Name of the transport currently in use.</summary>
+    public string FrameSinkName => Volatile.Read(ref _frameSink)?.Name ?? "none";
 
     public async Task UpdateSettingsAsync(WallpaperSettings settings, CancellationToken cancellationToken = default)
     {
@@ -230,7 +246,6 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     }
 
     private async Task StreamAsync(
-        Func<byte[], CancellationToken, Task> publishFrame,
         Func<CancellationToken, Task<CapturedPointer?>> readPointer,
         CancellationToken cancellationToken)
     {
@@ -289,7 +304,11 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                         }
                         else if (outcome.Frame is not null && outcome.Quality.Acceptable)
                         {
-                            await publishFrame(outcome.Frame, cancellationToken);
+                            // The transport can change mid-stream, so read it each
+                            // frame instead of capturing it once.
+                            var sink = Volatile.Read(ref _frameSink)
+                                ?? throw new InvalidOperationException("The capture frame sink is unavailable.");
+                            await sink.PublishAsync(outcome.Frame, cancellationToken);
                             Interlocked.Increment(ref _publishedFrames);
                             RecordPublishedFrame();
                             Volatile.Write(ref _lastPublishedSignature, outcome.Signature);

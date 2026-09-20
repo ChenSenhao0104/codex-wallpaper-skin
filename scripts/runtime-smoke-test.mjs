@@ -134,12 +134,27 @@ globalThis.HTMLElement = MockElement;
 globalThis.HTMLImageElement = MockElement;
 
 // Native capture presents frames through an off-screen back buffer, so the mock
-// Image exposes an explicit decode outcome for the atomic-presentation test.
+// Image exposes an explicit decode outcome for the atomic-presentation test. It
+// also distinguishes the loopback probe from a data-URL frame, because the MJPEG
+// stream itself never finishes loading.
 globalThis.captureFrameDecode = 'succeed';
+globalThis.captureProbeDecode = 'fail';
 class MockImage extends MockElement {
   constructor() { super('IMG'); this.isCaptureBuffer = true; }
   set src(value) {
     this._src = value;
+    if (typeof value === 'string' && value.startsWith('http://')) {
+      if (!value.includes('/probe?')) return;
+      const probeMode = globalThis.captureProbeDecode;
+      setTimeout(() => {
+        if (probeMode === 'fail') { this.onerror?.(new Error('mock probe refusal')); return; }
+        this.complete = true;
+        this.naturalWidth = 1;
+        this.naturalHeight = 1;
+        this.onload?.();
+      }, 0);
+      return;
+    }
     const mode = globalThis.captureFrameDecode;
     if (mode === 'defer') return;
     setTimeout(() => {
@@ -410,6 +425,45 @@ windowListeners.get('pointerleave')?.({ clientX: 10, clientY: 10 });
 const leaveInput = window.__codexWallpaperSkinReadCapturePointer(captureLease);
 assert(leaveInput.events.some(event => event.kind === 'leave'), 'pointer leave was not reported');
 
+// Transport selection: only a proven loopback stream may replace the CDP path.
+const streamLease = 'streamlease1234567890';
+const streamUrl = 'http://127.0.0.1:45999/stream?t=0123456789abcdef0123456789abcdef';
+assert(window.__codexWallpaperSkinBeginCapturedStream(streamLease, streamUrl) === true,
+  'a capture lease with a stream URL was rejected');
+assert(window.__codexWallpaperSkin.captureStreamUrl === streamUrl, 'the loopback stream URL was not accepted');
+// Drain any frame decode still in flight from the previous block, so the next
+// assertion compares against a settled picture rather than a pending one.
+await tick();
+const mediaBeforeProbe = window.__codexWallpaperSkin.media.src;
+
+// A refused probe must leave the CDP path and the visible frame untouched.
+globalThis.captureProbeDecode = 'fail';
+assert(await window.__codexWallpaperSkinTryDirectStream(streamLease) === 'cdp',
+  'a refused loopback probe still switched the transport');
+assert(window.__codexWallpaperSkin.captureTransport === 'cdp', 'the transport changed despite a refused probe');
+assert(window.__codexWallpaperSkin.media.src === mediaBeforeProbe,
+  'a refused probe disturbed the visible frame');
+
+// A successful probe switches the transport and hands the layer to the stream,
+// without blanking what is already on screen.
+globalThis.captureProbeDecode = 'succeed';
+assert(await window.__codexWallpaperSkinTryDirectStream(streamLease) === 'stream',
+  'a successful loopback probe did not switch the transport');
+assert(window.__codexWallpaperSkin.captureTransport === 'stream', 'the transport was not recorded as stream');
+assert(window.__codexWallpaperSkin.media.src === streamUrl,
+  'the visible layer was not handed to the loopback stream');
+
+// Reverting goes back to CDP and leaves the picture alone.
+assert(window.__codexWallpaperSkinRevertDirectStream(streamLease) === true, 'reverting the direct stream failed');
+assert(window.__codexWallpaperSkin.captureTransport === 'cdp', 'reverting did not restore the CDP transport');
+assert(window.__codexWallpaperSkinRevertDirectStream('stalelease123456789') === false,
+  'a stale lease could revert the active direct stream');
+
+// A non-loopback or malformed URL is refused outright.
+assert(window.__codexWallpaperSkinBeginCapturedStream(streamLease, 'http://example.com/stream?t=0123456789abcdef0123456789abcdef') === true,
+  'the lease itself should still be accepted');
+assert(window.__codexWallpaperSkin.captureStreamUrl === null, 'a non-loopback stream URL was accepted');
+
 window.__codexWallpaperSkinSetSettings({ ...settings, autoPalette: false });
 assert(!root.classList.contains('cws-palette'), 'palette toggle did not turn off');
 assert(root.style.getPropertyValue('--cws-surface-rgb') === '', 'turning palette off retained stale palette variables');
@@ -485,4 +539,4 @@ try { bootstrap(); } catch { mismatchRefused = true; }
 assert(mismatchRefused, 'runtime did not fail closed when the Codex surface marker was missing');
 assert(Function(`return ${cleanupVerification}`)() === true, 'surface-mismatch refusal left runtime artifacts');
 
-process.stdout.write(`PASS runtime image/video/scene/palette/quality/hidden-pause/integrity/pending-cleanup/orphan-repair/restore/mismatch-refusal/atomic-native-frame/ordered-input-channel (${applied.palette.surface}, ${applied.palette.accent}, ${applied.palette.textContrast}:1)\n`);
+process.stdout.write(`PASS runtime image/video/scene/palette/quality/hidden-pause/integrity/pending-cleanup/orphan-repair/restore/mismatch-refusal/atomic-native-frame/ordered-input-channel/transport-selection (${applied.palette.surface}, ${applied.palette.accent}, ${applied.palette.textContrast}:1)\n`);
