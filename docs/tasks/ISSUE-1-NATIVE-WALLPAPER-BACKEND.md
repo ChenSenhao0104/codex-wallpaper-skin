@@ -16,6 +16,7 @@ This is one shared specification for the Codex and DeepSeek implementation branc
 6. Pointer forwarding is incomplete and coupled to captured frames. It does not yet provide independent, correctly scaled move/down/up/wheel input suitable for the broad range of interactive scenes.
 7. A first WGC implementation still sends every frame as Base64 JPEG through serialized CDP evaluations. It is useful as a compatibility backend, but its 10–15 FPS ceiling and repeated CPU encode/browser decode path cannot match Wallpaper Engine's direct desktop compositor output.
 8. A mutable process-wide capture token allowed a slow frame from the previous Scene to borrow the replacement Scene's token. This explains a confirmed stale Makima frame appearing during Saki playback; stream identity must be immutable and bound to one session.
+9. A hidden deferred-restore worker could outlive the GUI that created it, while frame delivery acknowledged queued JPEG data before Chromium had decoded and drawn it. Repeated switches could therefore leave an old worker alive or report success over a permanently busy staging image. GUI/worker ownership and visible-frame acknowledgement must both be explicit.
 
 ## Safety and privacy boundaries
 
@@ -40,6 +41,7 @@ This is one shared specification for the Codex and DeepSeek implementation branc
 - Verify the expected process and window ownership before capture or input forwarding.
 - Keep the private render surface composed and capturable without exposing it in the taskbar or Alt+Tab, and never let it activate or steal focus.
 - Support switching wallpapers, cancellation, Codex reconnect, companion shutdown and Restore without orphaned windows.
+- Opening the GUI must revoke a prior hidden handoff worker; a worker whose stream lease is replaced or repeatedly rejected must terminate instead of retrying forever.
 - Do not require Codex to be closed before the companion starts. Diagnose and improve the existing CDP activation/attach flow independently from wallpaper rendering.
 
 ### 2a. Windows restart and connection recovery
@@ -58,6 +60,7 @@ This is one shared specification for the Codex and DeepSeek implementation branc
 - Treat the current JPEG/CDP route as reduced-frame-rate compatibility unless measured evidence shows otherwise. A future full-fidelity route must use a bounded hardware video/streaming path or another design that avoids per-frame Base64 evaluation; it must preserve the same security and Restore boundaries.
 - Preserve aspect ratio and source composition at the actual Codex viewport/DPI. Do not enlarge a Workshop preview to masquerade as a live scene.
 - Present frames atomically (for example, double buffering) and retain the last known-good frame.
+- Treat a frame as accepted only after Chromium confirms that it decoded and drew the frame to the live compositor surface; bound every decode with a watchdog.
 - Reject empty, uniform gray/black, obviously stale, partial and implausibly low-resolution frames without flashing them to the user.
 
 ### 4. Interaction
@@ -97,6 +100,7 @@ The full matrix is in `docs/compatibility/WALLPAPER_ENGINE_MATRIX.md`. Real Work
 10. Release build, self-tests, runtime smoke test and repository hygiene checks pass.
 11. No private or copyrighted local test material is committed.
 12. The private Wallpaper Engine surface remains capturable but never appears in the taskbar or Alt+Tab and never takes foreground focus.
+13. At least 25 consecutive synthetic Scene switches complete with a newly presented frame each time; no old worker or permanently busy decoder may retain control.
 
 ## Required evidence from each implementation
 

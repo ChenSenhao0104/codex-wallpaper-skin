@@ -340,8 +340,8 @@ const preCaptureMedia = window.__codexWallpaperSkin.media;
 assert(preCaptureMedia?.tagName === 'CANVAS' && !initialCaptureImage.isConnected,
   'native capture did not install its persistent canvas');
 const drawCountBeforeFrame = preCaptureMedia.drawCount;
-assert(window.__codexWallpaperSkinSetCapturedFrame(captureLease, btoa('mock-jpeg-frame')) === true,
-  'native capture frame was rejected');
+assert(await window.__codexWallpaperSkinSetCapturedFrame(captureLease, btoa('mock-jpeg-frame')) === 'presented',
+  'native capture frame was not acknowledged after presentation');
 assert(window.__codexWallpaperSkin.media === preCaptureMedia && preCaptureMedia.isConnected
   && preCaptureMedia.drawCount > drawCountBeforeFrame,
   'decoded native frame was not committed to the persistent canvas');
@@ -361,19 +361,40 @@ assert(window.__codexWallpaperSkinGetCapturedPointer('stalelease123456789') === 
   'a stale native capture stream could read pointer state');
 globalThis.deferMediaDecode = true;
 const lastGoodCaptureMedia = window.__codexWallpaperSkin.media;
-assert(window.__codexWallpaperSkinSetCapturedFrame(captureLease, btoa('deferred-native-frame')) === true,
-  'deferred native frame was rejected');
+const deferredFramePresentation = window.__codexWallpaperSkinSetCapturedFrame(
+  captureLease, btoa('deferred-native-frame'));
 assert(window.__codexWallpaperSkin.media === lastGoodCaptureMedia,
   'an undecoded native frame replaced the last known-good frame');
 const deferredCaptureMedia = window.__codexWallpaperSkin.captureStaging;
 const drawCountBeforeDeferredFrame = lastGoodCaptureMedia.drawCount;
 globalThis.deferMediaDecode = false;
 deferredCaptureMedia.onload();
+assert(await deferredFramePresentation === 'presented',
+  'deferred native frame was not acknowledged after presentation');
 assert(window.__codexWallpaperSkin.media === lastGoodCaptureMedia && lastGoodCaptureMedia.isConnected
   && lastGoodCaptureMedia.drawCount > drawCountBeforeDeferredFrame,
   'decoded native frame did not update the persistent canvas');
-assert(window.__codexWallpaperSkinSetCapturedFrame('stalelease123456789', btoa('stale')) === false,
+assert(await window.__codexWallpaperSkinSetCapturedFrame('stalelease123456789', btoa('stale')) === 'stale',
   'a stale native capture stream could overwrite the active lease');
+
+for (let index = 0; index < 25; index++) {
+  const switchToken = `switch-upload-${index}`;
+  const switchLease = `switchlease${String(index).padStart(12, '0')}`;
+  window.__codexWallpaperSkinBeginUpload(switchToken, 'image/jpeg');
+  window.__codexWallpaperSkinPushChunk(switchToken, btoa(`switch-image-${index}`));
+  await window.__codexWallpaperSkinFinishUpload(switchToken, 'image', settings, null);
+  assert(window.__codexWallpaperSkinBeginCapturedStream(switchLease) === true,
+    `capture lease ${index} was rejected during repeated switching`);
+  const switchCanvas = window.__codexWallpaperSkin.media;
+  const switchDrawCount = switchCanvas.drawCount;
+  assert(await window.__codexWallpaperSkinSetCapturedFrame(
+    switchLease, btoa(`switch-frame-${index}`)) === 'presented',
+    `frame ${index} was not presented during repeated switching`);
+  assert(window.__codexWallpaperSkin.media === switchCanvas
+    && switchCanvas.isConnected
+    && switchCanvas.drawCount > switchDrawCount,
+    `switch ${index} left the visible background on an older frame`);
+}
 
 window.__codexWallpaperSkinSetSettings({ ...settings, autoPalette: false });
 assert(!root.classList.contains('cws-palette'), 'palette toggle did not turn off');
@@ -386,7 +407,7 @@ paletteReadFailures = 1;
 window.__codexWallpaperSkinBeginUpload(videoToken, 'video/mp4');
 window.__codexWallpaperSkinPushChunk(videoToken, btoa('mock-video'));
 const videoApplied = await window.__codexWallpaperSkinFinishUpload(videoToken, 'video', settings, null);
-assert(window.__codexWallpaperSkinSetCapturedFrame(captureLease, btoa('stale-after-replacement')) === false,
+assert(await window.__codexWallpaperSkinSetCapturedFrame(captureLease, btoa('stale-after-replacement')) === 'stale',
   'replacing media did not revoke the native capture lease');
 assert(videoApplied.palette, 'temporary first-frame palette failure was not retried');
 assert(window.__codexWallpaperSkin.media?.tagName === 'VIDEO', 'video background was not installed');

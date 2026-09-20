@@ -51,6 +51,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private const nuint MkRightButton = 0x0002;
     private const nuint MkMiddleButton = 0x0010;
     private const int MaximumFrameBytes = 2 * 1024 * 1024;
+    private const int MaximumConsecutiveStreamFailures = 8;
     private readonly string _engineExecutable;
     private readonly string _windowName;
     private readonly IntPtr _windowHandle;
@@ -64,6 +65,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private readonly double _baseRate;
     private readonly double _baseVolume;
     private int _lastPointerButtons;
+    private int _stopRequested;
     private bool _disposed;
 
     private WallpaperEngineCaptureSession(
@@ -218,7 +220,9 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         var consecutiveFailures = 0;
         try
         {
-            while (!cancellationToken.IsCancellationRequested && IsWindow(_windowHandle))
+            while (Volatile.Read(ref _stopRequested) == 0
+                && !cancellationToken.IsCancellationRequested
+                && IsWindow(_windowHandle))
             {
                 if (_pauseWhenHidden && _lastPageHidden)
                 {
@@ -239,6 +243,11 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                 catch
                 {
                     consecutiveFailures++;
+                    if (consecutiveFailures >= MaximumConsecutiveStreamFailures)
+                    {
+                        Volatile.Write(ref _stopRequested, 1);
+                        break;
+                    }
                     await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(1000, 75 * consecutiveFailures)), cancellationToken);
                 }
 
@@ -355,7 +364,9 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         var consecutiveFailures = 0;
         try
         {
-            while (!cancellationToken.IsCancellationRequested && IsWindow(_windowHandle))
+            while (Volatile.Read(ref _stopRequested) == 0
+                && !cancellationToken.IsCancellationRequested
+                && IsWindow(_windowHandle))
             {
                 var started = Stopwatch.GetTimestamp();
                 try
@@ -375,6 +386,11 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                 catch
                 {
                     consecutiveFailures++;
+                    if (consecutiveFailures >= MaximumConsecutiveStreamFailures)
+                    {
+                        Volatile.Write(ref _stopRequested, 1);
+                        break;
+                    }
                 }
 
                 // Input is deliberately independent from capture. Slow or
@@ -903,11 +919,23 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     {
         if (_disposed) return;
         _disposed = true;
-        _lifetime.Cancel();
+        // Let an in-flight CDP evaluation finish normally. Cancelling a
+        // ClientWebSocket receive during every wallpaper switch can abort the
+        // shared control socket and leave the page frozen on its last frame.
+        Volatile.Write(ref _stopRequested, 1);
         if (_streamTask is not null)
         {
-            try { await _streamTask.WaitAsync(TimeSpan.FromSeconds(3)); } catch { }
+            try
+            {
+                await _streamTask.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch
+            {
+                _lifetime.Cancel();
+                try { await _streamTask.WaitAsync(TimeSpan.FromSeconds(1)); } catch { }
+            }
         }
+        _lifetime.Cancel();
         var graphicsCapture = Interlocked.Exchange(ref _graphicsCapture, null);
         if (graphicsCapture is not null) await graphicsCapture.DisposeAsync();
         await TryCloseWindowAsync(_engineExecutable, _windowName, _windowHandle);

@@ -418,9 +418,11 @@ public static class SelfTests
             True(!CdpInjectionService.BootstrapScript.Contains("body > :not", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("canvas.width = 32", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("cws-palette", StringComparison.Ordinal));
-            True(CdpInjectionService.BootstrapScript.Contains("existing.version === 14", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("existing.version === 15", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinBeginCapturedStream", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinSetCapturedFrame", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("decode-timeout", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("resolve(status)", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinGetCapturedPointer", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("pointermove", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("pointerleave", StringComparison.Ordinal));

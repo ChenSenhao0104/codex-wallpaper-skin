@@ -501,7 +501,38 @@ public partial class MainWindow : Window
             };
             var warningStatus = string.IsNullOrWhiteSpace(applyResult.Warning) ? string.Empty : " Note: " + applyResult.Warning;
             SetStatus($"Applied {selected.Title}.{modeStatus}{paletteStatus}{warningStatus} No Codex file was changed; Restore removes the whole layer.");
+            if (applyResult.Mode == "wallpaper-engine-capture")
+            {
+                _ = MonitorCaptureAsync(selected.Id, selected.Title, _injection.ActiveCaptureCompletion);
+            }
         });
+    }
+
+    private async Task MonitorCaptureAsync(string wallpaperId, string title, Task completion)
+    {
+        try
+        {
+            await completion;
+            // A normal switch finishes the old task immediately before the new
+            // lease is installed. Give that transaction time to complete, then
+            // warn only if this exact lease is still the current one.
+            await Task.Delay(250);
+            await Dispatcher.InvokeAsync(() =>
+            {
+                if (!_closeRequested
+                    && !_injection.HasActiveCapture
+                    && ReferenceEquals(_injection.ActiveCaptureCompletion, completion)
+                    && string.Equals(_state.LastAppliedWallpaperId, wallpaperId, StringComparison.OrdinalIgnoreCase))
+                {
+                    SetStatus($"The live stream for {title} stopped after repeated renderer or connection failures. The last good frame was kept; click Apply selected to restart it.");
+                }
+            });
+        }
+        catch
+        {
+            // Apply/switch/close owns user-facing error reporting. This monitor
+            // exists only to surface a stream that ended after Apply succeeded.
+        }
     }
 
     private async void Restore_Click(object sender, RoutedEventArgs e)

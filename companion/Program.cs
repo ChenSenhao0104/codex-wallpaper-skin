@@ -37,6 +37,10 @@ public static class Program
                 return 0;
             }
 
+            // A hidden handoff worker from the previous GUI session must yield
+            // before this interactive controller can become authoritative.
+            DeferredRestoreLauncher.RequestStop();
+
             var application = new Application
             {
                 ShutdownMode = ShutdownMode.OnMainWindowClose

@@ -6,9 +6,30 @@ namespace CodexWallpaperSkin;
 public static class DeferredRestoreLauncher
 {
     private const string WorkerArgument = "--wait-and-restore";
+    private const string WorkerMutexName = @"Local\CodexWallpaperSkin.DeferredRestore";
+    private const string WorkerStopEventName = @"Local\CodexWallpaperSkin.DeferredRestore.Stop";
+
+    public static void RequestStop()
+    {
+        using var stopEvent = OpenStopEvent();
+        stopEvent.Set();
+    }
 
     public static void EnsureRunning()
     {
+        // A previous GUI session may have handed capture to a worker. Revoke it
+        // before starting the replacement so two versions cannot keep writing
+        // frames and state to the same Codex page indefinitely.
+        RequestStop();
+        if (!WaitForWorkerExit(TimeSpan.FromSeconds(8)))
+        {
+            throw new InvalidOperationException(
+                "A previous background wallpaper worker did not stop. Close the older Codex Wallpaper Skin build before retrying.");
+        }
+        using (var stopEvent = OpenStopEvent())
+        {
+            stopEvent.Reset();
+        }
         var processPath = Environment.ProcessPath
             ?? throw new InvalidOperationException("The controller executable path could not be determined.");
         var startInfo = new ProcessStartInfo
@@ -34,7 +55,8 @@ public static class DeferredRestoreLauncher
 
     public static async Task<int> RunAsync(CancellationToken cancellationToken = default)
     {
-        using var mutex = new Mutex(false, @"Local\CodexWallpaperSkin.DeferredRestore");
+        using var stopEvent = OpenStopEvent();
+        using var mutex = new Mutex(false, WorkerMutexName);
         var ownsMutex = false;
         try
         {
@@ -42,7 +64,7 @@ public static class DeferredRestoreLauncher
             catch (AbandonedMutexException) { ownsMutex = true; }
             if (!ownsMutex) return 0;
 
-            while (!cancellationToken.IsCancellationRequested)
+            while (!cancellationToken.IsCancellationRequested && !stopEvent.WaitOne(0))
             {
                 var state = StateStore.Load();
                 if (AutoRestoreService.ResolveLastWallpaper(state) is null) return 0;
@@ -50,7 +72,7 @@ public static class DeferredRestoreLauncher
                 var running = CdpProcessIdentity.FindRunningOfficialCodexProcessIds();
                 if (running.Count > 0 && !CdpEndpoint.IsAvailableForActivation(state.CdpBaseUrl))
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+                    if (await DelayOrStopAsync(stopEvent, TimeSpan.FromSeconds(2), cancellationToken)) return 0;
                     continue;
                 }
 
@@ -63,17 +85,23 @@ public static class DeferredRestoreLauncher
                     Console.WriteLine($"Restored {restored.Wallpaper.Title} ({restored.ApplyResult.Mode}).");
                     if (injection.HasActiveCapture)
                     {
-                        await injection.ActiveCaptureCompletion.WaitAsync(cancellationToken);
+                        var completion = injection.ActiveCaptureCompletion;
+                        while (!completion.IsCompleted && !stopEvent.WaitOne(0))
+                        {
+                            await Task.WhenAny(completion, Task.Delay(250, cancellationToken));
+                        }
+                        if (stopEvent.WaitOne(0)) return 0;
+                        await completion.WaitAsync(cancellationToken);
                     }
                     return 0;
                 }
                 catch (CodexAlreadyRunningWithoutCdpException)
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+                    if (await DelayOrStopAsync(stopEvent, TimeSpan.FromSeconds(2), cancellationToken)) return 0;
                 }
                 catch (TimeoutException) when (CdpProcessIdentity.FindRunningOfficialCodexProcessIds().Count > 0)
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+                    if (await DelayOrStopAsync(stopEvent, TimeSpan.FromSeconds(2), cancellationToken)) return 0;
                 }
             }
             return 0;
@@ -82,5 +110,43 @@ public static class DeferredRestoreLauncher
         {
             if (ownsMutex) mutex.ReleaseMutex();
         }
+    }
+
+    private static EventWaitHandle OpenStopEvent() =>
+        new(false, EventResetMode.ManualReset, WorkerStopEventName);
+
+    private static bool WaitForWorkerExit(TimeSpan timeout)
+    {
+        using var mutex = new Mutex(false, WorkerMutexName);
+        var ownsMutex = false;
+        try
+        {
+            try { ownsMutex = mutex.WaitOne(timeout); }
+            catch (AbandonedMutexException) { ownsMutex = true; }
+            return ownsMutex;
+        }
+        finally
+        {
+            if (ownsMutex) mutex.ReleaseMutex();
+        }
+    }
+
+    private static async Task<bool> DelayOrStopAsync(
+        EventWaitHandle stopEvent,
+        TimeSpan delay,
+        CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + delay;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (stopEvent.WaitOne(0)) return true;
+            var remaining = deadline - DateTimeOffset.UtcNow;
+            if (remaining <= TimeSpan.Zero) break;
+            await Task.Delay(remaining < TimeSpan.FromMilliseconds(250)
+                ? remaining
+                : TimeSpan.FromMilliseconds(250), cancellationToken);
+        }
+        return stopEvent.WaitOne(0);
     }
 }

@@ -147,6 +147,12 @@ public sealed class CdpInjectionService : IAsyncDisposable
                         }
                         var lease = new CaptureLease(session, captureToken);
                         _captureLease = lease;
+                        // Do not report Apply as successful merely because the
+                        // page accepted a stream token. Wait until a frame has
+                        // actually decoded and reached the persistent canvas.
+                        // This closes the gap where the controller said
+                        // "Applied" while the user still saw an older frame.
+                        await PublishCapturedFrameAsync(lease, session.InitialFrame, operationToken);
                         session.StartStreaming(
                             (frame, token) => PublishCapturedFrameAsync(lease, frame, token),
                             token => ReadCapturedPointerAsync(lease, token));
@@ -162,11 +168,16 @@ public sealed class CdpInjectionService : IAsyncDisposable
                     }
                     catch (OperationCanceledException)
                     {
+                        if (session is not null) ClearCaptureLease(session);
                         if (session is not null) await session.DisposeAsync();
                         throw;
                     }
                     catch (Exception exception)
                     {
+                        if (session is not null)
+                        {
+                            ClearCaptureLease(session);
+                        }
                         if (session is not null) await session.DisposeAsync();
                         nativeCaptureFailure = exception;
                     }
@@ -437,9 +448,14 @@ public sealed class CdpInjectionService : IAsyncDisposable
         var evaluation = await client.EvaluateAsync(
             $"window.__codexWallpaperSkinSetCapturedFrame({Js(lease.Token)}, {Js(encoded)})",
             cancellationToken);
-        if (!ReadBoolean(evaluation))
+        var presentation = ReadString(evaluation);
+        if (presentation.Equals("stale", StringComparison.Ordinal))
         {
             throw new InvalidOperationException("Another controller replaced the native capture stream.");
+        }
+        if (!presentation.Equals("presented", StringComparison.Ordinal))
+        {
+            throw new IOException($"Codex did not present the captured frame ({presentation}).");
         }
     }
 
@@ -503,6 +519,15 @@ public sealed class CdpInjectionService : IAsyncDisposable
         if (!ReferenceEquals(Volatile.Read(ref _captureLease), lease))
         {
             throw new InvalidOperationException("The native capture stream lease is no longer active.");
+        }
+    }
+
+    private void ClearCaptureLease(WallpaperEngineCaptureSession session)
+    {
+        var failedLease = Volatile.Read(ref _captureLease);
+        if (failedLease is not null && ReferenceEquals(failedLease.Session, session))
+        {
+            Interlocked.CompareExchange(ref _captureLease, null, failedLease);
         }
     }
 
@@ -577,6 +602,18 @@ public sealed class CdpInjectionService : IAsyncDisposable
         catch
         {
             return false;
+        }
+    }
+
+    private static string ReadString(JsonElement evaluation)
+    {
+        try
+        {
+            return evaluation.GetProperty("result").GetProperty("value").GetString() ?? "invalid";
+        }
+        catch
+        {
+            return "invalid";
         }
     }
 
@@ -750,7 +787,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
             throw new Error('Refusing to inject: this is not a ready Codex app:// page.');
           }
           const existing = window.__codexWallpaperSkin;
-          const existingHealthy = existing && existing.version === 14 && !existing.disposed
+          const existingHealthy = existing && existing.version === 15 && !existing.disposed
             && existing.host?.isConnected && existing.style?.isConnected && existing.overlay?.isConnected
             && document.getElementById('codex-wallpaper-skin-host') === existing.host
             && document.getElementById('codex-wallpaper-skin-style') === existing.style
@@ -917,7 +954,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
           document.body.appendChild(host);
 
           const state = window.__codexWallpaperSkin = {
-            version: 14, disposed: false, style, host, overlay, media: null, assetUrl: null,
+            version: 15, disposed: false, style, host, overlay, media: null, assetUrl: null,
             sceneController: null, pendingSceneController: null,
             pendingMedia: null, pendingUrl: null, pendingCancel: null,
             uploads: new Map(), marked: new Set(), settings: null, rawPalette: null,
@@ -1196,7 +1233,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
             return true;
           };
           window.__codexWallpaperSkinSetCapturedFrame = (token, encoded) => {
-            if (token !== state.captureToken) return false;
+            if (token !== state.captureToken) return 'stale';
             if (typeof encoded !== 'string' || encoded.length === 0 || encoded.length > 3 * 1024 * 1024) {
               throw new Error('Captured frame exceeded its encoded size limit.');
             }
@@ -1207,21 +1244,23 @@ public sealed class CdpInjectionService : IAsyncDisposable
             if (!(media instanceof HTMLCanvasElement) || !media.isConnected || media.parentNode !== state.host) {
               throw new Error('The native capture target is unavailable.');
             }
-            if (!state.captureFrameBusy) {
-              state.captureFrameBusy = true;
-              const nextSource = `data:image/jpeg;base64,${encoded}`;
-              const staging = document.createElement('img');
-              staging.decoding = 'async';
-              state.captureStaging = staging;
-              const release = () => {
-                if (state.captureStaging === staging) state.captureStaging = null;
-                state.captureFrameBusy = false;
-              };
-              staging.onload = () => {
-                if (!state.disposed && token === state.captureToken && state.media === media) {
-                  // Keep one persistent compositor surface. The JPEG is
-                  // decoded off-screen and copied only after it is complete,
-                  // avoiding per-frame DOM and texture replacement.
+            if (state.captureFrameBusy) return 'busy';
+            state.captureFrameBusy = true;
+            const nextSource = `data:image/jpeg;base64,${encoded}`;
+            const staging = document.createElement('img');
+            staging.decoding = 'async';
+            state.captureStaging = staging;
+            return new Promise(resolve => {
+              let settled = false;
+              const finish = (status, draw) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(watchdog);
+                if (draw && !state.disposed && token === state.captureToken && state.media === media) {
+                  // Keep one persistent compositor surface. A frame is
+                  // acknowledged only after decode and the actual canvas draw,
+                  // so the controller cannot report a switch that the user has
+                  // not seen.
                   const width = Math.max(1, staging.naturalWidth);
                   const height = Math.max(1, staging.naturalHeight);
                   const context = media.getContext('2d', { alpha: false });
@@ -1230,14 +1269,24 @@ public sealed class CdpInjectionService : IAsyncDisposable
                       media.width = width; media.height = height;
                     }
                     context.drawImage(staging, 0, 0, width, height);
+                  } else {
+                    status = 'canvas-unavailable';
                   }
+                } else if (draw) {
+                  status = 'stale';
                 }
-                release();
+                if (state.captureStaging === staging) state.captureStaging = null;
+                if (token === state.captureToken) state.captureFrameBusy = false;
+                resolve(status);
               };
-              staging.onerror = release;
+              const watchdog = setTimeout(() => {
+                try { staging.src = ''; } catch (_) {}
+                finish('decode-timeout', false);
+              }, 3000);
+              staging.onload = () => finish('presented', true);
+              staging.onerror = () => finish('decode-error', false);
               staging.src = nextSource;
-            }
-            return true;
+            });
           };
           window.__codexWallpaperSkinGetCapturedPointer = token => {
             if (token !== state.captureToken || state.disposed || window.__codexWallpaperSkin !== state) return false;
