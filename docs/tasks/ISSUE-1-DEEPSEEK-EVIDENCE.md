@@ -20,6 +20,8 @@ Three increments are recorded here.
 
 **Increment 6** completes section 3's *documented fallback* branch. `CaptureBackends` probes the machine with P/Invoke only (activating the `Windows.Graphics.Capture.GraphicsCaptureSession` runtime class on a dedicated MTA thread), records whether Windows Graphics Capture is actually usable and why, selects the implemented path explicitly, and reports it in Doctor and in the capture metrics — so the fallback is named at runtime rather than implied.
 
+**Increment 7** adds the measurement harness the Issue asks for under "Required evidence". `--measure --list` is read-only and prints every local Scene project with its backend decision, package version/size and engine availability; `--measure <workshop-id> [--seconds N]` applies one wallpaper, samples capture health for N seconds, measures input-channel latency, and always restores the original background.
+
 ### Changed boundaries
 
 | Area | Before | After |
@@ -40,7 +42,7 @@ Three increments are recorded here.
 | Requirement | Implementation | Verified by |
 | --- | --- | --- |
 | Separate discovery/type classification from safe browser-side package parsing | `WallpaperCatalog.ParseProject` classifies a Scene as `NativeScene` from the contained `project.json` plus `WallpaperEngineLocator.IsEngineAvailable`; the parser result only decides whether the *fallback* renderer is available | self-test `native Scene eligibility ignores the safe package parser` |
-| A Scene with a new, large or unsupported `scene.pkg` is still eligible for native rendering | `NativeScene` never consults the parser; `PKGV0024` and a package above `MaximumPackageBytes` both classify as native | same check: asserts `ScenePackageValidator.TryValidate` returns false for both, while `ParseProject` returns `NativeScene`, `CanApply` is true and `CanUse` is true |
+| A Scene with a new, large or unsupported `scene.pkg` is still eligible for native rendering | `NativeScene` never consults the parser; `PKGV0024` and a package above `MaximumPackageBytes` both classify as native | self-test `native Scene eligibility ignores the safe package parser`, **and a real installation**: `--measure --list` classified all 21 locally installed Scene projects as `NativeScene`, including the seven `PKGV0024` projects and the 170.70 MiB `3801532994` that the old version-and-size ceiling rejected outright |
 | Preserve the safe scene parser only as a compatibility fallback | `LiveScene` is only assigned when the engine is *not* resolvable; the apply path retries the safe renderer after a native failure and labels the result | same check: a supported package without an engine stays `LiveScene`; a supported package with an engine prefers native |
 | Preview/static fallback stays clearly labeled and never a silent substitute | When the engine is absent and the package is outside the parser limits, discovery records the reason in the entry note and the apply path returns mode `animated-preview`/`static-preview` with an explicit warning | same check: asserts `AnimatedPreview`, `IsScene == false`, `CanApply`, and the "Wallpaper Engine was not found" note |
 | Application wallpapers stay rejected regardless of engine presence | The `Application` branch is unchanged and independent of engine discovery | same check, plus the existing `application wallpapers rejected` and `multi-root catalog scan` checks |
@@ -112,7 +114,10 @@ Commands (Windows, .NET 8 SDK, Node.js):
 ./scripts/build-companion.ps1 -Configuration Release
 dotnet ./companion/bin/Debug/net8.0-windows/win-x64/CodexWallpaperSkin.dll --self-test
 node ./scripts/runtime-smoke-test.mjs
+dotnet ./companion/bin/Debug/net8.0-windows/win-x64/CodexWallpaperSkin.dll --measure --list
 ```
+
+The last command is read-only: it scans the local Wallpaper Engine roots and reports the backend decision for every Scene project, which is how hard gate 3 is evidenced against a real installation rather than only against synthetic packages.
 
 `--self-test` covers 39 checks, including the 22 recovery, queue, invocation, eligibility, input, backend-state, capture-backend and frame checks added by these increments. `scripts/runtime-smoke-test.mjs` additionally exercises the atomic native frame swap, the last-known-good retention on a failed decode, ordered input delivery (buttons, wheel, leave), movement coalescing, the existing image/video/scene/palette paths, hidden-document pause, cleanup and mismatch refusal.
 

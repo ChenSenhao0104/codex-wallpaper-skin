@@ -53,6 +53,61 @@ public sealed class CdpInjectionService : IAsyncDisposable
 
     /// <summary>Human-readable capture health for Doctor and local measurements.</summary>
     public string? CaptureMetricsSummary => _captureSession?.MetricsSummary;
+
+    /// <summary>Structured capture health, or null when no native stream is active.</summary>
+    public CaptureHealth? CaptureHealthSnapshot => _captureSession?.Snapshot();
+
+    /// <summary>
+    /// Measures the input channel latency: inject a synthetic pointer move into
+    /// Codex and time how long the companion takes to observe it. This is the
+    /// injection-to-observation path, which is what the companion controls; the
+    /// renderer's own reaction is not measurable from here.
+    /// </summary>
+    internal async Task<IReadOnlyList<double>> MeasureInputLatencyAsync(
+        int samples,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(samples);
+        var client = RequireClient();
+        if (_captureToken is null)
+        {
+            throw new InvalidOperationException("Native capture is not active, so input latency cannot be measured.");
+        }
+        var results = new List<double>(samples);
+        for (var index = 0; index < samples; index++)
+        {
+            var targetX = 0.2 + 0.6 * (index % 5 / 4.0);
+            var targetY = 0.3 + 0.4 * (index % 3 / 2.0);
+            var x = targetX.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
+            var y = targetY.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
+            var started = System.Diagnostics.Stopwatch.GetTimestamp();
+            await client.EvaluateAsync(
+                "window.dispatchEvent(new PointerEvent('pointermove', "
+                + $"{{ clientX: innerWidth * {x}, clientY: innerHeight * {y} }}))",
+                cancellationToken);
+            var deadline = DateTimeOffset.UtcNow.AddMilliseconds(500);
+            var observed = false;
+            while (DateTimeOffset.UtcNow < deadline)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var pointer = await ReadCapturePointerAsync(cancellationToken);
+                if (pointer is not null
+                    && Math.Abs(pointer.X - targetX) < 0.01
+                    && Math.Abs(pointer.Y - targetY) < 0.01)
+                {
+                    observed = true;
+                    break;
+                }
+                await Task.Delay(2, cancellationToken);
+            }
+            if (observed)
+            {
+                results.Add(System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+            }
+            await Task.Delay(30, cancellationToken);
+        }
+        return results;
+    }
     public CdpTarget? Target => _client?.Target;
 
     public async Task<CdpTarget> ConnectAsync(string endpoint, CancellationToken cancellationToken = default)

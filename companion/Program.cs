@@ -115,7 +115,13 @@ public static class Program
                 return await DeferredRestoreLauncher.RunAsync();
             }
 
-            Console.Error.WriteLine("Usage: CodexWallpaperSkin [--doctor [--json] | --restore | --auto-restore | --wait-and-restore | --self-test]");
+            if (args.Contains("--measure", StringComparer.OrdinalIgnoreCase))
+            {
+                using var measurementTimeout = new CancellationTokenSource(TimeSpan.FromMinutes(15));
+                return await MeasurementCommand.RunAsync(args, measurementTimeout.Token);
+            }
+
+            Console.Error.WriteLine("Usage: CodexWallpaperSkin [--doctor [--json] | --restore | --auto-restore | --wait-and-restore | --self-test | --measure --list | --measure <workshop-id> [--seconds 60]]");
             return 64;
         }
         catch (Exception exception)

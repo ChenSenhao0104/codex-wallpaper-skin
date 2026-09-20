@@ -66,7 +66,7 @@ Fill this table during product convergence; it evaluates behavior, not authors o
 | Static image control |  | pass (auto) |  | `scripts/runtime-smoke-test.mjs` image path unchanged. |
 | Ordinary video control |  | pass (auto) |  | `scripts/runtime-smoke-test.mjs` video path unchanged. |
 | Application rejection control |  | pass (auto) |  | `--self-test`: application projects stay rejected even with Wallpaper Engine installed. |
-| PKGV0024 / over-limit / loose Scene eligibility |  | pass (auto) |  | `--self-test`: `NativeScene` classification, `CanApply` and `CanUse` for PKGV0024, for a package above `MaximumPackageBytes`, and for a loose `scene.json` project. |
+| PKGV0024 / over-limit / loose Scene eligibility |  | pass (auto + real install) |  | `--self-test` covers synthetic PKGV0024, over-limit and loose projects; `--measure --list` classified all 21 locally installed Scene projects as `NativeScene`, including the seven PKGV0024 projects and the 170.70 MiB one. |
 | Mouse move / button / wheel / leave transport |  | pass (auto) |  | `--self-test` mapping and wheel arithmetic plus the Node smoke test's ordered-input check (right button, wheel, left button, leave) and movement coalescing. |
 | Pointer mapping through device scale and letterbox |  | pass (auto) |  | `--self-test`: matching-aspect, pillar-boxed and letterboxed surface geometry, plus out-of-range clamping. |
 | Product backend states (native / reduced / safe / preview / unsupported) |  | pass (auto) |  | `--self-test`: mode-to-state mapping and the five state names. |
