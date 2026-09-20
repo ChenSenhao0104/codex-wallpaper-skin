@@ -26,10 +26,142 @@
             <Setter Property="Padding" Value="7,5"/>
             <Setter Property="Background" Value="#0E1116"/>
             <Setter Property="Foreground" Value="#F2F4F8"/>
+            <Setter Property="BorderBrush" Value="#596579"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="MinHeight" Value="32"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <Border x:Name="ComboBorder" Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="3"/>
+                            <ContentPresenter Margin="10,4,34,4" VerticalAlignment="Center"
+                                              HorizontalAlignment="Left" IsHitTestVisible="False"
+                                              Content="{TemplateBinding SelectionBoxItem}"
+                                              ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                              ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"/>
+                            <ToggleButton Focusable="False" Background="Transparent" BorderThickness="0"
+                                          HorizontalAlignment="Stretch"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Grid Background="Transparent">
+                                            <Border Width="31" HorizontalAlignment="Right" Background="#202630"
+                                                    BorderBrush="#596579" BorderThickness="1,0,0,0"
+                                                    CornerRadius="0,3,3,0">
+                                                <TextBlock Text="▼" Foreground="#DCE4F0" FontSize="10"
+                                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                            </Border>
+                                        </Grid>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+                            <Popup x:Name="PART_Popup" Placement="Bottom" AllowsTransparency="True"
+                                   Focusable="False" IsOpen="{TemplateBinding IsDropDownOpen}" PopupAnimation="Fade">
+                                <Border Background="#0B0D11" BorderBrush="#68768A" BorderThickness="1"
+                                        MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}"
+                                        MaxHeight="320" Padding="2">
+                                    <ScrollViewer VerticalScrollBarVisibility="Auto" CanContentScroll="True">
+                                        <ItemsPresenter/>
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                <Setter TargetName="ComboBorder" Property="BorderBrush" Value="#6EA8FF"/>
+                                <Setter TargetName="ComboBorder" Property="BorderThickness" Value="2"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Foreground" Value="#AAB4C2"/>
+                                <Setter TargetName="ComboBorder" Property="Background" Value="#252A33"/>
+                                <Setter TargetName="ComboBorder" Property="BorderBrush" Value="#444D5B"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style TargetType="ComboBoxItem">
-            <Setter Property="Background" Value="#0E1116"/>
+            <Setter Property="Padding" Value="9,6"/>
+            <Setter Property="Background" Value="#0B0D11"/>
             <Setter Property="Foreground" Value="#F2F4F8"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="ItemBorder" Background="{TemplateBinding Background}" CornerRadius="2"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="ItemBorder" Property="Background" Value="#294F88"/>
+                                <Setter Property="Foreground" Value="White"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="ItemBorder" Property="Background" Value="#2B65D9"/>
+                                <Setter Property="Foreground" Value="White"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Foreground" Value="#8D98A8"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="SettingsScrollBarStyle" TargetType="ScrollBar">
+            <Setter Property="Width" Value="18"/>
+            <Setter Property="Background" Value="#0B0D11"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollBar">
+                        <Grid Background="{TemplateBinding Background}">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="18"/>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="18"/>
+                            </Grid.RowDefinitions>
+                            <RepeatButton Grid.Row="0" Content="▲" FontSize="9" Foreground="#E8EEF7"
+                                          Background="#303947" BorderBrush="#596579" BorderThickness="1"
+                                          Focusable="False" Command="{x:Static ScrollBar.LineUpCommand}"
+                                          CommandTarget="{Binding RelativeSource={RelativeSource TemplatedParent}}"/>
+                            <Track x:Name="PART_Track" Grid.Row="1" IsDirectionReversed="True"
+                                   Minimum="{TemplateBinding Minimum}" Maximum="{TemplateBinding Maximum}"
+                                   Value="{TemplateBinding Value}" ViewportSize="{TemplateBinding ViewportSize}">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Background="Transparent" BorderThickness="0" Focusable="False"
+                                                  Command="{x:Static ScrollBar.PageUpCommand}"
+                                                  CommandTarget="{Binding RelativeSource={RelativeSource TemplatedParent}}"/>
+                                </Track.DecreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb MinHeight="36" Background="#6E7F96" BorderBrush="#AFC0D7" BorderThickness="1">
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="Thumb">
+                                                <Border Background="{TemplateBinding Background}"
+                                                        BorderBrush="{TemplateBinding BorderBrush}"
+                                                        BorderThickness="{TemplateBinding BorderThickness}"
+                                                        CornerRadius="4" Margin="2"/>
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Background="Transparent" BorderThickness="0" Focusable="False"
+                                                  Command="{x:Static ScrollBar.PageDownCommand}"
+                                                  CommandTarget="{Binding RelativeSource={RelativeSource TemplatedParent}}"/>
+                                </Track.IncreaseRepeatButton>
+                            </Track>
+                            <RepeatButton Grid.Row="2" Content="▼" FontSize="9" Foreground="#E8EEF7"
+                                          Background="#303947" BorderBrush="#596579" BorderThickness="1"
+                                          Focusable="False" Command="{x:Static ScrollBar.LineDownCommand}"
+                                          CommandTarget="{Binding RelativeSource={RelativeSource TemplatedParent}}"/>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style TargetType="Slider">
             <Setter Property="Margin" Value="0,3,0,10"/>
@@ -103,19 +235,24 @@
                             <ColumnDefinition Width="1*"/>
                             <ColumnDefinition Width="1.15*"/>
                         </Grid.ColumnDefinitions>
-                        <DockPanel Grid.Column="0" Margin="0,0,8,0">
-                            <TextBlock Text="Search" Margin="0,0,7,0" VerticalAlignment="Center"
-                                       Foreground="{StaticResource MutedBrush}"/>
-                            <TextBox x:Name="WallpaperSearchTextBox"
+                        <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                            <TextBlock Text="Search" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}"/>
+                            <TextBox x:Name="WallpaperSearchTextBox" MinHeight="32"
                                      ToolTip="Search the current custom name, original name, or collection"
                                      TextChanged="WallpaperSearch_TextChanged"/>
-                        </DockPanel>
-                        <ComboBox x:Name="WallpaperTypeFilter" Grid.Column="1" Margin="0,0,8,0"
-                                  DisplayMemberPath="Label" SelectionChanged="WallpaperFilter_SelectionChanged"
-                                  ToolTip="Filter by wallpaper type"/>
-                        <ComboBox x:Name="WallpaperCollectionFilter" Grid.Column="2"
-                                  DisplayMemberPath="Label" SelectionChanged="WallpaperFilter_SelectionChanged"
-                                  ToolTip="Show all wallpapers or one personal collection"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Margin="0,0,8,0">
+                            <TextBlock Text="Type filter" Margin="0,0,0,4" Foreground="#D7DFEB"/>
+                            <ComboBox x:Name="WallpaperTypeFilter"
+                                      DisplayMemberPath="Label" SelectionChanged="WallpaperFilter_SelectionChanged"
+                                      ToolTip="Filter by wallpaper type"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2">
+                            <TextBlock Text="Personal collection" Margin="0,0,0,4" Foreground="#D7DFEB"/>
+                            <ComboBox x:Name="WallpaperCollectionFilter"
+                                      DisplayMemberPath="Label" SelectionChanged="WallpaperFilter_SelectionChanged"
+                                      ToolTip="Show all wallpapers or one personal collection"/>
+                        </StackPanel>
                     </Grid>
                     <ListBox x:Name="WallpaperList" Grid.Row="2" SelectionChanged="WallpaperList_SelectionChanged"
                              Background="#0E1116" Foreground="White" BorderBrush="{StaticResource BorderBrush}"
@@ -146,6 +283,9 @@
             <Border Grid.Column="2" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrush}"
                     BorderThickness="1" CornerRadius="8" Padding="14">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <ScrollViewer.Resources>
+                        <Style TargetType="ScrollBar" BasedOn="{StaticResource SettingsScrollBarStyle}"/>
+                    </ScrollViewer.Resources>
                     <StackPanel>
                         <DockPanel Margin="0,0,0,12">
                             <Button Content="Original color / clarity" Click="OriginalFidelity_Click" DockPanel.Dock="Right"
