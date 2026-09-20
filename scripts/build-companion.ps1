@@ -2,7 +2,10 @@
 param(
   [ValidateSet('Debug', 'Release')][string]$Configuration = 'Debug',
   [switch]$Publish,
-  [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')][string]$PublishDirectoryName = 'win-x64'
+  [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')][string]$PublishDirectoryName = 'win-x64',
+  # Issue #2 requires each implementation branch to produce a separately named
+  # portable package so two candidates can never be confused on the same machine.
+  [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$')][string]$PackageName = 'CodexWallpaperSkin-win-x64'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -128,7 +131,7 @@ if ($Publish) {
     throw 'PublishDirectoryName must be a safe directory leaf.'
   }
   $publishDirectory = Join-Path $distRoot $PublishDirectoryName
-  $portableArchive = Join-Path $distRoot 'CodexWallpaperSkin-win-x64.zip'
+  $portableArchive = Join-Path $distRoot "$PackageName.zip"
   $legacySkillArchive = Join-Path $distRoot 'CodexWallpaperSkin-skill-win-x64.zip'
   Remove-GeneratedDirectory -Target $publishDirectory -ExpectedParent $distRoot -ExpectedLeaf $PublishDirectoryName
   foreach ($artifact in @($portableArchive, "$portableArchive.sha256", $legacySkillArchive, "$legacySkillArchive.sha256")) {
@@ -226,7 +229,19 @@ if ($Publish) {
     throw "Published companion self-test failed with exit code $($selfTestProcess.ExitCode)."
   }
 
-  Compress-Archive -Path (Join-Path $publishDirectory '*') -DestinationPath $portableArchive -CompressionLevel Optimal
+  # A process that has just exited can still hold its image file for a moment, so
+  # packaging retries instead of failing the whole release on a transient lock.
+  $portableArchiveCreated = $false
+  for ($attempt = 1; $attempt -le 5 -and -not $portableArchiveCreated; $attempt++) {
+    try {
+      Compress-Archive -Path (Join-Path $publishDirectory '*') -DestinationPath $portableArchive -CompressionLevel Optimal -ErrorAction Stop
+      $portableArchiveCreated = $true
+    }
+    catch {
+      if ($attempt -eq 5) { throw }
+      Start-Sleep -Milliseconds (500 * $attempt)
+    }
+  }
   $portableChecksum = (Get-FileHash -LiteralPath $portableArchive -Algorithm SHA256).Hash.ToLowerInvariant()
   Set-Content -LiteralPath "$portableArchive.sha256" -Value "$portableChecksum  $(Split-Path -Leaf $portableArchive)" -Encoding ascii
 

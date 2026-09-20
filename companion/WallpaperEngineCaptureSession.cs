@@ -52,11 +52,15 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private const nuint MkMiddleButton = 0x0010;
     private const int MaximumFrameBytes = 2 * 1024 * 1024;
     private const int MaximumConsecutiveStreamFailures = 8;
+
+    /// <summary>Retries allowed for one fragment batch when the page reports a saturated transport.</summary>
+    private const int MaximumTransportRetries = 3;
     private readonly string _engineExecutable;
     private readonly string _windowName;
     private readonly IntPtr _windowHandle;
     private readonly CancellationTokenSource _lifetime = new();
     private WindowsGraphicsCaptureSource? _graphicsCapture;
+    private GpuMediaPipeline? _gpuPipeline;
     private Task? _streamTask;
     private int _frameRate;
     private bool _pauseWhenHidden;
@@ -66,6 +70,9 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private readonly double _baseVolume;
     private int _lastPointerButtons;
     private int _stopRequested;
+    private string? _gpuFailure;
+    private string? _gpuCodec;
+    private int _recovering;
     private bool _disposed;
 
     private WallpaperEngineCaptureSession(
@@ -77,24 +84,61 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         int frameRate,
         bool pauseWhenHidden,
         double baseRate,
-        double baseVolume)
+        double baseVolume,
+        GpuMediaPipeline? gpuPipeline = null,
+        byte[]? gpuInitialFrame = null,
+        string? gpuStartFailure = null)
     {
         _engineExecutable = engineExecutable;
         _windowName = windowName;
         _windowHandle = windowHandle;
         _graphicsCapture = graphicsCapture;
-        InitialFrame = initialFrame;
-        _lastEncodedFrame = initialFrame;
+        _gpuPipeline = gpuPipeline;
+        _gpuCodec = gpuPipeline?.Codec;
+        _gpuFailure = gpuStartFailure;
+        InitialFrame = gpuInitialFrame ?? initialFrame;
+        _lastEncodedFrame = InitialFrame;
         _frameRate = NormalizeFrameRate(frameRate);
         _pauseWhenHidden = pauseWhenHidden;
         _baseRate = baseRate;
         _baseVolume = baseVolume;
+        Status = gpuPipeline is null
+            ? GpuStreamStatus.ReducedFrameRateCompatibility
+            : GpuStreamStatusLabel.Decide(new GpuStreamStatusInput(true, false, gpuPipeline.FrameRate, true, true));
+        StatusLabel = GpuStreamStatusLabel.Describe(Status);
     }
 
     public byte[] InitialFrame { get; }
     public bool UsesWindowsGraphicsCapture => _graphicsCapture is not null;
+
+    /// <summary>True when the v0.4 GPU media path owns this session.</summary>
+    public bool UsesGpuMediaPath => _gpuPipeline is not null;
+
+    /// <summary>Status label required by Issue #2, shared by the controller window, Doctor and the acceptance report.</summary>
+    public string StatusLabel { get; private set; }
+
+    public GpuStreamStatus Status { get; private set; }
+
+    /// <summary>Exact Media Source Extensions codec string reported by the encoder, when the GPU path is active.</summary>
+    public string? GpuCodec => _gpuCodec ?? _gpuPipeline?.Codec;
+
+    /// <summary>Capture geometry and cadence of the GPU path, reported to the page so status matches reality.</summary>
+    public int GpuWidth => _gpuPipeline?.Width ?? 0;
+
+    public int GpuHeight => _gpuPipeline?.Height ?? 0;
+
+    public int GpuFrameRate => _gpuPipeline?.FrameRate ?? _frameRate;
+
+    public string? GpuFailureReason => _gpuFailure;
+
+    public GpuStreamDiagnosticsSnapshot? GpuDiagnostics => _gpuPipeline?.Snapshot(Status, _gpuFailure);
+
+    /// <summary>Why the GPU media path was not used, when the compatibility backend was selected instead.</summary>
+    public string? GpuStartFailureReason => _gpuFailure;
+
     public bool IsRunning => !_disposed && _streamTask is { IsCompleted: false };
     public Task Completion => _streamTask ?? Task.CompletedTask;
+
 
     public static bool CanUse(WallpaperEntry wallpaper) =>
         wallpaper.IsWallpaperEngineScene
@@ -106,7 +150,8 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         WallpaperSettings settings,
         int viewportWidth,
         int viewportHeight,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool useGpuMediaPath = false)
     {
         ArgumentNullException.ThrowIfNull(wallpaper);
         ArgumentNullException.ThrowIfNull(settings);
@@ -153,6 +198,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
 
             var graphicsCapture = WindowsGraphicsCaptureSource.TryStart(handle);
             byte[] initialFrame;
+            string? gpuStartFailure = null;
             if (graphicsCapture is not null)
             {
                 try
@@ -175,9 +221,56 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
             {
                 initialFrame = await CaptureFirstGoodFrameAsync(handle, cancellationToken);
             }
+
+            if (useGpuMediaPath)
+            {
+                // The v0.4 production path is attempted before the reduced
+                // frame-rate compatibility backend, and its failure is recorded
+                // verbatim so the caller can report why the GPU path was not used.
+                if (GpuMediaPipeline.TryStart(handle, settings, out var gpuPipeline, out var gpuFailure)
+                    && gpuPipeline is not null)
+                {
+                    try
+                    {
+                        gpuPipeline.DrainFragments(3000, out _);
+                        if (gpuPipeline.Codec is null)
+                        {
+                            gpuFailure = "The encoder did not produce a streamable initialisation segment within 3 seconds.";
+                        }
+                        else
+                        {
+                            var gpuInitialFrame = EncodeFirstGpuFrame(gpuPipeline) ?? initialFrame;
+                            if (graphicsCapture is not null)
+                            {
+                                // The GPU path replaces the bitmap capture session
+                                // entirely, so the compatibility source is released
+                                // before the session is handed to the caller.
+                                await graphicsCapture.DisposeAsync();
+                            }
+                            graphicsCapture = null;
+                            return new WallpaperEngineCaptureSession(
+                                controlExecutable, windowName, handle, graphicsCapture, initialFrame,
+                                settings.SceneFrameRate, settings.PauseWhenHidden, baseRate, baseVolume,
+                                gpuPipeline, gpuInitialFrame);
+                        }
+                    }
+                    catch (Exception exception)
+                    {
+                        gpuFailure = exception.Message;
+                    }
+                    gpuPipeline.Dispose();
+                }
+                else if (string.IsNullOrWhiteSpace(gpuFailure))
+                {
+                    gpuFailure = "The GPU media pipeline is unavailable on this system.";
+                }
+                gpuStartFailure = gpuFailure;
+            }
+
             return new WallpaperEngineCaptureSession(
                 controlExecutable, windowName, handle, graphicsCapture, initialFrame, settings.SceneFrameRate,
-                settings.PauseWhenHidden, baseRate, baseVolume);
+                settings.PauseWhenHidden, baseRate, baseVolume, gpuPipeline: null, gpuInitialFrame: null,
+                gpuStartFailure: gpuStartFailure);
         }
         catch
         {
@@ -197,6 +290,155 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         _streamTask = Task.WhenAll(
             Task.Run(() => StreamFramesAsync(publishFrame, _lifetime.Token)),
             Task.Run(() => StreamPointerAsync(readPointer, _lifetime.Token)));
+    }
+
+    /// <summary>
+    /// Starts the v0.4 GPU media loop. Frames are captured, hardware encoded and
+    /// delivered as bounded fragment batches; delivery is acknowledged by the
+    /// page, so the controller never reports a wallpaper switch the user has not
+    /// seen. Recovery from a transient transport refusal is bounded, backed off,
+    /// and never starts a competing worker.
+    /// </summary>
+    internal void StartStreamingGpu(
+        Func<GpuFrameBatch, CancellationToken, Task<string>> publishBatch,
+        Func<CancellationToken, Task<CapturedPointer?>> readPointer)
+    {
+        ArgumentNullException.ThrowIfNull(publishBatch);
+        ArgumentNullException.ThrowIfNull(readPointer);
+        if (_disposed) throw new ObjectDisposedException(nameof(WallpaperEngineCaptureSession));
+        if (_gpuPipeline is null) throw new InvalidOperationException("This session is not using the GPU media path.");
+        if (_streamTask is not null) throw new InvalidOperationException("Wallpaper Engine capture is already streaming.");
+        _streamTask = Task.WhenAll(
+            Task.Run(() => StreamGpuFramesAsync(publishBatch, _lifetime.Token)),
+            Task.Run(() => StreamPointerAsync(readPointer, _lifetime.Token)));
+    }
+
+    private async Task StreamGpuFramesAsync(
+        Func<GpuFrameBatch, CancellationToken, Task<string>> publishBatch,
+        CancellationToken cancellationToken)
+    {
+        var pipeline = _gpuPipeline;
+        if (pipeline is null)
+        {
+            return;
+        }
+        try
+        {
+            while (Volatile.Read(ref _stopRequested) == 0
+                && !cancellationToken.IsCancellationRequested
+                && IsWindow(_windowHandle))
+            {
+                if (_pauseWhenHidden && _lastPageHidden)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
+                    continue;
+                }
+                if (!pipeline.CaptureAndSubmit(4, out var captureFailure))
+                {
+                    // A capture or encoder failure invalidates the container, so
+                    // the GPU path stops with a diagnosed reason and the last
+                    // confirmed good frame stays on screen.
+                    _gpuFailure = captureFailure;
+                    Volatile.Write(ref _stopRequested, 1);
+                    break;
+                }
+                pipeline.DrainFragments(0, out _);
+                var now = DateTimeOffset.UtcNow;
+                if (!pipeline.ShouldFlushBatch(now))
+                {
+                    await Task.Delay(2, cancellationToken);
+                    continue;
+                }
+                var batch = pipeline.TakeBatch(now);
+                if (batch is null)
+                {
+                    continue;
+                }
+
+                var delivery = await DeliverAsync(pipeline, batch, publishBatch, cancellationToken);
+                if (delivery is null)
+                {
+                    break;
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            UpdateGpuStatus();
+        }
+    }
+
+    /// <summary>
+    /// Delivers one batch, retrying only the condition that is safe to retry. A
+    /// 'busy' answer means the page rejected the batch without consuming its
+    /// sequence numbers, so resending the same batch is idempotent; every other
+    /// refusal is terminal and is reported instead of being hidden by a retry
+    /// loop.
+    /// </summary>
+    private async Task<string?> DeliverAsync(
+        GpuMediaPipeline pipeline,
+        GpuFrameBatch batch,
+        Func<GpuFrameBatch, CancellationToken, Task<string>> publishBatch,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            string delivery;
+            try
+            {
+                delivery = await publishBatch(batch, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                delivery = "transport-error";
+                _gpuFailure = "The GPU media transport failed: " + exception.Message;
+            }
+            pipeline.ReportDelivery(batch, delivery, DateTimeOffset.UtcNow);
+
+            if (delivery == "busy" && attempt < MaximumTransportRetries)
+            {
+                Volatile.Write(ref _recovering, 1);
+                UpdateGpuStatus();
+                await Task.Delay(TimeSpan.FromMilliseconds(40 * (attempt + 1)), cancellationToken);
+                continue;
+            }
+            Volatile.Write(ref _recovering, 0);
+
+            if (delivery is "presented" or "appended")
+            {
+                return delivery;
+            }
+            _gpuFailure = delivery switch
+            {
+                "busy" => $"The page did not accept GPU fragments after {MaximumTransportRetries + 1} attempts.",
+                "stale" => "Another controller replaced the GPU stream.",
+                "rejected" => "The page rejected a GPU fragment as out of order or malformed.",
+                "decode-failed" => "The page could not decode the GPU media stream.",
+                _ => "The GPU media transport reported: " + delivery
+            };
+            Volatile.Write(ref _stopRequested, 1);
+            UpdateGpuStatus();
+            return null;
+        }
+    }
+
+    private void UpdateGpuStatus()
+    {
+        var recovering = Volatile.Read(ref _recovering) != 0;
+        Status = GpuStreamStatusLabel.Decide(new GpuStreamStatusInput(
+            GpuPathActive: _gpuPipeline is not null && _gpuFailure is null,
+            Recovering: recovering,
+            RequestedFrameRate: _gpuPipeline?.FrameRate ?? _frameRate,
+            CompatibilityCaptureAvailable: true,
+            StaticFallbackAvailable: !string.IsNullOrWhiteSpace(_gpuFailure)));
+        StatusLabel = GpuStreamStatusLabel.Describe(Status);
     }
 
     public async Task UpdateSettingsAsync(WallpaperSettings settings, CancellationToken cancellationToken = default)
@@ -444,8 +686,33 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
 
     private static nint PackPoint(int x, int y) => (nint)(((ushort)y << 16) | (ushort)x);
 
-    private static async Task<byte[]> CaptureFirstGoodFrameAsync(IntPtr handle, CancellationToken cancellationToken)
+    /// <summary>
+    /// Paints one still frame from the first GPU capture so the user sees the
+    /// wallpaper immediately while the Media Source surface initialises. It is
+    /// the same quality gate and JPEG encoder the compatibility backend uses.
+    /// </summary>
+    private static byte[]? EncodeFirstGpuFrame(GpuMediaPipeline pipeline)
     {
+        var pixels = pipeline.TakeFirstFramePixels();
+        if (pixels is null)
+        {
+            return null;
+        }
+        try
+        {
+            var bitmap = BitmapSource.Create(
+                pipeline.Width, pipeline.Height, 96, 96,
+                System.Windows.Media.PixelFormats.Bgra32, null, pixels, pipeline.Width * 4);
+            bitmap.Freeze();
+            return EncodeCapturedFrame(bitmap);
+        }
+        catch (Exception exception) when (exception is InvalidDataException or ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    private static async Task<byte[]> CaptureFirstGoodFrameAsync(IntPtr handle, CancellationToken cancellationToken)    {
         var deadline = DateTimeOffset.UtcNow.AddSeconds(8);
         Exception? lastFailure = null;
         while (DateTimeOffset.UtcNow < deadline)
@@ -938,6 +1205,8 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         _lifetime.Cancel();
         var graphicsCapture = Interlocked.Exchange(ref _graphicsCapture, null);
         if (graphicsCapture is not null) await graphicsCapture.DisposeAsync();
+        var gpuPipeline = Interlocked.Exchange(ref _gpuPipeline, null);
+        gpuPipeline?.Dispose();
         await TryCloseWindowAsync(_engineExecutable, _windowName, _windowHandle);
         _lifetime.Dispose();
     }
@@ -1025,6 +1294,46 @@ internal static class CapturedFrameQuality
     private const int SampleColumns = 32;
     private const int SampleRows = 20;
 
+    /// <summary>
+    /// Rejects empty, uniform black/gray/white and implausibly small frames.
+    ///
+    /// Windows Graphics Capture intermittently yields a uniform surface while the
+    /// real DirectX frame is being presented, and the GPU path must reject that
+    /// transient before it reaches the encoder, otherwise the user sees a flash.
+    /// </summary>
+    public static bool IsAcceptable(byte[] bgra, int width, int height)
+    {
+        ArgumentNullException.ThrowIfNull(bgra);
+        if (width < 64 || height < 64 || bgra.Length < (long)width * height * 4)
+        {
+            return false;
+        }
+
+        double sum = 0, sumSquares = 0, chroma = 0;
+        var minimum = 255d;
+        var maximum = 0d;
+        var count = 0;
+        for (var row = 0; row < SampleRows; row++)
+        {
+            var y = Math.Min(height - 1, (int)Math.Round(((row + .5) * height / SampleRows) - .5));
+            var rowOffset = y * width * 4;
+            for (var column = 0; column < SampleColumns; column++)
+            {
+                var x = Math.Min(width - 1, (int)Math.Round(((column + .5) * width / SampleColumns) - .5));
+                var offset = rowOffset + (x * 4);
+                double blue = bgra[offset], green = bgra[offset + 1], red = bgra[offset + 2];
+                var luminance = (red * .2126) + (green * .7152) + (blue * .0722);
+                sum += luminance;
+                sumSquares += luminance * luminance;
+                chroma += Math.Max(red, Math.Max(green, blue)) - Math.Min(red, Math.Min(green, blue));
+                minimum = Math.Min(minimum, luminance);
+                maximum = Math.Max(maximum, luminance);
+                count++;
+            }
+        }
+        return count > 0 && IsVaried(sum, sumSquares, chroma, minimum, maximum, count);
+    }
+
     public static bool IsAcceptable(BitmapSource source)
     {
         ArgumentNullException.ThrowIfNull(source);
@@ -1061,16 +1370,21 @@ internal static class CapturedFrameQuality
                 count++;
             }
         }
+        return count > 0 && IsVaried(sum, sumSquares, chroma, minimum, maximum, count);
+    }
 
+    /// <summary>
+    /// PrintWindow and Windows Graphics Capture both intermittently yield a
+    /// uniform black/white/gray surface while the real DirectX frame is being
+    /// presented. Never publish that transient over the last known-good frame.
+    /// </summary>
+    private static bool IsVaried(double sum, double sumSquares, double chroma, double minimum, double maximum, int count)
+    {
         var mean = sum / count;
-        var variance = Math.Max(0, sumSquares / count - mean * mean);
+        var variance = Math.Max(0, (sumSquares / count) - (mean * mean));
         var deviation = Math.Sqrt(variance);
         var averageChroma = chroma / count;
         var dynamicRange = maximum - minimum;
-
-        // PrintWindow intermittently yields a uniform black/white/gray surface
-        // while the real DirectX frame is being presented. Never publish that
-        // transient over the last known-good frame.
         return !(deviation < 2.25 && dynamicRange < 8 && averageChroma < 2.5);
     }
 }

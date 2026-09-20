@@ -21,5 +21,6 @@
   <ItemGroup>
     <EmbeddedResource Include="ThirdParty\we-scene\src\**\*.js" />
     <EmbeddedResource Include="Runtime\scene-host.js" />
+    <EmbeddedResource Include="Runtime\gpu-surface.js" />
   </ItemGroup>
 </Project>

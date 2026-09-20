@@ -130,7 +130,7 @@ Video 项目在 256 MiB 安全上限内会直接使用原始 MP4/WebM；超过�
 | **Animation playback speed** | 调整视频和 Scene 动画速度。 | 通常保持 `100%`。 |
 | **Mute video / Wallpaper Engine scene** | 静音视频和高保真 Scene。 | 默认开启。 |
 | **Pause video / throttle scene while Codex is hidden** | Codex 隐藏时暂停视频，并显著降低原生 Scene 的采集频率。 | 默认开启，可降低后台消耗。 |
-| **Scene quality target** | 控制 Scene 采集目标；高保真传输为稳定与负载安全最高限制在 15 FPS。 | 省电时选 15。 |
+| **Scene quality target** | 控制 Scene 采集目标：`60 FPS` 为默认目标，`30 FPS` 为明确标注的降级模式；编码或解码不可用时自动回退到同样明确标注的低帧率 JPEG 兼容后端。 | 省电或高分辨率时选 30。 |
 | **Live scene render scale** | 按 Codex 视口的 50%–100% 渲染 Scene。 | 降低可明显减少 GPU 和显存占用。 |
 
 点击 **Original color / clarity** 会把背景不透明度、黑色遮罩、亮度、对比度、饱和度和模糊恢复为中性值，不会关闭自动取色或改变面板透明度。
@@ -149,7 +149,7 @@ Video 项目在 256 MiB 安全上限内会直接使用原始 MP4/WebM；超过�
 - **Blur** 设为 `0`；
 - 开启 **Mute video**；
 - 开启 **Pause video / throttle scene while Codex is hidden**；
-- Scene 选择 15 FPS 目标和较低渲染比例；
+- Scene 选择 30 FPS 目标和较低渲染比例；
 - 不需要时恢复原始背景。
 
 本项目不会转码，也不会根据电池、CPU 或 GPU 使用率自动切换预设。Image/Video 由 Codex 独立解码；高保真 Scene 会由 Wallpaper Engine 创建一份专用渲染窗口，因此桌面端同时播放壁纸时会产生额外渲染负载。

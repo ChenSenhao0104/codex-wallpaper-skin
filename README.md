@@ -52,9 +52,9 @@
 
 ## 性能与安全
 
-静态图负担最低。视频直接在 Codex 解码；高保真 Scene 同时使用 Wallpaper Engine 渲染、Windows Graphics Capture/D3D11（不可用时回退兼容抓取）、JPEG 编码和回环传输，传输安全上限为 15 FPS，并受 50%–100% 渲染比例控制。低负担建议是模糊 `0`、选择 15 FPS、较低 Scene 比例并开启隐藏暂停。
+静态图负担最低。视频直接在 Codex 解码；高保真 Scene 使用 Wallpaper Engine 渲染、Windows Graphics Capture/D3D11 抓取和硬件 H.264 编码，优先以 60 FPS 目标送入 Codex 内的常驻视频合成面；30 FPS 是明确标注的降级模式，编码或解码不可用时回退到同样明确标注的低帧率 JPEG 兼容后端。渲染比例仍为 50%–100%。低负担建议是模糊 `0`、选择 30 FPS、较低 Scene 比例并开启隐藏暂停。
 
-所有画面只通过回环 CDP 在本机内存中传入 Codex，不发送到互联网或局域网。高保真 Scene 由用户已安装的 Wallpaper Engine 执行并遵循其安全/性能设置；本程序自身不解释或执行 SceneScript。Web 壁纸代码与 Application 壁纸始终不会运行。同一 Windows 用户下的其他进程仍可能访问未认证的 CDP 端口，因此只应在可信会话中使用；完全退出以 CDP 参数启动的 Codex 才会关闭端口。
+所有画面只经本机 CDP 会话传入 Codex 渲染器内存，不经过网络，也不会发送到互联网或局域网。高保真 Scene 由用户已安装的 Wallpaper Engine 执行并遵循其安全/性能设置；本程序自身不解释或执行 SceneScript。Web 壁纸代码与 Application 壁纸始终不会运行。同一 Windows 用户下的其他进程仍可能访问未认证的 CDP 端口，因此只应在可信会话中使用；完全退出以 CDP 参数启动的 Codex 才会关闭端口。
 
 本项目不附带或重新分发 Wallpaper Engine 壁纸。用户必须拥有 Wallpaper Engine 并遵守壁纸作者许可。漏洞报告方式见 [SECURITY.md](SECURITY.md)。
 

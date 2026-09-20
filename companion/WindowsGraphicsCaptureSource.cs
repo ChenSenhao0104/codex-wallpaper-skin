@@ -12,9 +12,17 @@ using WinRT;
 namespace CodexWallpaperSkin;
 
 /// <summary>
-/// Captures an HWND through Windows Graphics Capture and copies the newest
-/// D3D11 surface into a CPU-readable bitmap. The frame channel has capacity one
-/// so a slow consumer never builds latency by replaying obsolete animation.
+/// Captures an HWND through Windows Graphics Capture.
+///
+/// Two frame shapes are supported because the product has two media paths. The
+/// compatibility path (default) publishes a frozen <see cref="BitmapSource"/> so
+/// frames can be JPEG encoded for the reduced-frame-rate CDP transport. The GPU
+/// path publishes the raw top-down BGRA bytes that the Media Foundation hardware
+/// encoder consumes directly, with no image encode and no BitmapSource
+/// allocation per frame.
+///
+/// Both frame channels have capacity two and drop the oldest frame, so a slow
+/// consumer can never build latency or memory by replaying obsolete animation.
 /// </summary>
 internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
 {
@@ -38,6 +46,8 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
             SingleReader = true,
             SingleWriter = true
         });
+    private readonly Channel<byte[]>? _rawFrames;
+    private readonly bool _rawPixels;
     private readonly GraphicsCaptureItem _item;
     private readonly IDirect3DDevice _winRtDevice;
     private readonly Direct3D11CaptureFramePool _framePool;
@@ -46,18 +56,39 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
     private IntPtr _d3dContext;
     private IntPtr _stagingTexture;
     private D3D11Texture2DDesc _stagingDescription;
+    private int _frameWidth;
+    private int _frameHeight;
+    private long _publishedRawFrames;
+    private long _consumedRawFrames;
     private bool _disposed;
+
+    /// <summary>Raw frames produced by the capture callback since the source started.</summary>
+    public long PublishedRawFrames => Interlocked.Read(ref _publishedRawFrames);
+
+    /// <summary>Raw frames taken by the consumer. The difference is what the bounded channel superseded.</summary>
+    public long ConsumedRawFrames => Interlocked.Read(ref _consumedRawFrames);
 
     private WindowsGraphicsCaptureSource(
         GraphicsCaptureItem item,
         IDirect3DDevice winRtDevice,
         IntPtr d3dDevice,
-        IntPtr d3dContext)
+        IntPtr d3dContext,
+        bool rawPixels)
     {
         _item = item;
         _winRtDevice = winRtDevice;
         _d3dDevice = d3dDevice;
         _d3dContext = d3dContext;
+        _rawPixels = rawPixels;
+        if (rawPixels)
+        {
+            _rawFrames = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(2)
+            {
+                FullMode = BoundedChannelFullMode.DropOldest,
+                SingleReader = true,
+                SingleWriter = true
+            });
+        }
         _framePool = Direct3D11CaptureFramePool.CreateFreeThreaded(
             _winRtDevice,
             DirectXPixelFormat.B8G8R8A8UIntNormalized,
@@ -70,19 +101,49 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
         _captureSession.StartCapture();
     }
 
-    public static WindowsGraphicsCaptureSource? TryStart(IntPtr window)
+    /// <summary>True when this source publishes raw BGRA pixels instead of bitmaps.</summary>
+    public bool UsesRawPixels => _rawPixels;
+
+    /// <summary>Size of the most recent frame, or (0, 0) before the first frame arrives.</summary>
+    public (int Width, int Height) FrameSize
     {
-        if (window == IntPtr.Zero || !GraphicsCaptureSession.IsSupported()) return null;
+        get
+        {
+            lock (_gate)
+            {
+                return (_frameWidth, _frameHeight);
+            }
+        }
+    }
+
+    public static WindowsGraphicsCaptureSource? TryStart(IntPtr window) => TryStart(window, rawPixels: false, out _);
+
+    public static WindowsGraphicsCaptureSource? TryStartRaw(IntPtr window, out string failure) =>
+        TryStart(window, rawPixels: true, out failure);
+
+    private static WindowsGraphicsCaptureSource? TryStart(IntPtr window, bool rawPixels, out string failure)
+    {
+        failure = string.Empty;
+        if (window == IntPtr.Zero || !GraphicsCaptureSession.IsSupported())
+        {
+            failure = "Windows Graphics Capture is unavailable on this system.";
+            return null;
+        }
         IntPtr d3dDevice = IntPtr.Zero, d3dContext = IntPtr.Zero;
         try
         {
             var item = CreateItemForWindow(window);
-            if (item.Size.Width < 64 || item.Size.Height < 64) return null;
+            if (item.Size.Width < 64 || item.Size.Height < 64)
+            {
+                failure = "The Wallpaper Engine render surface is too small to capture.";
+                return null;
+            }
             CreateD3DDevice(out d3dDevice, out d3dContext, out var winRtDevice);
-            return new WindowsGraphicsCaptureSource(item, winRtDevice, d3dDevice, d3dContext);
+            return new WindowsGraphicsCaptureSource(item, winRtDevice, d3dDevice, d3dContext, rawPixels);
         }
-        catch
+        catch (Exception exception)
         {
+            failure = exception.Message;
             if (d3dContext != IntPtr.Zero) Marshal.Release(d3dContext);
             if (d3dDevice != IntPtr.Zero) Marshal.Release(d3dDevice);
             return null;
@@ -91,6 +152,51 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
 
     public ValueTask<BitmapSource> ReadFrameAsync(CancellationToken cancellationToken) =>
         _frames.Reader.ReadAsync(cancellationToken);
+
+    /// <summary>
+    /// Blocks for the newest raw BGRA frame. Returns false on timeout or when the
+    /// capture closed, which the caller treats as a bounded capture interruption
+    /// rather than a fatal error.
+    /// </summary>
+    public bool TryReadRawFrame(int timeoutMilliseconds, out byte[]? pixels, out int width, out int height)
+    {
+        pixels = null;
+        lock (_gate)
+        {
+            width = _frameWidth;
+            height = _frameHeight;
+        }
+        var channel = _rawFrames;
+        if (channel is null)
+        {
+            return false;
+        }
+        if (channel.Reader.TryRead(out pixels))
+        {
+            Interlocked.Increment(ref _consumedRawFrames);
+            lock (_gate)
+            {
+                width = _frameWidth;
+                height = _frameHeight;
+            }
+            return true;
+        }
+        if (!channel.Reader.WaitToReadAsync().AsTask().Wait(Math.Max(1, timeoutMilliseconds)))
+        {
+            return false;
+        }
+        if (!channel.Reader.TryRead(out pixels))
+        {
+            return false;
+        }
+        Interlocked.Increment(ref _consumedRawFrames);
+        lock (_gate)
+        {
+            width = _frameWidth;
+            height = _frameHeight;
+        }
+        return true;
+    }
 
     private void FramePool_FrameArrived(Direct3D11CaptureFramePool sender, object args)
     {
@@ -101,20 +207,48 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
             {
                 using var frame = sender.TryGetNextFrame();
                 if (frame is null) return;
+                if (_rawPixels)
+                {
+                    var pixels = CopySurfacePixels(frame.Surface, out var width, out var height);
+                    _frameWidth = width;
+                    _frameHeight = height;
+                    Interlocked.Increment(ref _publishedRawFrames);
+                    _rawFrames?.Writer.TryWrite(pixels);
+                    return;
+                }
                 var bitmap = CopySurface(frame.Surface);
                 _frames.Writer.TryWrite(bitmap);
             }
             catch (Exception exception)
             {
                 _frames.Writer.TryComplete(exception);
+                _rawFrames?.Writer.TryComplete(exception);
             }
         }
     }
 
-    private void Item_Closed(GraphicsCaptureItem sender, object args) =>
-        _frames.Writer.TryComplete(new IOException("The Wallpaper Engine capture window was closed."));
+    private void Item_Closed(GraphicsCaptureItem sender, object args)
+    {
+        var exception = new IOException("The Wallpaper Engine capture window was closed.");
+        _frames.Writer.TryComplete(exception);
+        _rawFrames?.Writer.TryComplete(exception);
+    }
 
     private BitmapSource CopySurface(IDirect3DSurface surface)
+    {
+        var pixels = CopySurfacePixels(surface, out var width, out var height);
+        var bitmap = BitmapSource.Create(
+            width, height, 96, 96, PixelFormats.Bgra32, null, pixels, width * 4);
+        bitmap.Freeze();
+        return bitmap;
+    }
+
+    /// <summary>
+    /// Copies the newest D3D11 surface into a tightly packed, top-down BGRA
+    /// buffer. Both media paths share this code so the compatibility backend and
+    /// the GPU backend can never disagree about geometry or orientation.
+    /// </summary>
+    private byte[] CopySurfacePixels(IDirect3DSurface surface, out int width, out int height)
     {
         var access = surface.As<IDirect3DDxgiInterfaceAccess>();
         var textureGuid = D3D11Texture2DGuid;
@@ -137,8 +271,8 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
             ThrowIfFailed(map(_d3dContext, _stagingTexture, 0, D3D11MapRead, 0, out var mapped));
             try
             {
-                var width = checked((int)description.Width);
-                var height = checked((int)description.Height);
+                width = checked((int)description.Width);
+                height = checked((int)description.Height);
                 var stride = checked(width * 4);
                 if (mapped.Data == IntPtr.Zero || mapped.RowPitch < stride)
                 {
@@ -149,10 +283,7 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
                 {
                     Marshal.Copy(IntPtr.Add(mapped.Data, checked((int)(row * mapped.RowPitch))), pixels, row * stride, stride);
                 }
-                var bitmap = BitmapSource.Create(
-                    width, height, 96, 96, PixelFormats.Bgra32, null, pixels, stride);
-                bitmap.Freeze();
-                return bitmap;
+                return pixels;
             }
             finally
             {
@@ -279,6 +410,7 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
             if (_disposed) return ValueTask.CompletedTask;
             _disposed = true;
             _frames.Writer.TryComplete();
+            _rawFrames?.Writer.TryComplete();
             try { _framePool.FrameArrived -= FramePool_FrameArrived; } catch { }
             try { _item.Closed -= Item_Closed; } catch { }
             try { _captureSession.Dispose(); } catch { }

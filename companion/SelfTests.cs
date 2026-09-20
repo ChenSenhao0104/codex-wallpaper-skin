@@ -1,3 +1,6 @@
+using System.Buffers.Binary;
+using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -82,8 +85,12 @@ public static class SelfTests
             Equal(0.5d, settings.Contrast);
             Equal(2d, settings.Saturation);
             Equal(0.25d, settings.PlaybackRate);
-            Equal(15, settings.SceneFrameRate);
+            Equal(30, settings.SceneFrameRate);
             Equal(0.5d, settings.SceneResolutionScale);
+            Equal(60, new WallpaperSettings { SceneFrameRate = 60 }.Normalize().SceneFrameRate);
+            Equal(60, new WallpaperSettings { SceneFrameRate = 144 }.Normalize().SceneFrameRate);
+            Equal(30, new WallpaperSettings { SceneFrameRate = 15 }.Normalize().SceneFrameRate);
+            True(new WallpaperSettings().GpuStreamEnabled);
         });
         Check("private render window task-switcher style", () =>
         {
@@ -456,7 +463,7 @@ public static class SelfTests
             True(!CdpInjectionService.BootstrapScript.Contains("body > :not", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("canvas.width = 32", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("cws-palette", StringComparison.Ordinal));
-            True(CdpInjectionService.BootstrapScript.Contains("existing.version === 15", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("existing.version === 16", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinBeginCapturedStream", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinSetCapturedFrame", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("decode-timeout", StringComparison.Ordinal));
@@ -472,7 +479,11 @@ public static class SelfTests
             True(CdpInjectionService.NativeSurfaceProbeScript.Contains("cws-active", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("cancelAnimationFrame", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("await waitForMedia", StringComparison.Ordinal));
-            True(!CdpInjectionService.BootstrapScript.Contains("setInterval", StringComparison.Ordinal));
+            True(!CdpInjectionService.BootstrapCoreScript.Contains("setInterval", StringComparison.Ordinal));
+            // The bundled GPU surface owns exactly one watchdog interval and must
+            // clear it on disposal, so a torn-down runtime leaves no timer behind.
+            True(SceneRuntimeSource.Script.Contains("__cwsCreateGpuSurface", StringComparison.Ordinal));
+            True(SceneRuntimeSource.Script.Contains("clearInterval", StringComparison.Ordinal));
             True(CdpInjectionService.CleanupScript.Contains("__codexWallpaperSkinCleanup", StringComparison.Ordinal));
             True(!CdpInjectionService.CleanupVerificationScript.Contains("nativeThemeMarker", StringComparison.Ordinal));
             True(CdpInjectionService.CleanupVerificationScript.Contains("[data-cws-surface]", StringComparison.Ordinal));
@@ -489,6 +500,248 @@ public static class SelfTests
             True(CdpInjectionService.BootstrapScript.Contains("HTMLCanvasElement", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("capturePointer.buttons", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("capturePointer.wheel", StringComparison.Ordinal));
+        });
+
+        Check("v0.4 status labels fail closed and never borrow a GPU state", () =>
+        {
+            Equal("GPU dynamic - 60 FPS target", GpuStreamStatusLabel.Describe(GpuStreamStatus.GpuDynamic60));
+            Equal("GPU dynamic - 30 FPS fallback", GpuStreamStatusLabel.Describe(GpuStreamStatus.GpuDynamic30Fallback));
+            Equal("reduced-frame-rate JPEG compatibility", GpuStreamStatusLabel.Describe(GpuStreamStatus.ReducedFrameRateCompatibility));
+            Equal("static/preview fallback", GpuStreamStatusLabel.Describe(GpuStreamStatus.StaticPreviewFallback));
+            Equal("recovering", GpuStreamStatusLabel.Describe(GpuStreamStatus.Recovering));
+            Equal("unsupported or failed", GpuStreamStatusLabel.Describe(GpuStreamStatus.UnsupportedOrFailed));
+
+            Equal(60, GpuStreamStatusLabel.NormalizeFrameRate(120));
+            Equal(60, GpuStreamStatusLabel.NormalizeFrameRate(60));
+            Equal(30, GpuStreamStatusLabel.NormalizeFrameRate(45));
+            Equal(30, GpuStreamStatusLabel.NormalizeFrameRate(15));
+
+            // An active recovery outranks a GPU claim, and a failed GPU path must
+            // never be reported as GPU dynamic just because a compatibility
+            // backend is available.
+            Equal(GpuStreamStatus.Recovering, GpuStreamStatusLabel.Decide(
+                new GpuStreamStatusInput(true, true, 60, true, true)));
+            Equal(GpuStreamStatus.GpuDynamic60, GpuStreamStatusLabel.Decide(
+                new GpuStreamStatusInput(true, false, 60, false, false)));
+            Equal(GpuStreamStatus.GpuDynamic30Fallback, GpuStreamStatusLabel.Decide(
+                new GpuStreamStatusInput(true, false, 30, false, false)));
+            Equal(GpuStreamStatus.ReducedFrameRateCompatibility, GpuStreamStatusLabel.Decide(
+                new GpuStreamStatusInput(false, false, 60, true, true)));
+            Equal(GpuStreamStatus.StaticPreviewFallback, GpuStreamStatusLabel.Decide(
+                new GpuStreamStatusInput(false, false, 60, false, true)));
+            Equal(GpuStreamStatus.UnsupportedOrFailed, GpuStreamStatusLabel.Decide(
+                new GpuStreamStatusInput(false, false, 60, false, false)));
+            True(GpuStreamStatusLabel.TryParse("GPU dynamic - 60 FPS target", out var parsed)
+                && parsed == GpuStreamStatus.GpuDynamic60);
+            True(!GpuStreamStatusLabel.TryParse("GPU dynamic - 240 FPS", out var unknown)
+                && unknown == GpuStreamStatus.UnsupportedOrFailed);
+            True(GpuStreamStatusLabel.IsGpuDynamic(GpuStreamStatus.GpuDynamic60));
+            True(!GpuStreamStatusLabel.IsGpuDynamic(GpuStreamStatus.ReducedFrameRateCompatibility));
+        });
+        Check("v0.4 diagnostics stay bounded and privacy safe", () =>
+        {
+            var diagnostics = new GpuStreamDiagnostics("streamtoken0123456789", GpuMediaPipeline.TransportName, 1280, 720, 45)
+            {
+                EncoderMode = "hardware",
+                DecoderMode = "hardware"
+            };
+            Equal(30, diagnostics.RequestedFrameRate);
+            for (var index = 0; index < 600; index++)
+            {
+                diagnostics.CountCaptured();
+                diagnostics.CountEncoded(1000 + index);
+                diagnostics.CountDeliveredFragment();
+                diagnostics.CountPresented();
+                diagnostics.RecordLatency(TimeSpan.FromMilliseconds(index % 120));
+                diagnostics.ObserveQueueDepth(index % 7);
+            }
+            diagnostics.CountRejected();
+            diagnostics.CountDropped();
+            diagnostics.CountStaleFragment();
+            diagnostics.CountRecovery(TimeSpan.FromSeconds(2));
+
+            var snapshot = diagnostics.Snapshot(GpuStreamStatus.GpuDynamic60);
+            Equal(600L, snapshot.CapturedFrames);
+            Equal(600L, snapshot.PresentedFragments);
+            Equal(6, snapshot.MaximumQueueDepth);
+            Equal(1, snapshot.RecoveryCount);
+            True(snapshot.MedianEncodeToPresentMs is >= 0 and <= 120);
+            True(snapshot.P95EncodeToPresentMs >= snapshot.MedianEncodeToPresentMs);
+            Equal("hardware", snapshot.EncoderMode);
+            Equal("cdp-fragment", snapshot.Transport);
+            True(snapshot.LastPresentedAt is not null);
+            // The latency reservoir is fixed size, so a long run cannot grow the
+            // diagnostic footprint without bound.
+            for (var index = 0; index < 5000; index++) diagnostics.RecordLatency(TimeSpan.FromMilliseconds(10));
+
+            var description = snapshot.Describe();
+            True(description.Contains("stream=streamtoken0123456789", StringComparison.Ordinal));
+            True(description.Contains("p95=", StringComparison.Ordinal));
+            // Diagnostics must never carry a Windows drive path or personal location.
+            True(!description.Contains(@":\", StringComparison.Ordinal));
+            True(!snapshot.DegradedCadence);
+
+            var degraded = new GpuStreamDiagnostics("streamtoken0123456789", GpuMediaPipeline.TransportName, 640, 360, 60);
+            degraded.CountPresented();
+            True(!degraded.Snapshot(GpuStreamStatus.GpuDynamic60).DegradedCadence);
+            // A GPU mode that cannot hold 28 presented FPS is degraded and must be
+            // diagnosable rather than reported as success.
+            True(GpuStreamStatusLabel.IsDegradedCadence(GpuStreamStatus.GpuDynamic60, 10, 20));
+            True(GpuStreamStatusLabel.IsDegradedCadence(GpuStreamStatus.GpuDynamic30Fallback, 10, 12));
+            True(!GpuStreamStatusLabel.IsDegradedCadence(GpuStreamStatus.GpuDynamic60, 10, 30));
+            True(!GpuStreamStatusLabel.IsDegradedCadence(GpuStreamStatus.GpuDynamic60, 3, 10));
+            // The compatibility backend is labeled honestly rather than as degraded GPU.
+            True(!GpuStreamStatusLabel.IsDegradedCadence(GpuStreamStatus.ReducedFrameRateCompatibility, 60, 5));
+        });
+        Check("v0.4 fragment batcher keeps order and is bounded", () =>
+        {
+            var batcher = new GpuStreamBatcher(maximumFragments: 3, maximumBytes: 1024 * 1024, maximumDelay: TimeSpan.FromMilliseconds(50));
+            var now = DateTimeOffset.UnixEpoch;
+            True(!batcher.ShouldFlush(now));
+            batcher.Add(new Mp4Chunk(Mp4ChunkKind.Media, new byte[10], 0, now, 0));
+            batcher.Add(new Mp4Chunk(Mp4ChunkKind.Media, new byte[10], 1, now.AddMilliseconds(10), 0));
+            True(!batcher.ShouldFlush(now.AddMilliseconds(20)));
+            batcher.Add(new Mp4Chunk(Mp4ChunkKind.Media, new byte[10], 2, now.AddMilliseconds(20), 0));
+            True(batcher.ShouldFlush(now.AddMilliseconds(20)));
+            var batch = batcher.Take(now.AddMilliseconds(20));
+            True(batch is not null);
+            Equal(0, batch!.FirstSequence);
+            Equal(3, batch.Count);
+            Equal(30, batch.ByteCount);
+            Equal(0, batcher.Count);
+
+            // Age alone must flush, so a 60 FPS stream cannot be held waiting for
+            // a fragment count that a static Scene never reaches.
+            batcher.Add(new Mp4Chunk(Mp4ChunkKind.Media, new byte[10], 3, now, 0));
+            True(!batcher.ShouldFlush(now.AddMilliseconds(49)));
+            True(batcher.ShouldFlush(now.AddMilliseconds(50)));
+
+            // A byte ceiling flushes large frames early.
+            var byteBatcher = new GpuStreamBatcher(maximumFragments: 32, maximumBytes: 4096, maximumDelay: TimeSpan.FromSeconds(5));
+            byteBatcher.Add(new Mp4Chunk(Mp4ChunkKind.Media, new byte[4096], 0, now, 0));
+            True(byteBatcher.ShouldFlush(now));
+            True(byteBatcher.Take(now)!.Count == 1);
+            True(byteBatcher.Take(now) is null);
+        });
+        Check("v0.4 fMP4 assembler groups boxes into MSE units", () =>
+        {
+            var init = CreateInitSegment(0x64, 0x00, 0x28);
+            var fragment = CreateMediaFragment(4);
+            var assembler = new Mp4ChunkAssembler();
+            var stamp = DateTimeOffset.UnixEpoch;
+
+            // Media Foundation does not promise one box per Write call, so the
+            // stream is delivered in deliberately awkward pieces.
+            var chunks = new List<Mp4Chunk>();
+            var whole = init.Concat(fragment).ToArray();
+            for (var cut = 0; cut < whole.Length; cut++)
+            {
+                chunks.AddRange(assembler.Append(whole.AsSpan(cut, 1), 0, stamp));
+            }
+            True(!assembler.HasFailed);
+            Equal(2, chunks.Count);
+            Equal(Mp4ChunkKind.Init, chunks[0].Kind);
+            Equal(Mp4ChunkKind.Media, chunks[1].Kind);
+            Equal(0, chunks[0].Sequence);
+            Equal(1, chunks[1].Sequence);
+            // The init segment must carry every byte before moov, byte for byte.
+            Equal(init.Length, chunks[0].Bytes.Length);
+            True(chunks[0].Bytes.AsSpan().SequenceEqual(init));
+            True(chunks[1].Bytes.AsSpan().SequenceEqual(fragment));
+
+            var report = Mp4StreamInspector.Inspect(whole);
+            True(report.IsMseCompatible);
+            True(report.HasMovieBox && HasBoxName(report, "moof"));
+            Equal(4, report.SampleCount);
+            Equal(640, report.Width);
+            Equal(360, report.Height);
+            True(Mp4StreamInspector.TryReadAvcCodecString(init, out var codec));
+            Equal("avc1.640028", codec);
+            var avc = Mp4StreamInspector.InspectAvcBitstream(whole);
+            True(avc.IsDecodable);
+            Equal(1, avc.SequenceParameterSets);
+            Equal(1, avc.PictureParameterSets);
+            Equal(1, avc.InstantaneousRefreshFrames);
+            Equal(4, avc.NalLengthSize);
+
+            // A media data box whose NAL lengths overrun it must be rejected, which
+            // is the failure that makes a structurally valid MP4 unplayable.
+            var corrupted = CreateBox("mdat", new byte[] { 0, 0, 0, 0xFF, 0x65 }).ToArray();
+            True(!Mp4StreamInspector.InspectAvcBitstream(init.Concat(corrupted).ToArray()).IsDecodable);
+        });
+        Check("v0.4 fMP4 assembler fails closed on corruption", () =>
+        {
+            var stamp = DateTimeOffset.UnixEpoch;
+            var truncated = new Mp4ChunkAssembler();
+            var partial = CreateInitSegment(0x64, 0x00, 0x28)[..20];
+            True(truncated.Append(partial, 0, stamp).Count == 0);
+            True(!truncated.HasFailed);
+            True(truncated.PendingBytes > 0);
+
+            var oversized = new Mp4ChunkAssembler();
+            var header = new byte[8];
+            BinaryPrimitives.WriteUInt32BigEndian(header, Mp4ChunkAssembler.MaximumBoxBytes + 8u);
+            Encoding.ASCII.GetBytes("mdat").CopyTo(header, 4);
+            oversized.Append(header, 0, stamp);
+            True(oversized.HasFailed);
+
+            var unbounded = new Mp4ChunkAssembler();
+            var zeroLength = new byte[8];
+            Encoding.ASCII.GetBytes("free").CopyTo(zeroLength, 4);
+            unbounded.Append(zeroLength, 0, stamp);
+            True(unbounded.HasFailed);
+
+            var duplicatedMdat = new Mp4ChunkAssembler();
+            var init = CreateInitSegment(0x64, 0x00, 0x28);
+            var moof = CreateBox("moof", CreateBox("traf", new byte[8]));
+            var mdat = CreateBox("mdat", new byte[4]);
+            var media = moof.Concat(mdat).ToArray();
+            duplicatedMdat.Append(init.Concat(media).Concat(moof).ToArray(), 0, stamp);
+            // Two moof boxes without an intervening mdat is a corrupt stream.
+            duplicatedMdat.Append(moof, 0, stamp);
+            True(duplicatedMdat.HasFailed);
+            // A failed assembler must never be mistaken for a short one.
+            True(duplicatedMdat.Append(media, 0, stamp).Count == 0);
+        });
+        Check("v0.4 renderer wiring is present and reversible", () =>
+        {
+            var script = CdpInjectionService.BootstrapScript;
+            True(script.Contains("__codexWallpaperSkinBeginGpuStream", StringComparison.Ordinal));
+            True(script.Contains("__codexWallpaperSkinPushGpuBatch", StringComparison.Ordinal));
+            True(script.Contains("__codexWallpaperSkinGetGpuStreamStatus", StringComparison.Ordinal));
+            True(script.Contains("__codexWallpaperSkinEndGpuStream", StringComparison.Ordinal));
+            True(script.Contains("__cwsCreateGpuSurface", StringComparison.Ordinal));
+            True(script.Contains("cws-gpu-surface-1", StringComparison.Ordinal));
+            True(script.Contains("gpuPreviousMedia", StringComparison.Ordinal));
+            True(script.Contains("existing.version === 16", StringComparison.Ordinal));
+            // Networking stays out of the renderer, and the GPU surface must not
+            // be reachable through a socket that the page could be told to open.
+            True(!script.Contains("WebSocket", StringComparison.Ordinal));
+            True(!script.Contains("XMLHttpRequest", StringComparison.Ordinal));
+            True(CdpInjectionService.CleanupScript.Contains("GpuStream", StringComparison.Ordinal));
+            True(CdpInjectionService.CleanupVerificationScript
+                .Contains("__codexWallpaperSkinBeginGpuStream", StringComparison.Ordinal));
+            True(CdpInjectionService.ArtifactProbeScript
+                .Contains("__codexWallpaperSkinPushGpuBatch", StringComparison.Ordinal));
+        });
+        Check("v0.4 encoder options reject unsafe geometries", () =>
+        {
+            True(!MediaFoundationH264Encoder.TryCreate(
+                new GpuEncoderOptions(32, 32, 60, 4_000_000, true, TimeSpan.FromMilliseconds(100)),
+                out var tooSmall, out var smallReason));
+            True(tooSmall is null && smallReason.Length > 0);
+            True(!MediaFoundationH264Encoder.TryCreate(
+                new GpuEncoderOptions(1920, 1080, 24, 8_000_000, true, TimeSpan.FromMilliseconds(100)),
+                out _, out var rateReason));
+            True(rateReason.Contains("30 FPS fallback", StringComparison.Ordinal));
+
+            // The captured-frame gate is shared by both media paths.
+            var uniform = new byte[64 * 64 * 4];
+            for (var index = 3; index < uniform.Length; index += 4) uniform[index] = 255;
+            True(!CapturedFrameQuality.IsAcceptable(uniform, 64, 64));
+            var flat = new byte[64 * 64 * 4];
+            True(!CapturedFrameQuality.IsAcceptable(flat, 64, 64));
+            True(!CapturedFrameQuality.IsAcceptable(uniform, 32, 32));
         });
 
         return new SelfTestResult(passed, failed, messages);
@@ -509,11 +762,11 @@ public static class SelfTests
         }
     }
 
-    private static void True(bool value)
+    private static void True(bool value, [CallerArgumentExpression(nameof(value))] string? expression = null)
     {
         if (!value)
         {
-            throw new InvalidOperationException("Expected true.");
+            throw new InvalidOperationException("Expected true: " + (expression ?? "condition"));
         }
     }
 
@@ -538,8 +791,86 @@ public static class SelfTests
         throw new InvalidOperationException($"Expected {typeof(TException).Name}.");
     }
 
-    private static byte[] CreatePngHeader(int width, int height) =>
-    [
+    private static bool HasBoxName(Mp4StreamReport report, string name) => report.TopLevelBoxes.Contains(name);
+
+    /// <summary>Builds one big-endian MP4 box, optionally containing child boxes.</summary>
+    private static byte[] CreateBox(string type, params byte[][] children)
+    {
+        var payload = children.Length == 0
+            ? Array.Empty<byte>()
+            : children.SelectMany(child => child).ToArray();
+        var box = new byte[8 + payload.Length];
+        BinaryPrimitives.WriteUInt32BigEndian(box, (uint)box.Length);
+        Encoding.ASCII.GetBytes(type).CopyTo(box, 4);
+        payload.CopyTo(box, 8);
+        return box;
+    }
+
+    /// <summary>
+    /// Builds a synthetic but structurally faithful fragmented MP4 initialisation
+    /// segment. Synthetic fixtures are mandatory: a real Workshop project may be
+    /// used for local manual validation but is never copied into the repository.
+    /// </summary>
+    private static byte[] CreateInitSegment(byte profile, byte compatibility, byte level)
+    {
+        var avcC = CreateBox("avcC", [1, profile, compatibility, level, 0xFF, 0xE0, 0x00]);
+        var entry = new byte[78 + avcC.Length];
+        entry[7] = 1; // data_reference_index
+        BinaryPrimitives.WriteUInt16BigEndian(entry.AsSpan(24), 640);
+        BinaryPrimitives.WriteUInt16BigEndian(entry.AsSpan(26), 360);
+        avcC.CopyTo(entry, 78);
+
+        var stsdBody = new byte[8 + 8 + entry.Length];
+        BinaryPrimitives.WriteUInt32BigEndian(stsdBody.AsSpan(4), 1); // entry_count
+        BinaryPrimitives.WriteUInt32BigEndian(stsdBody.AsSpan(8), (uint)(8 + entry.Length));
+        Encoding.ASCII.GetBytes("avc1").CopyTo(stsdBody, 12);
+        entry.CopyTo(stsdBody, 16);
+
+        var stsd = CreateBox("stsd", stsdBody);
+        var stbl = CreateBox("stbl", stsd);
+        var minf = CreateBox("minf", stbl);
+        var mdhd = new byte[16];
+        BinaryPrimitives.WriteUInt32BigEndian(mdhd.AsSpan(12), 60000);
+        var mdia = CreateBox("mdia", CreateBox("mdhd", mdhd), minf);
+        var trak = CreateBox("trak", mdia);
+        var mvex = CreateBox("mvex", CreateBox("trex", new byte[24]));
+        var ftyp = CreateBox("ftyp", "isomisom"u8.ToArray());
+        var moov = CreateBox("moov", mvex, trak);
+        return ftyp.Concat(moov).ToArray();
+    }
+
+    /// <summary>Builds one synthetic moof+mdat media fragment carrying <paramref name="sampleCount"/> samples.</summary>
+    private static byte[] CreateMediaFragment(int sampleCount)
+    {
+        var trun = new byte[8];
+        BinaryPrimitives.WriteUInt32BigEndian(trun.AsSpan(4), (uint)sampleCount);
+        var moof = CreateBox("moof", CreateBox("traf", CreateBox("trun", trun)));
+        var payload = new List<byte>();
+        for (var sample = 0; sample < sampleCount; sample++)
+        {
+            // One access unit per sample: parameter sets on the first, then an
+            // instantaneous refresh frame followed by non-refresh frames, all
+            // length-prefixed with four-byte lengths as avcC declares.
+            if (sample == 0)
+            {
+                payload.AddRange(CreateNalUnit(7, 4));
+                payload.AddRange(CreateNalUnit(8, 4));
+            }
+            payload.AddRange(CreateNalUnit((byte)(sample == 0 ? 5 : 1), 12));
+        }
+        var mdat = CreateBox("mdat", payload.ToArray());
+        return moof.Concat(mdat).ToArray();
+    }
+
+    private static byte[] CreateNalUnit(byte nalType, int payloadBytes)
+    {
+        var unit = new byte[4 + payloadBytes];
+        BinaryPrimitives.WriteUInt32BigEndian(unit, (uint)payloadBytes);
+        unit[4] = nalType;
+        return unit;
+    }
+
+    private static byte[] CreatePngHeader(int width, int height) =>    [
         0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
         0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
         (byte)(width >> 24), (byte)(width >> 16), (byte)(width >> 8), (byte)width,

@@ -11,7 +11,10 @@ if (!match?.groups?.script) throw new Error('Could not extract BootstrapCoreScri
 const runtime = match.groups.script.split(/\r?\n/).map(line => line.replace(/^        /, '')).join('\n');
 const expectedSceneRevision = runtime.match(/__cwsWeSceneLibrary\?\.version === '([^']+)'/)?.[1];
 const expectedSceneHostVersion = runtime.match(/__cwsCreateSceneWallpaper\.version === '([^']+)'/)?.[1];
-if (!expectedSceneRevision || !expectedSceneHostVersion) throw new Error('Could not extract the expected Scene runtime fingerprints.');
+const expectedGpuSurfaceVersion = runtime.match(/__cwsCreateGpuSurface\?\.version === '([^']+)'/)?.[1];
+if (!expectedSceneRevision || !expectedSceneHostVersion || !expectedGpuSurfaceVersion) {
+  throw new Error('Could not extract the expected Scene and GPU surface runtime fingerprints.');
+}
 const sceneLibraryFiles = [
   'pkg/container.js', 'pkg/texture.js', 'scene/parse.js', 'scene/effects-parse.js',
   'render/math.js', 'render/noise.js', 'render/hlsl2glsl.js', 'render/effects.js', 'render/renderer.js'
@@ -24,7 +27,8 @@ const stripModuleSyntax = sceneSource => sceneSource.split(/\r?\n/).flatMap(line
 const sceneLibrarySource = sceneLibraryFiles.map(file => stripModuleSyntax(fs.readFileSync(
   path.join(scriptDirectory, '..', 'companion', 'ThirdParty', 'we-scene', 'src', ...file.split('/')), 'utf8'))).join('\n');
 const sceneHostSource = fs.readFileSync(path.join(scriptDirectory, '..', 'companion', 'Runtime', 'scene-host.js'), 'utf8');
-const completeRuntime = `(() => {\n${sceneLibrarySource}\nwindow.__cwsWeSceneLibrary = Object.freeze({ version: 'runtime-boundary-smoke', parsePkg, getEntry, parseTex, decodeMip0, decodeMips, FIF, parseScene, resolveMaterial, resolveEffectChain, BUILTIN_MODELS, BUILTIN_MATERIALS, createRenderer, makeTexture, makeTextureMip, generateNoiseTexture });\n})();\n${sceneHostSource}\n${runtime}`;
+const gpuSurfaceSource = fs.readFileSync(path.join(scriptDirectory, '..', 'companion', 'Runtime', 'gpu-surface.js'), 'utf8');
+const completeRuntime = `(() => {\n${sceneLibrarySource}\nwindow.__cwsWeSceneLibrary = Object.freeze({ version: 'runtime-boundary-smoke', parsePkg, getEntry, parseTex, decodeMip0, decodeMips, FIF, parseScene, resolveMaterial, resolveEffectChain, BUILTIN_MODELS, BUILTIN_MATERIALS, createRenderer, makeTexture, makeTextureMip, generateNoiseTexture });\n})();\n${sceneHostSource}\n${gpuSurfaceSource}\n${runtime}`;
 const cleanupMatch = source.match(/internal const string CleanupScript = """\r?\n(?<script>[\s\S]*?)\r?\n        """;/);
 if (!cleanupMatch?.groups?.script) throw new Error('Could not extract CleanupScript from CdpInjectionService.cs.');
 const cleanupRuntime = cleanupMatch.groups.script.split(/\r?\n/).map(line => line.replace(/^        /, '')).join('\n');
@@ -272,7 +276,67 @@ const installSceneStubs = (rendererVersion = expectedSceneRevision, hostVersion 
 };
 const bootstrap = (rendererVersion, hostVersion) => {
   installSceneStubs(rendererVersion, hostVersion);
+  installGpuSurfaceStub();
   return Function(`return ${runtime}`)();
+};
+
+// v0.4 GPU video surface stub. The real bundle is exercised through
+// completeRuntime above; here the host side of the contract is driven so the
+// presented/appended/stale/busy/rejected states and the transactional promotion
+// can be asserted without a hardware decoder.
+let gpuSurfaceMode = 'present';
+let gpuSurfaceDisposeCount = 0;
+const installGpuSurfaceStub = (version = expectedGpuSurfaceVersion) => {
+  const createGpuSurface = async options => {
+    const element = document.createElement('video');
+    const counters = { appended: 0, presented: 0, sequence: -1, disposed: false };
+    const controller = {
+      version,
+      streamId: options.streamId,
+      element,
+      get mode() { return counters.presented > 0 ? 'gpu-video-live' : 'gpu-video-pending'; },
+      decoderMode: 'hardware',
+      async pushFragment(sequence, data) {
+        if (counters.disposed) return 'stale';
+        if (typeof data !== 'string' || data.length === 0) return 'rejected';
+        if (gpuSurfaceMode === 'busy') return 'busy';
+        if (gpuSurfaceMode === 'reject') return 'decode-failed';
+        if (!Number.isInteger(sequence) || sequence !== counters.sequence + 1) return 'rejected';
+        counters.sequence = sequence;
+        counters.appended++;
+        if (gpuSurfaceMode === 'never-present') return 'appended';
+        counters.presented++;
+        return 'presented';
+      },
+      status() {
+        return {
+          streamId: options.streamId,
+          mode: controller.mode,
+          state: counters.disposed ? 'disposed' : (counters.presented > 0 ? 'live' : 'pending'),
+          decoderMode: 'hardware',
+          appendedFragments: counters.appended,
+          presentedFrames: counters.presented,
+          pendingFragments: 0,
+          bufferedSeconds: 0,
+          appendedBytes: counters.appended * 1024,
+          lastPresentedAt: counters.presented > 0 ? Date.now() : null,
+          lastSequence: counters.sequence,
+          degraded: false,
+          reason: null
+        };
+      },
+      update() {},
+      dispose() {
+        if (counters.disposed) return;
+        counters.disposed = true;
+        gpuSurfaceDisposeCount++;
+        try { element.remove(); } catch (_) {}
+      }
+    };
+    return controller;
+  };
+  createGpuSurface.version = version;
+  globalThis.__cwsCreateGpuSurface = createGpuSurface;
 };
 
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
@@ -464,6 +528,81 @@ assert(bootstrap() === 'ready', 'runtime did not recover from orphan nodes');
 assert(!orphanMedia.isConnected && !orphanOverlay.isConnected, 'bootstrap left orphan media nodes connected');
 Function(`return ${cleanupRuntime}`)();
 assert(Function(`return ${cleanupVerification}`)() === true, 'final cleanup verification failed');
+
+// --- v0.4 GPU video stream surface -----------------------------------------
+assert(bootstrap() === 'ready', 'runtime did not start for the GPU stream tests');
+window.__codexWallpaperSkinBeginUpload('gpu-base', 'image/png');
+window.__codexWallpaperSkinPushChunk('gpu-base', btoa('gpu-base-image'));
+await window.__codexWallpaperSkinFinishUpload('gpu-base', 'image', settings, null);
+const gpuBaseline = window.__codexWallpaperSkin.media;
+assert(gpuBaseline?.tagName === 'IMG', 'the GPU stream test needs a baseline background');
+
+assert((await window.__codexWallpaperSkinBeginGpuStream('short', { width: 1280, height: 720 })).accepted === false,
+  'an invalid GPU stream identity was accepted');
+const gpuToken = 'gputoken0123456789abcd';
+const gpuStarted = await window.__codexWallpaperSkinBeginGpuStream(gpuToken, {
+  width: 1280, height: 720, frameRate: 60, codec: 'video/mp4; codecs="avc1.640028"'
+});
+assert(gpuStarted.accepted === true && gpuStarted.streamId === gpuToken, 'the GPU stream surface was not created');
+assert(window.__codexWallpaperSkin.media === gpuBaseline && gpuBaseline.isConnected,
+  'starting a GPU stream replaced the last confirmed good frame before anything was presented');
+const gpuElement = window.__codexWallpaperSkin.gpuStream.element;
+
+assert(await window.__codexWallpaperSkinPushGpuBatch(gpuToken, [{ sequence: 1, data: 'bW9vZg==' }]) === 'rejected',
+  'an out-of-order GPU fragment was accepted');
+assert(await window.__codexWallpaperSkinPushGpuBatch(gpuToken, [{ sequence: 0, data: 'bW9vZg==' }]) === 'presented',
+  'the first GPU fragment was not presented');
+assert(window.__codexWallpaperSkin.media === gpuElement && gpuElement.isConnected,
+  'a presented GPU frame did not promote the video surface');
+assert(!gpuBaseline.isConnected, 'the previous wallpaper was not retired after a confirmed presentation');
+assert(await window.__codexWallpaperSkinPushGpuBatch('staletoken0123456789', [{ sequence: 1, data: 'bW9vZg==' }]) === 'stale',
+  'a stale GPU stream could still push fragments');
+assert(window.__codexWallpaperSkinGetGpuStreamStatus(gpuToken)?.state === 'live',
+  'GPU stream status did not report the live state');
+assert(window.__codexWallpaperSkinGetGpuStreamStatus('staletoken0123456789') === null,
+  'a stale GPU stream identity could read status');
+assert(window.__codexWallpaperSkinGetGpuStreamStatus(gpuToken).decoderMode === 'hardware',
+  'GPU stream status omitted the decoder mode');
+
+// A replacement stream that never presents must leave the current frame visible.
+gpuSurfaceMode = 'never-present';
+const replacementToken = 'gputoken0123456789efgh';
+assert((await window.__codexWallpaperSkinBeginGpuStream(replacementToken, { width: 1280, height: 720 })).accepted === true,
+  'the replacement GPU stream was rejected');
+assert(window.__codexWallpaperSkin.media === gpuElement && gpuElement.isConnected,
+  'an unpresented replacement stream removed the visible frame');
+assert(await window.__codexWallpaperSkinPushGpuBatch(replacementToken, [{ sequence: 0, data: 'bW9vZg==' }]) === 'appended',
+  'an unpresented GPU fragment was reported as presented');
+assert(window.__codexWallpaperSkin.media === gpuElement, 'an unpresented replacement promoted itself');
+
+// A saturated transport must be reported so the controller restarts the stream
+// instead of silently dropping fragments, and a decode failure must be visible.
+gpuSurfaceMode = 'busy';
+assert(await window.__codexWallpaperSkinPushGpuBatch(replacementToken, [{ sequence: 1, data: 'bW9vZg==' }]) === 'busy',
+  'a saturated GPU transport was not reported as busy');
+gpuSurfaceMode = 'reject';
+assert(await window.__codexWallpaperSkinPushGpuBatch(replacementToken, [{ sequence: 1, data: 'bW9vZg==' }]) === 'decode-failed',
+  'a decode failure was not reported');
+gpuSurfaceMode = 'present';
+
+const replacementElement = window.__codexWallpaperSkin.gpuStream.element;
+const disposalsBeforeEnd = gpuSurfaceDisposeCount;
+assert(window.__codexWallpaperSkinEndGpuStream(replacementToken) === true, 'ending the GPU stream failed');
+// Ending the stream retires both the active surface and the never-promoted
+// replacement it was still holding on to.
+assert(gpuSurfaceDisposeCount >= disposalsBeforeEnd + 1, 'ending the GPU stream did not dispose the surface');
+assert(!replacementElement.isConnected, 'ending the GPU stream left its surface in the document');
+assert(!gpuElement.isConnected, 'ending the GPU stream left the superseded surface in the document');
+assert(await window.__codexWallpaperSkinPushGpuBatch(replacementToken, [{ sequence: 0, data: 'bW9vZg==' }]) === 'stale',
+  'an ended GPU stream could still push fragments');
+assert(window.__codexWallpaperSkinEndGpuStream('staletoken0123456789') === false,
+  'a stale identity ended the active GPU stream');
+
+// Restore must tear the GPU surface down with everything else.
+assert((await window.__codexWallpaperSkinBeginGpuStream(gpuToken, { width: 1280, height: 720 })).accepted === true,
+  'the GPU stream could not be restarted for the cleanup check');
+Function(`return ${cleanupRuntime}`)();
+assert(Function(`return ${cleanupVerification}`)() === true, 'cleanup left GPU stream artifacts behind');
 
 nativeSurfaceValue = '';
 let mismatchRefused = false;

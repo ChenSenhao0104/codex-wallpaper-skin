@@ -10,7 +10,7 @@ internal static partial class SceneRuntimeSource
     // patches.  It must change whenever any bundled JavaScript changes; otherwise
     // an already-open Codex page can keep the previous renderer even after the
     // native controller itself has been upgraded.
-    internal const string UpstreamRevision = "we-scene@6b503a36b952f91dbab5e6f378f632f87baf05cc+cws.11";
+    internal const string UpstreamRevision = "we-scene@6b503a36b952f91dbab5e6f378f632f87baf05cc+cws.12";
 
     private static readonly string[] LibraryFiles =
     [
@@ -44,6 +44,10 @@ internal static partial class SceneRuntimeSource
             .AppendLine(", parsePkg, getEntry, parseTex, decodeMip0, decodeMips, FIF, parseScene, resolveMaterial, resolveEffectChain, BUILTIN_MODELS, BUILTIN_MATERIALS, createRenderer, makeTexture, makeTextureMip, generateNoiseTexture });");
         builder.AppendLine("})();");
         builder.AppendLine(ReadResource("Runtime.scene-host.js"));
+        // The v0.4 GPU video surface installs window.__cwsCreateGpuSurface. It is
+        // bundled unconditionally so an upgraded controller can always replace a
+        // page that is still running the previous renderer revision.
+        builder.AppendLine(ReadResource("Runtime.gpu-surface.js"));
         return builder.ToString();
     }
 

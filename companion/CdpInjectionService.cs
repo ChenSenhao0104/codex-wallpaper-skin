@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 
 namespace CodexWallpaperSkin;
@@ -20,6 +21,12 @@ public sealed class CdpInjectionService : IAsyncDisposable
     public bool HasActiveCapture => _captureLease?.Session.IsRunning == true;
     public Task ActiveCaptureCompletion => _captureLease?.Session.Completion ?? Task.CompletedTask;
     public CdpTarget? Target => _client?.Target;
+
+    /// <summary>
+    /// Why the GPU media path was not used for the most recent apply. The
+    /// controller shows it so a fallback is never mistaken for full performance.
+    /// </summary>
+    public string? LastGpuFallbackReason { get; private set; }
 
     private sealed record CaptureLease(WallpaperEngineCaptureSession Session, string Token);
 
@@ -132,11 +139,45 @@ public sealed class CdpInjectionService : IAsyncDisposable
                     {
                         var viewport = await GetViewportAsync(client, operationToken);
                         session = await WallpaperEngineCaptureSession.StartAsync(
-                            wallpaper, settings, viewport.Width, viewport.Height, operationToken);
+                            wallpaper, settings, viewport.Width, viewport.Height, operationToken,
+                            useGpuMediaPath: settings.GpuStreamEnabled);
                         await using var initialFrame = new MemoryStream(session.InitialFrame, writable: false);
                         var initial = await UploadAsync(
                             client, initialFrame, "wallpaper-engine-capture.jpg", "image", settings, null,
                             progress, operationToken);
+
+                        if (session.UsesGpuMediaPath)
+                        {
+                            var gpuToken = Guid.NewGuid().ToString("N");
+                            var gpuReason = await TryBeginGpuSurfaceAsync(client, session, gpuToken, operationToken);
+                            if (gpuReason is null)
+                            {
+                                var gpuLease = new CaptureLease(session, gpuToken);
+                                _captureLease = gpuLease;
+                                session.StartStreamingGpu(
+                                    (batch, token) => PublishGpuBatchAsync(gpuLease, batch, token),
+                                    token => ReadCapturedPointerAsync(gpuLease, token));
+                                return initial with
+                                {
+                                    Mode = "wallpaper-engine-gpu-stream",
+                                    Warning = "Rendered by Wallpaper Engine and streamed as hardware H.264 "
+                                        + $"({session.StatusLabel}; {session.GpuCodec ?? "avc1"}). "
+                                        + "Keep this controller running while the animated wallpaper is active."
+                                };
+                            }
+
+                            // The page cannot host the GPU surface (for example when
+                            // its content security policy or media stack refuses
+                            // Media Source). Rebuild on the reduced-frame-rate
+                            // compatibility backend instead of reporting a GPU path
+                            // the user cannot see.
+                            LastGpuFallbackReason = gpuReason;
+                            ClearCaptureLease(session);
+                            await session.DisposeAsync();
+                            session = await WallpaperEngineCaptureSession.StartAsync(
+                                wallpaper, settings, viewport.Width, viewport.Height, operationToken);
+                        }
+
                         var captureToken = Guid.NewGuid().ToString("N");
                         var captureStarted = await client.EvaluateAsync(
                             $"window.__codexWallpaperSkinBeginCapturedStream({Js(captureToken)})",
@@ -156,14 +197,17 @@ public sealed class CdpInjectionService : IAsyncDisposable
                         session.StartStreaming(
                             (frame, token) => PublishCapturedFrameAsync(lease, frame, token),
                             token => ReadCapturedPointerAsync(lease, token));
+                        var gpuNote = LastGpuFallbackReason ?? session.GpuStartFailureReason;
                         return initial with
                         {
                             Mode = "wallpaper-engine-capture",
-                            Warning = session.UsesWindowsGraphicsCapture
-                                ? "Rendered by Wallpaper Engine and streamed through Windows Graphics Capture/D3D11 at a reduced frame rate. "
-                                    + "Keep this controller running while the animated wallpaper is active."
-                                : "Rendered by Wallpaper Engine with the compatibility capture path because Windows Graphics Capture was unavailable. "
-                                    + "Keep this controller running while the animated wallpaper is active."
+                            Warning = (session.UsesWindowsGraphicsCapture
+                                    ? "Rendered by Wallpaper Engine and streamed through Windows Graphics Capture/D3D11 at a reduced frame rate. "
+                                    : "Rendered by Wallpaper Engine with the compatibility capture path because Windows Graphics Capture was unavailable. ")
+                                + (string.IsNullOrWhiteSpace(gpuNote)
+                                    ? string.Empty
+                                    : "The GPU media path was not used: " + LimitMessage(gpuNote) + " ")
+                                + "Keep this controller running while the animated wallpaper is active."
                         };
                     }
                     catch (OperationCanceledException)
@@ -459,6 +503,107 @@ public sealed class CdpInjectionService : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Asks the page to prepare a persistent Media Source video surface for this
+    /// stream identity. Returns null on success, or the reason the page refused,
+    /// which the caller reports and answers with the compatibility backend.
+    /// </summary>
+    private static async Task<string?> TryBeginGpuSurfaceAsync(
+        CdpClient client,
+        WallpaperEngineCaptureSession session,
+        string token,
+        CancellationToken cancellationToken)
+    {
+        var codec = session.GpuCodec ?? "video/mp4; codecs=\"avc1.640028\"";
+        var metadata = JsonSerializer.Serialize(new
+        {
+            width = session.GpuWidth,
+            height = session.GpuHeight,
+            frameRate = session.GpuFrameRate,
+            codec,
+            codecCandidates = new[]
+            {
+                codec,
+                "video/mp4; codecs=\"avc1.640028\"",
+                "video/mp4; codecs=\"avc1.4D401F\"",
+                "video/mp4; codecs=\"avc1.42E01E\""
+            }
+        });
+        JsonElement evaluation;
+        try
+        {
+            evaluation = await client.EvaluateAsync(
+                $"window.__codexWallpaperSkinBeginGpuStream({Js(token)}, {metadata})",
+                cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            return "the page rejected the GPU surface request: " + exception.Message;
+        }
+
+        try
+        {
+            var value = evaluation.GetProperty("result").GetProperty("value");
+            if (value.ValueKind == JsonValueKind.Object
+                && value.TryGetProperty("accepted", out var accepted)
+                && accepted.ValueKind == JsonValueKind.True)
+            {
+                return null;
+            }
+            var reason = value.ValueKind == JsonValueKind.Object && value.TryGetProperty("reason", out var reasonValue)
+                ? reasonValue.GetString()
+                : null;
+            var detail = value.ValueKind == JsonValueKind.Object && value.TryGetProperty("detail", out var detailValue)
+                ? detailValue.GetString()
+                : null;
+            return "the page could not host a GPU video surface"
+                + (string.IsNullOrWhiteSpace(reason) ? string.Empty : $" ({reason})")
+                + (string.IsNullOrWhiteSpace(detail) ? string.Empty : ": " + detail);
+        }
+        catch
+        {
+            return "the page did not confirm the GPU video surface";
+        }
+    }
+
+    /// <summary>
+    /// Delivers one bounded group of Media Source Extensions units. The payload is
+    /// assembled with a builder rather than serialized reflection so a
+    /// sixty-frame-per-second stream does not allocate a per-frame object graph.
+    /// </summary>
+    private async Task<string> PublishGpuBatchAsync(
+        CaptureLease lease,
+        GpuFrameBatch batch,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(batch);
+        EnsureCurrentCapture(lease);
+        var client = RequireClient();
+        var payload = new StringBuilder(batch.ByteCount + (batch.Count * 32));
+        payload.Append('[');
+        for (var index = 0; index < batch.Fragments.Count; index++)
+        {
+            if (index > 0)
+            {
+                payload.Append(',');
+            }
+            var fragment = batch.Fragments[index];
+            payload.Append("{\"sequence\":").Append(fragment.Sequence)
+                .Append(",\"data\":\"").Append(Convert.ToBase64String(fragment.Bytes)).Append("\"}");
+        }
+        payload.Append(']');
+        var evaluation = await client.EvaluateAsync(
+            $"window.__codexWallpaperSkinPushGpuBatch({Js(lease.Token)}, {payload})",
+            cancellationToken);
+        // A stale answer is reported rather than thrown so the session can stop
+        // with a precise reason instead of a generic transport error.
+        return ReadString(evaluation);
+    }
+
     private async Task<CapturedPointer?> ReadCapturedPointerAsync(
         CaptureLease lease,
         CancellationToken cancellationToken)
@@ -503,6 +648,12 @@ public sealed class CdpInjectionService : IAsyncDisposable
                 {
                     await client.EvaluateAsync(
                         $"(() => {{ const s = window.__codexWallpaperSkin; if (!s || s.captureToken !== {Js(lease.Token)}) return false; s.captureToken = null; s.captureFrameBusy = false; if (s.captureStaging) {{ try {{ s.captureStaging.src = ''; }} catch (_) {{}} s.captureStaging = null; }} return true; }})()",
+                        CancellationToken.None);
+                    // A GPU surface owns a decoder and a Media Source buffer, so it
+                    // is released explicitly instead of being left to garbage
+                    // collection while the page keeps decoding.
+                    await client.EvaluateAsync(
+                        $"(() => {{ const s = window.__codexWallpaperSkin; if (!s) return false; if (typeof window.__codexWallpaperSkinEndGpuStream !== 'function') return false; if (s.gpuToken !== {Js(lease.Token)}) return false; return window.__codexWallpaperSkinEndGpuStream({Js(lease.Token)}); }})()",
                         CancellationToken.None);
                 }
                 catch
@@ -647,6 +798,10 @@ public sealed class CdpInjectionService : IAsyncDisposable
             || typeof window.__codexWallpaperSkinBeginCapturedStream !== 'undefined'
             || typeof window.__codexWallpaperSkinSetCapturedFrame !== 'undefined'
             || typeof window.__codexWallpaperSkinGetCapturedPointer !== 'undefined'
+            || typeof window.__codexWallpaperSkinBeginGpuStream !== 'undefined'
+            || typeof window.__codexWallpaperSkinPushGpuBatch !== 'undefined'
+            || typeof window.__codexWallpaperSkinGetGpuStreamStatus !== 'undefined'
+            || typeof window.__codexWallpaperSkinEndGpuStream !== 'undefined'
             || typeof window.__codexWallpaperSkinCleanup !== 'undefined'
             || typeof window.__cwsCreateSceneWallpaper !== 'undefined'
             || typeof window.__cwsWeSceneLibrary !== 'undefined'
@@ -711,6 +866,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
             try { state.pendingUrl && URL.revokeObjectURL(state.pendingUrl); } catch (_) {}
             try { state.media && state.media.pause && state.media.pause(); } catch (_) {}
             try { state.sceneController && state.sceneController.dispose && state.sceneController.dispose(); } catch (_) {}
+            try { state.gpuStream && state.gpuStream.dispose && state.gpuStream.dispose(); } catch (_) {}
             try { state.media && state.media.remove(); } catch (_) {}
             try { state.assetUrl && URL.revokeObjectURL(state.assetUrl); } catch (_) {}
             try { state.uploads && state.uploads.forEach(upload => { if (upload?.expiry) clearTimeout(upload.expiry); if (upload?.parts) upload.parts.length = 0; }); } catch (_) {}
@@ -739,6 +895,10 @@ public sealed class CdpInjectionService : IAsyncDisposable
           delete window.__codexWallpaperSkinBeginCapturedStream;
           delete window.__codexWallpaperSkinSetCapturedFrame;
           delete window.__codexWallpaperSkinGetCapturedPointer;
+          delete window.__codexWallpaperSkinBeginGpuStream;
+          delete window.__codexWallpaperSkinPushGpuBatch;
+          delete window.__codexWallpaperSkinGetGpuStreamStatus;
+          delete window.__codexWallpaperSkinEndGpuStream;
           delete window.__codexWallpaperSkinCleanup;
           delete window.__cwsCreateSceneWallpaper;
           delete window.__cwsWeSceneLibrary;
@@ -766,6 +926,10 @@ public sealed class CdpInjectionService : IAsyncDisposable
             && typeof window.__codexWallpaperSkinBeginCapturedStream === 'undefined'
             && typeof window.__codexWallpaperSkinSetCapturedFrame === 'undefined'
             && typeof window.__codexWallpaperSkinGetCapturedPointer === 'undefined'
+            && typeof window.__codexWallpaperSkinBeginGpuStream === 'undefined'
+            && typeof window.__codexWallpaperSkinPushGpuBatch === 'undefined'
+            && typeof window.__codexWallpaperSkinGetGpuStreamStatus === 'undefined'
+            && typeof window.__codexWallpaperSkinEndGpuStream === 'undefined'
             && typeof window.__codexWallpaperSkinCleanup === 'undefined'
             && typeof window.__cwsCreateSceneWallpaper === 'undefined'
             && typeof window.__cwsWeSceneLibrary === 'undefined'
@@ -787,7 +951,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
             throw new Error('Refusing to inject: this is not a ready Codex app:// page.');
           }
           const existing = window.__codexWallpaperSkin;
-          const existingHealthy = existing && existing.version === 15 && !existing.disposed
+          const existingHealthy = existing && existing.version === 16 && !existing.disposed
             && existing.host?.isConnected && existing.style?.isConnected && existing.overlay?.isConnected
             && document.getElementById('codex-wallpaper-skin-host') === existing.host
             && document.getElementById('codex-wallpaper-skin-style') === existing.style
@@ -797,8 +961,9 @@ public sealed class CdpInjectionService : IAsyncDisposable
             && (!existing.media || (existing.media.isConnected && existing.media.parentNode === existing.host))
             && typeof existing.styleText === 'string' && existing.style.textContent === existing.styleText
             && typeof window.__cwsCreateSceneWallpaper === 'function'
-            && window.__cwsWeSceneLibrary?.version === 'we-scene@6b503a36b952f91dbab5e6f378f632f87baf05cc+cws.11'
+            && window.__cwsWeSceneLibrary?.version === 'we-scene@6b503a36b952f91dbab5e6f378f632f87baf05cc+cws.12'
             && window.__cwsCreateSceneWallpaper.version === 'cws-scene-host-2'
+            && window.__cwsCreateGpuSurface?.version === 'cws-gpu-surface-1'
             && existing.helpers
             && typeof window.__codexWallpaperSkinBeginUpload === 'function'
             && window.__codexWallpaperSkinBeginUpload === existing.helpers.beginUpload
@@ -816,6 +981,14 @@ public sealed class CdpInjectionService : IAsyncDisposable
             && window.__codexWallpaperSkinSetCapturedFrame === existing.helpers.setCapturedFrame
             && typeof window.__codexWallpaperSkinGetCapturedPointer === 'function'
             && window.__codexWallpaperSkinGetCapturedPointer === existing.helpers.getCapturedPointer
+            && typeof window.__codexWallpaperSkinBeginGpuStream === 'function'
+            && window.__codexWallpaperSkinBeginGpuStream === existing.helpers.beginGpuStream
+            && typeof window.__codexWallpaperSkinPushGpuBatch === 'function'
+            && window.__codexWallpaperSkinPushGpuBatch === existing.helpers.pushGpuBatch
+            && typeof window.__codexWallpaperSkinGetGpuStreamStatus === 'function'
+            && window.__codexWallpaperSkinGetGpuStreamStatus === existing.helpers.getGpuStreamStatus
+            && typeof window.__codexWallpaperSkinEndGpuStream === 'function'
+            && window.__codexWallpaperSkinEndGpuStream === existing.helpers.endGpuStream
             && typeof window.__codexWallpaperSkinCleanup === 'function'
             && window.__codexWallpaperSkinCleanup === existing.helpers.cleanup;
           if (existingHealthy) return 'ready';
@@ -871,6 +1044,10 @@ public sealed class CdpInjectionService : IAsyncDisposable
           delete window.__codexWallpaperSkinBeginCapturedStream;
           delete window.__codexWallpaperSkinSetCapturedFrame;
           delete window.__codexWallpaperSkinGetCapturedPointer;
+          delete window.__codexWallpaperSkinBeginGpuStream;
+          delete window.__codexWallpaperSkinPushGpuBatch;
+          delete window.__codexWallpaperSkinGetGpuStreamStatus;
+          delete window.__codexWallpaperSkinEndGpuStream;
           delete window.__codexWallpaperSkinCleanup;
 
           const nativeStyle = getComputedStyle(root);
@@ -954,13 +1131,14 @@ public sealed class CdpInjectionService : IAsyncDisposable
           document.body.appendChild(host);
 
           const state = window.__codexWallpaperSkin = {
-            version: 15, disposed: false, style, host, overlay, media: null, assetUrl: null,
+            version: 16, disposed: false, style, host, overlay, media: null, assetUrl: null,
             sceneController: null, pendingSceneController: null,
             pendingMedia: null, pendingUrl: null, pendingCancel: null,
             uploads: new Map(), marked: new Set(), settings: null, rawPalette: null,
             palette: null, observer: null, rafId: 0, visibilityHandler: null, nativeSurface,
             capturePointer: { x: .5, y: .5, buttons: 0, wheel: 0, inside: false }, capturePointerHandlers: null,
             captureFrameBusy: false, captureStaging: null, captureToken: null,
+            gpuStream: null, gpuToken: null, gpuPresented: false, gpuPreviousMedia: null, gpuPreviousController: null,
             styleText, helpers: null
           };
 
@@ -1348,14 +1526,23 @@ public sealed class CdpInjectionService : IAsyncDisposable
                 && state.style?.isConnected && state.style.parentNode === (document.head || root)
                 && state.style.textContent === state.styleText
                 && typeof window.__cwsCreateSceneWallpaper === 'function'
-                && window.__cwsWeSceneLibrary?.version === 'we-scene@6b503a36b952f91dbab5e6f378f632f87baf05cc+cws.11'
+                && window.__cwsWeSceneLibrary?.version === 'we-scene@6b503a36b952f91dbab5e6f378f632f87baf05cc+cws.12'
                 && window.__cwsCreateSceneWallpaper.version === 'cws-scene-host-2'
+            && window.__cwsCreateGpuSurface?.version === 'cws-gpu-surface-1'
                 && state.helpers
                 && window.__codexWallpaperSkinFinishUpload === state.helpers.finishUpload
                 && window.__codexWallpaperSkinSetSettings === state.helpers.setSettings
                 && window.__codexWallpaperSkinBeginCapturedStream === state.helpers.beginCapturedStream
                 && window.__codexWallpaperSkinSetCapturedFrame === state.helpers.setCapturedFrame
                 && window.__codexWallpaperSkinGetCapturedPointer === state.helpers.getCapturedPointer
+                && typeof window.__codexWallpaperSkinBeginGpuStream === 'function'
+                && window.__codexWallpaperSkinBeginGpuStream === state.helpers.beginGpuStream
+                && typeof window.__codexWallpaperSkinPushGpuBatch === 'function'
+                && window.__codexWallpaperSkinPushGpuBatch === state.helpers.pushGpuBatch
+                && typeof window.__codexWallpaperSkinGetGpuStreamStatus === 'function'
+                && window.__codexWallpaperSkinGetGpuStreamStatus === state.helpers.getGpuStreamStatus
+                && typeof window.__codexWallpaperSkinEndGpuStream === 'function'
+                && window.__codexWallpaperSkinEndGpuStream === state.helpers.endGpuStream
                 && window.__codexWallpaperSkinCleanup === state.helpers.cleanup;
               if (!runtimeIntact()) {
                 throw new Error('The wallpaper runtime was restored or replaced while media was decoding.');
@@ -1417,6 +1604,14 @@ public sealed class CdpInjectionService : IAsyncDisposable
                     && window.__codexWallpaperSkinBeginCapturedStream === state.helpers.beginCapturedStream
                     && window.__codexWallpaperSkinSetCapturedFrame === state.helpers.setCapturedFrame
                     && window.__codexWallpaperSkinGetCapturedPointer === state.helpers.getCapturedPointer
+                && typeof window.__codexWallpaperSkinBeginGpuStream === 'function'
+                && window.__codexWallpaperSkinBeginGpuStream === state.helpers.beginGpuStream
+                && typeof window.__codexWallpaperSkinPushGpuBatch === 'function'
+                && window.__codexWallpaperSkinPushGpuBatch === state.helpers.pushGpuBatch
+                && typeof window.__codexWallpaperSkinGetGpuStreamStatus === 'function'
+                && window.__codexWallpaperSkinGetGpuStreamStatus === state.helpers.getGpuStreamStatus
+                && typeof window.__codexWallpaperSkinEndGpuStream === 'function'
+                && window.__codexWallpaperSkinEndGpuStream === state.helpers.endGpuStream
                     && window.__codexWallpaperSkinCleanup === state.helpers.cleanup;
                   if (!runtimeIntact) {
                     if (window.__codexWallpaperSkin === state && typeof window.__codexWallpaperSkinCleanup === 'function') {
@@ -1476,6 +1671,133 @@ public sealed class CdpInjectionService : IAsyncDisposable
             }
           };
 
+          const GPU_CODEC_CANDIDATES = [
+            'video/mp4; codecs="avc1.640028"',
+            'video/mp4; codecs="avc1.4D401F"',
+            'video/mp4; codecs="avc1.42E01E"'
+          ];
+          window.__codexWallpaperSkinBeginGpuStream = async (token, options) => {
+            if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/.test(token)) {
+              return { accepted: false, reason: 'invalid-token' };
+            }
+            if (state.disposed || window.__codexWallpaperSkin !== state) {
+              return { accepted: false, reason: 'runtime-unavailable' };
+            }
+            if (typeof window.__cwsCreateGpuSurface !== 'function') {
+              return { accepted: false, reason: 'gpu-surface-runtime-missing' };
+            }
+            const requested = typeof options?.codec === 'string' && options.codec
+              ? options.codec : GPU_CODEC_CANDIDATES[0];
+            const candidates = [requested];
+            for (const candidate of GPU_CODEC_CANDIDATES) {
+              if (!candidates.includes(candidate)) candidates.push(candidate);
+            }
+            if (Array.isArray(options?.codecCandidates)) {
+              for (const candidate of options.codecCandidates.slice(0, 8)) {
+                if (typeof candidate === 'string' && candidate && !candidates.includes(candidate)) {
+                  candidates.push(candidate);
+                }
+              }
+            }
+            let controller = null;
+            try {
+              controller = await window.__cwsCreateGpuSurface({
+                streamId: token,
+                codec: requested,
+                codecCandidates: candidates,
+                width: clamp(Math.round(Number(options?.width) || 1280), 64, 4096),
+                height: clamp(Math.round(Number(options?.height) || 720), 64, 4096),
+                frameRate: Number(options?.frameRate) === 30 ? 30 : 60,
+                liveLatencySeconds: .35,
+                maxBufferSeconds: 2,
+                maxPendingFragments: 24
+              });
+            } catch (error) {
+              return { accepted: false, reason: 'gpu-surface-rejected', detail: boundedWarning(error && error.message) };
+            }
+            if (state.disposed || window.__codexWallpaperSkin !== state) {
+              try { controller.dispose(); } catch (_) {}
+              return { accepted: false, reason: 'runtime-unavailable' };
+            }
+            // The stream that is currently on screen is deliberately NOT
+            // disposed or detached here: it stays visible, together with its
+            // decoder, until the replacement proves it can present a frame.
+            const previousController = state.gpuStream;
+            const previousMedia = state.media;
+            controller.element.className = 'cws-media';
+            controller.element.setAttribute('aria-hidden', 'true');
+            controller.element.setAttribute('draggable', 'false');
+            // The element is inserted above the previous background but starts
+            // empty, so the last confirmed good frame stays visible until this
+            // stream presents a decoded frame of its own.
+            host.insertBefore(controller.element, state.overlay);
+            state.gpuStream = controller;
+            state.gpuToken = token;
+            state.gpuPresented = false;
+            state.gpuPreviousMedia = previousMedia && previousMedia !== controller.element ? previousMedia : null;
+            state.gpuPreviousController = previousController && previousController !== controller ? previousController : null;
+            ensureCapturePointerHandlers();
+            return {
+              accepted: true,
+              streamId: controller.streamId,
+              decoderMode: controller.decoderMode,
+              width: controller.element.width || 0,
+              state: controller.status().state
+            };
+          };
+          window.__codexWallpaperSkinPushGpuBatch = async (token, fragments) => {
+            const controller = state.gpuStream;
+            if (token !== state.gpuToken || !controller || state.disposed) return 'stale';
+            if (!Array.isArray(fragments) || fragments.length === 0 || fragments.length > 32) return 'rejected';
+            let status = 'appended';
+            for (const fragment of fragments) {
+              if (!fragment || !Number.isInteger(fragment.sequence) || typeof fragment.data !== 'string') {
+                return 'rejected';
+              }
+              const result = await controller.pushFragment(fragment.sequence, fragment.data);
+              if (result !== 'presented' && result !== 'appended') return result;
+              if (result === 'presented') status = 'presented';
+            }
+            if (status === 'presented' && !state.gpuPresented) {
+              // Transactional promotion: only now is the previous wallpaper
+              // retired, and only after a frame from the new stream reached the
+              // screen, so an old wallpaper can never reappear.
+              state.gpuPresented = true;
+              const previousMedia = state.gpuPreviousMedia;
+              const previousController = state.gpuPreviousController;
+              state.gpuPreviousMedia = null;
+              state.gpuPreviousController = null;
+              state.media = controller.element;
+              root.classList.add('cws-active');
+              if (previousMedia) {
+                try { previousMedia.pause && previousMedia.pause(); } catch (_) {}
+                try { previousMedia.remove(); } catch (_) {}
+              }
+              // Retire the replaced decoder only after the new frame is on
+              // screen, so the user never sees an empty or stale surface.
+              if (previousController) { try { previousController.dispose(); } catch (_) {} }
+              try { window.__codexWallpaperSkinSetSettings(state.settings); } catch (_) {}
+            }
+            return status;
+          };
+          window.__codexWallpaperSkinGetGpuStreamStatus = token => {
+            const controller = state.gpuStream;
+            if (token !== state.gpuToken || !controller) return null;
+            try { return controller.status(); } catch (_) { return null; }
+          };
+          window.__codexWallpaperSkinEndGpuStream = token => {
+            if (token !== state.gpuToken) return false;
+            const controller = state.gpuStream;
+            const previousController = state.gpuPreviousController;
+            state.gpuStream = null;
+            state.gpuToken = null;
+            state.gpuPresented = false;
+            state.gpuPreviousMedia = null;
+            state.gpuPreviousController = null;
+            if (controller) { try { controller.dispose(); } catch (_) {} }
+            if (previousController) { try { previousController.dispose(); } catch (_) {} }
+            return true;
+          };
           window.__codexWallpaperSkinCleanup = () => {
             const current = state;
             const ownsGlobals = !window.__codexWallpaperSkin || window.__codexWallpaperSkin === state;
@@ -1496,6 +1818,14 @@ public sealed class CdpInjectionService : IAsyncDisposable
             try { current.pendingSceneController && current.pendingSceneController.dispose && current.pendingSceneController.dispose(); } catch (_) {}
             try { current.pendingMedia && current.pendingMedia.remove(); } catch (_) {}
             try { current.pendingUrl && URL.revokeObjectURL(current.pendingUrl); } catch (_) {}
+            try { current.gpuStream && current.gpuStream.dispose(); } catch (_) {}
+            try { current.gpuStream && current.gpuStream.status && (current.gpuStatus = current.gpuStream.status()); } catch (_) {}
+            try { current.gpuPreviousController && current.gpuPreviousController.dispose(); } catch (_) {}
+            current.gpuStream = null;
+            current.gpuToken = null;
+            current.gpuPresented = false;
+            current.gpuPreviousMedia = null;
+            current.gpuPreviousController = null;
             try { current.media && current.media.pause && current.media.pause(); } catch (_) {}
             try { current.sceneController && current.sceneController.dispose && current.sceneController.dispose(); } catch (_) {}
             try { current.media && current.media.remove(); } catch (_) {}
@@ -1518,6 +1848,10 @@ public sealed class CdpInjectionService : IAsyncDisposable
               delete window.__codexWallpaperSkinBeginCapturedStream;
               delete window.__codexWallpaperSkinSetCapturedFrame;
               delete window.__codexWallpaperSkinGetCapturedPointer;
+          delete window.__codexWallpaperSkinBeginGpuStream;
+          delete window.__codexWallpaperSkinPushGpuBatch;
+          delete window.__codexWallpaperSkinGetGpuStreamStatus;
+          delete window.__codexWallpaperSkinEndGpuStream;
               delete window.__codexWallpaperSkinCleanup;
             }
             return 'cleaned';
@@ -1531,6 +1865,10 @@ public sealed class CdpInjectionService : IAsyncDisposable
             beginCapturedStream: window.__codexWallpaperSkinBeginCapturedStream,
             setCapturedFrame: window.__codexWallpaperSkinSetCapturedFrame,
             getCapturedPointer: window.__codexWallpaperSkinGetCapturedPointer,
+            beginGpuStream: window.__codexWallpaperSkinBeginGpuStream,
+            pushGpuBatch: window.__codexWallpaperSkinPushGpuBatch,
+            getGpuStreamStatus: window.__codexWallpaperSkinGetGpuStreamStatus,
+            endGpuStream: window.__codexWallpaperSkinEndGpuStream,
             cleanup: window.__codexWallpaperSkinCleanup
           };
           return 'ready';

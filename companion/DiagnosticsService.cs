@@ -53,6 +53,19 @@ public static class DiagnosticsService
         {
             report.Notes.Add("Blur is enabled. Set it to 0 for the lowest GPU cost.");
         }
+        report.GpuStreamEnabled = state.Settings.GpuStreamEnabled;
+        if (!state.Settings.GpuStreamEnabled)
+        {
+            report.Notes.Add(
+                "The GPU media path is disabled in settings, so Wallpaper Engine scenes use the reduced-frame-rate compatibility backend.");
+        }
+        else
+        {
+            report.Notes.Add(
+                $"Wallpaper Engine scenes request {GpuStreamStatusLabel.Describe(GpuStreamStatus.GpuDynamic60)} "
+                + "and fall back to a labeled 30 FPS mode or the reduced-frame-rate compatibility backend. "
+                + "No listening socket is created: media is carried by the existing CDP session.");
+        }
         return report;
     }
 }

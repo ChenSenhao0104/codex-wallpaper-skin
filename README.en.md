@@ -52,9 +52,9 @@ After the first successful Apply, the controller remembers that wallpaper. Windo
 
 ## Performance and security
 
-Static images have the lowest overhead. Video decodes in Codex. High-fidelity Scenes use Wallpaper Engine rendering, Windows Graphics Capture/D3D11 (with compatibility capture fallback), JPEG encoding, and loopback transfer, capped safely at 15 FPS and controlled by the 50%–100% render scale. Keep blur at `0`, choose the 15 FPS target, lower Scene scale, and enable pause-when-hidden for a lighter setup.
+Static images have the lowest overhead. Video decodes in Codex. High-fidelity Scenes use Wallpaper Engine rendering, Windows Graphics Capture/D3D11 and hardware H.264 encoding, targeting 60 FPS into a persistent video surface inside Codex; 30 FPS is an explicitly labeled fallback, and an unavailable encoder or decoder selects the equally labeled reduced-frame-rate JPEG compatibility backend. The 50%–100% render scale still applies. Keep blur at `0`, choose 30 FPS, lower Scene scale, and enable pause-when-hidden for a lighter setup.
 
-Frames travel only through loopback CDP into Codex renderer memory and are never uploaded by this app. High-fidelity Scenes execute inside the user's installed Wallpaper Engine and follow its security/performance settings; this app does not interpret SceneScript itself. Web wallpaper code and Application wallpapers are never run. Other processes under the same Windows user can still reach an unauthenticated CDP port, so use it only in a trusted session and fully exit the CDP-enabled Codex process to close the port.
+Frames travel only through the local CDP session into Codex renderer memory, never over a network, and are never uploaded by this app. High-fidelity Scenes execute inside the user's installed Wallpaper Engine and follow its security/performance settings; this app does not interpret SceneScript itself. Web wallpaper code and Application wallpapers are never run. Other processes under the same Windows user can still reach an unauthenticated CDP port, so use it only in a trusted session and fully exit the CDP-enabled Codex process to close the port.
 
 No Wallpaper Engine media is bundled or redistributed. Users must own Wallpaper Engine and follow each wallpaper author's license. See [SECURITY.md](SECURITY.md) for private vulnerability reporting.
 

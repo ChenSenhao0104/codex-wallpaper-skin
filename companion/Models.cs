@@ -124,8 +124,15 @@ public sealed class WallpaperSettings
     public double PlaybackRate { get; set; } = 1;
     public bool Muted { get; set; } = true;
     public bool PauseWhenHidden { get; set; } = true;
-    public int SceneFrameRate { get; set; } = 15;
+    public int SceneFrameRate { get; set; } = 60;
     public double SceneResolutionScale { get; set; } = 1;
+
+    /// <summary>
+    /// Selects the v0.4 hardware H.264 media path for Wallpaper Engine scenes.
+    /// When it is unavailable the reduced-frame-rate compatibility backend is
+    /// used and labeled as such, so this switch never hides a fallback.
+    /// </summary>
+    public bool GpuStreamEnabled { get; set; } = true;
 
     public WallpaperSettings Normalize()
     {
@@ -140,7 +147,10 @@ public sealed class WallpaperSettings
         Contrast = Math.Clamp(Contrast, 0.5, 1.5);
         Saturation = Math.Clamp(Saturation, 0, 2);
         PlaybackRate = Math.Clamp(PlaybackRate, 0.25, 2);
-        SceneFrameRate = SceneFrameRate <= 10 ? 10 : 15;
+        // 60 FPS is the target and 30 FPS is the explicit fallback; the
+        // reduced-frame-rate compatibility backend is chosen by capability, not
+        // by asking the user for a low frame rate.
+        SceneFrameRate = GpuStreamStatusLabel.NormalizeFrameRate(SceneFrameRate);
         SceneResolutionScale = Math.Clamp(SceneResolutionScale, 0.5, 1);
         return this;
     }
@@ -198,5 +208,11 @@ public sealed class DiagnosticReport
     public List<string> AumidCandidates { get; set; } = [];
     public string? SavedWallpaper { get; set; }
     public bool SavedWallpaperExists { get; set; }
+
+    /// <summary>v0.4 media path the controller will request, with its fallback documented in the notes.</summary>
+    public string GpuStreamMode { get; set; } =
+        "hardware H.264 in fragmented MP4 into a persistent Media Source video surface";
+
+    public bool GpuStreamEnabled { get; set; } = true;
     public List<string> Notes { get; set; } = [];
 }

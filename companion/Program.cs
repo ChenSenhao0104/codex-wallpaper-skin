@@ -160,6 +160,69 @@ public static class Program
                 return 0;
             }
 
+            if (args.Contains("--gpu-encoder-smoke-test", StringComparer.OrdinalIgnoreCase))
+            {
+                var options = new GpuEncoderSmokeOptions(
+                    Width: ReadOption(args, "--width", 1280),
+                    Height: ReadOption(args, "--height", 720),
+                    FrameRate: ReadOption(args, "--fps", 60),
+                    Seconds: ReadDoubleOption(args, "--seconds", 3),
+                    OutputPath: ReadStringOption(args, "--output"),
+                    FragmentMilliseconds: ReadDoubleOption(args, "--fragment-ms", 100),
+                    CreateOnly: args.Contains("--create-only", StringComparer.OrdinalIgnoreCase),
+                    PreferHardware: !args.Contains("--no-hardware", StringComparer.OrdinalIgnoreCase),
+                    LowLatency: !args.Contains("--no-low-latency", StringComparer.OrdinalIgnoreCase),
+                    HintFragmentDuration: !args.Contains("--no-fragment-hint", StringComparer.OrdinalIgnoreCase));
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(180));
+                GpuEncoderSmokeResult result;
+                try
+                {
+                    result = await GpuStreamSelfTest.RunEncoderSmokeTestAsync(options, timeout.Token, Console.WriteLine);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw new TimeoutException("The GPU encoder smoke test exceeded its 180-second safety timeout.");
+                }
+                foreach (var detail in result.Details)
+                {
+                    Console.WriteLine("  " + detail);
+                }
+                Console.WriteLine(result.Summary);
+                return result.Passed ? 0 : 1;
+            }
+
+            var gpuStreamTestIndex = Array.FindIndex(args,
+                value => value.Equals("--gpu-stream-smoke-test", StringComparison.OrdinalIgnoreCase));
+            if (gpuStreamTestIndex >= 0)
+            {
+                if (gpuStreamTestIndex + 1 >= args.Length)
+                {
+                    throw new ArgumentException("--gpu-stream-smoke-test requires a project.json path.");
+                }
+                return await RunGpuStreamSmokeTestAsync(
+                    args[gpuStreamTestIndex + 1], ReadDoubleOption(args, "--seconds", 10));
+            }
+
+            var decodeIndex = Array.FindIndex(args,
+                value => value.Equals("--gpu-decode-smoke-test", StringComparison.OrdinalIgnoreCase));
+            if (decodeIndex >= 0)
+            {
+                if (decodeIndex + 1 >= args.Length)
+                {
+                    throw new ArgumentException("--gpu-decode-smoke-test requires a media file path.");
+                }
+                using var decodeTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+                var decoded = false;
+                var summary = string.Empty;
+                var reason = string.Empty;
+                await Task.Run(() =>
+                {
+                    decoded = MediaFoundationDecodeCheck.TryDecode(args[decodeIndex + 1], out summary, out reason);
+                }, decodeTimeout.Token);
+                Console.WriteLine(decoded ? summary : "FAIL Media Foundation decode: " + reason);
+                return decoded ? 0 : 1;
+            }
+
             if (args.Contains("--doctor", StringComparer.OrdinalIgnoreCase))
             {
                 var state = StateStore.Load();
@@ -208,7 +271,7 @@ public static class Program
                 return await DeferredRestoreLauncher.RunAsync();
             }
 
-            Console.Error.WriteLine("Usage: CodexWallpaperSkin [--doctor [--json] | --restore | --auto-restore | --wait-and-restore | --self-test | --wgc-smoke-test | --we-capture-smoke-test <project.json> | --we-capture-soak-test <project.json>]");
+            Console.Error.WriteLine("Usage: CodexWallpaperSkin [--doctor [--json] | --restore | --auto-restore | --wait-and-restore | --self-test | --wgc-smoke-test | --gpu-encoder-smoke-test [--create-only] [--width N] [--height N] [--fps 30|60] [--seconds N] [--output PATH] | --we-capture-smoke-test <project.json> | --we-capture-soak-test <project.json> | --gpu-stream-smoke-test <project.json> [--seconds N]]");
             return 64;
         }
         catch (Exception exception)
@@ -216,6 +279,101 @@ public static class Program
             Console.Error.WriteLine(exception.Message);
             return 1;
         }
+    }
+
+    /// <summary>
+    /// Live verification of the v0.4 GPU media path against a real Wallpaper
+    /// Engine Scene: Windows Graphics Capture feeds the Media Foundation hardware
+    /// encoder and every produced fragment is drained, so the test proves capture,
+    /// encode, container assembly and disposal without needing the Codex page.
+    /// The renderer half is covered by scripts/runtime-smoke-test.mjs.
+    /// </summary>
+    private static async Task<int> RunGpuStreamSmokeTestAsync(string projectPath, double seconds)
+    {
+        if (seconds is < 2 or > 120)
+        {
+            throw new ArgumentException("--seconds must be between 2 and 120 for the GPU stream smoke test.");
+        }
+        var wallpaper = WallpaperCatalog.ParseProject(projectPath);
+        if (!wallpaper.IsWallpaperEngineScene)
+        {
+            throw new InvalidDataException("The GPU stream smoke test accepts Wallpaper Engine Scene projects only.");
+        }
+
+        var settings = new WallpaperSettings { Muted = true, SceneFrameRate = 60, SceneResolutionScale = .75 };
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(seconds + 60));
+        await using var session = await WallpaperEngineCaptureSession.StartAsync(
+            wallpaper, settings, 1600, 1000, timeout.Token, useGpuMediaPath: true);
+        if (!session.UsesGpuMediaPath)
+        {
+            throw new InvalidOperationException(
+                "The GPU media path was not selected: "
+                + (session.GpuStartFailureReason ?? "no reason was reported"));
+        }
+        if (session.Status != GpuStreamStatus.GpuDynamic60)
+        {
+            throw new InvalidOperationException(
+                $"The GPU media path reported '{session.StatusLabel}' instead of the 60 FPS target.");
+        }
+
+        var batches = 0;
+        var fragments = 0;
+        var bytes = 0L;
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(seconds);
+        session.StartStreamingGpu(
+            (batch, _) =>
+            {
+                batches++;
+                fragments += batch.Count;
+                bytes += batch.ByteCount;
+                return Task.FromResult("presented");
+            },
+            _ => Task.FromResult<CapturedPointer?>(null));
+        while (DateTimeOffset.UtcNow < deadline && session.IsRunning)
+        {
+            await Task.Delay(100, CancellationToken.None);
+        }
+
+        var snapshot = session.GpuDiagnostics;
+        var status = session.StatusLabel;
+        var codec = session.GpuCodec ?? "unknown";
+        var failure = session.GpuFailureReason;
+        await session.DisposeAsync();
+        if (session.IsRenderWindowAlive)
+        {
+            throw new InvalidOperationException("The Wallpaper Engine render window remained open after capture disposal.");
+        }
+        if (failure is not null)
+        {
+            throw new InvalidOperationException("The GPU media path failed during the run: " + failure);
+        }
+        var minimumBatches = (int)(seconds * 10);
+        if (batches < minimumBatches || snapshot is null || snapshot.EncodedFrames < 30)
+        {
+            throw new TimeoutException(
+                $"The GPU media path produced too little media: {batches} batches (expected at least {minimumBatches}), "
+                + $"{snapshot?.EncodedFrames ?? 0} encoded frames, {snapshot?.PresentedFragments ?? 0} acknowledged fragments.");
+        }
+        Console.WriteLine("  " + snapshot.Describe());
+        Console.WriteLine(
+            $"PASS GPU media path ({status}; {codec}; {batches} transport batches, {fragments} fragments, {bytes} bytes, "
+            + $"encoder={snapshot.EncoderMode}, capture={snapshot.CaptureWidth}x{snapshot.CaptureHeight}, "
+            + $"private window released)");
+        return 0;
+    }
+
+    private static int ReadOption(string[] args, string name, int fallback) =>
+        int.TryParse(ReadStringOption(args, name), System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture, out var value) ? value : fallback;
+
+    private static double ReadDoubleOption(string[] args, string name, double fallback) =>
+        double.TryParse(ReadStringOption(args, name), System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var value) ? value : fallback;
+
+    private static string? ReadStringOption(string[] args, string name)
+    {
+        var index = Array.FindIndex(args, value => value.Equals(name, StringComparison.OrdinalIgnoreCase));
+        return index >= 0 && index + 1 < args.Length ? args[index + 1] : null;
     }
 
     private static void PrintDoctor(DiagnosticReport report)
