@@ -6,8 +6,6 @@ public sealed class CdpInjectionService : IAsyncDisposable
 {
     private const int UploadChunkSize = 64 * 1024;
     private const int MaximumCleanupPages = 16;
-    /// <summary>How long the direct stream may deliver nothing before CDP is restored.</summary>
-    private static readonly TimeSpan DirectStreamGracePeriod = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan MaximumApplyDuration = TimeSpan.FromMinutes(5);
     /// <summary>How often the supervisor re-evaluates a running capture stream.</summary>
     private static readonly TimeSpan HealthPollInterval = TimeSpan.FromMilliseconds(1_500);
@@ -21,9 +19,6 @@ public sealed class CdpInjectionService : IAsyncDisposable
     private string? _captureToken;
     private CancellationTokenSource? _captureRecoveryLifetime;
     private Task? _captureRecoverySupervisor;
-    private FrameStreamServer? _frameStreamServer;
-    private string _captureTransport = "none";
-    private DateTimeOffset _directStreamSince = DateTimeOffset.MinValue;
 
     public bool IsConnected => _client?.IsConnected == true;
     public bool HasActiveCapture => _captureSession?.IsRunning == true;
@@ -57,21 +52,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
     }
 
     /// <summary>Human-readable capture health for Doctor and local measurements.</summary>
-    public string? CaptureMetricsSummary => _captureSession is null
-        ? null
-        : $"transport {TransportSummary} · {_captureSession.MetricsSummary}";
-
-    /// <summary>Which frame transport is live, with the direct-stream frame count.</summary>
-    public string TransportSummary
-    {
-        get
-        {
-            var server = Volatile.Read(ref _frameStreamServer);
-            return _captureTransport == "stream" && server is not null
-                ? $"stream (server {server.StreamedFrames} streamed, {server.ConnectedClients} reader(s))"
-                : _captureTransport;
-        }
-    }
+    public string? CaptureMetricsSummary => _captureSession?.MetricsSummary;
 
     /// <summary>Structured capture health, or null when no native stream is active.</summary>
     public CaptureHealth? CaptureHealthSnapshot => _captureSession?.Snapshot();
@@ -261,7 +242,9 @@ public sealed class CdpInjectionService : IAsyncDisposable
                     "No live Scene backend and no preview fallback is available for this project.");
                 throw new InvalidOperationException(
                     "No live Scene backend is available for this project and it has no validated preview fallback. "
-                    + LimitMessage(nativeCaptureFailure?.Message ?? fallback.Failure.Message));
+                    + LimitMessage(nativeCaptureFailure?.Message
+                        ?? fallback.Failure?.Message
+                        ?? "the safe renderer and the Workshop preview were both unavailable"));
             }
 
             await using var stream = WallpaperCatalog.OpenValidatedMediaFile(wallpaper);
@@ -470,7 +453,6 @@ public sealed class CdpInjectionService : IAsyncDisposable
         var viewport = await GetViewportAsync(client, cancellationToken);
         var session = await WallpaperEngineCaptureSession.StartAsync(
             wallpaper, settings, viewport.Width, viewport.Height, cancellationToken);
-        FrameStreamServer? streamServer = null;
         try
         {
             await using var initialFrame = new MemoryStream(session.InitialFrame, writable: false);
@@ -478,103 +460,23 @@ public sealed class CdpInjectionService : IAsyncDisposable
                 client, initialFrame, "wallpaper-engine-capture.jpg", "image", settings, null,
                 progress, cancellationToken);
             var token = Guid.NewGuid().ToString("N");
-
-            // The direct transport is optional: if the listener cannot start the
-            // capture path continues on CDP exactly as before.
-            streamServer = TryStartFrameStream();
-            var streamUrl = streamServer?.StreamUrl;
             var captureStarted = await client.EvaluateAsync(
-                $"window.__codexWallpaperSkinBeginCapturedStream({Js(token)}, {(streamUrl is null ? "null" : Js(streamUrl))})",
-                cancellationToken);
+                $"window.__codexWallpaperSkinBeginCapturedStream({Js(token)})", cancellationToken);
             if (!ReadBoolean(captureStarted))
             {
                 throw new InvalidOperationException("Codex rejected the native capture stream lease.");
             }
             _captureToken = token;
             Interlocked.Exchange(ref _captureSession, session);
-            _frameStreamServer = streamServer;
-            _captureTransport = "cdp";
-            session.StartStreaming(new CdpFrameSink(PublishCapturedFrameAsync), ReadCapturePointerAsync);
-
-            // Only switch when the page proves it can reach the loopback stream.
-            if (streamServer is not null)
-            {
-                var transport = await TrySelectDirectTransportAsync(client, token, cancellationToken);
-                if (transport)
-                {
-                    _captureTransport = "stream";
-                    session.SetFrameSink(new StreamFrameSink(streamServer));
-                    _directStreamSince = DateTimeOffset.UtcNow;
-                }
-            }
-
+            session.StartStreaming(PublishCapturedFrameAsync, ReadCapturePointerAsync);
             StartCaptureSupervisor(wallpaper, settings);
             return initial;
         }
         catch
         {
             await session.DisposeAsync();
-            await StopFrameStreamAsync(streamServer);
             throw;
         }
-    }
-
-    /// <summary>Starts the loopback frame server, or returns null if it cannot bind.</summary>
-    private static FrameStreamServer? TryStartFrameStream()
-    {
-        FrameStreamServer? server = null;
-        try
-        {
-            server = new FrameStreamServer();
-            server.Start();
-            return server;
-        }
-        catch
-        {
-            if (server is not null)
-            {
-                server.DisposeAsync().AsTask().GetAwaiter().GetResult();
-            }
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// Asks the page to prove the direct transport works. Returns false when the
-    /// page cannot reach the loopback stream, leaving the CDP path in place.
-    /// </summary>
-    private static async Task<bool> TrySelectDirectTransportAsync(
-        CdpClient client,
-        string token,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            var evaluation = await client.EvaluateAsync(
-                $"window.__codexWallpaperSkinTryDirectStream({Js(token)})", cancellationToken);
-            var value = evaluation.GetProperty("result").GetProperty("value");
-            return value.ValueKind == JsonValueKind.String
-                && value.GetString() == "stream";
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private async Task StopFrameStreamAsync(FrameStreamServer? server)
-    {
-        var owned = server ?? Interlocked.Exchange(ref _frameStreamServer, null);
-        if (owned is null)
-        {
-            return;
-        }
-        Interlocked.CompareExchange(ref _frameStreamServer, null, owned);
-        await owned.DisposeAsync();
     }
 
     /// <summary>
@@ -690,7 +592,6 @@ public sealed class CdpInjectionService : IAsyncDisposable
                 // keep up is named instead of silently degrading.
                 while (!lifetime.IsCancellationRequested && session.IsRunning)
                 {
-                    await VerifyDirectTransportAsync(session, lifetime);
                     var status = CaptureRecoveryPolicy.Classify(session.Snapshot());
                     if (status != BackendStatus)
                     {
@@ -758,60 +659,6 @@ public sealed class CdpInjectionService : IAsyncDisposable
         {
             // Recovery is best effort; the last presented frame remains visible.
         }
-    }
-
-    /// <summary>
-    /// Confirms the direct transport is actually delivering. The page can accept
-    /// the stream URL and still never receive a byte, so a short grace period
-    /// after the switch decides it: if nothing was streamed while frames were
-    /// published, the session goes back to CDP without touching what is on screen.
-    /// </summary>
-    private async Task VerifyDirectTransportAsync(
-        WallpaperEngineCaptureSession session,
-        CancellationToken cancellationToken)
-    {
-        if (_captureTransport != "stream")
-        {
-            return;
-        }
-        var server = Volatile.Read(ref _frameStreamServer);
-        if (server is null)
-        {
-            return;
-        }
-        if (DateTimeOffset.UtcNow - _directStreamSince < DirectStreamGracePeriod)
-        {
-            return;
-        }
-        if (server.StreamedFrames > 0 || server.CaptureFrames == 0)
-        {
-            return;
-        }
-
-        // Nothing arrived: the page would not or could not read the stream.
-        try
-        {
-            var token = _captureToken;
-            if (token is not null)
-            {
-                await RequireClient().EvaluateAsync(
-                    $"window.__codexWallpaperSkinRevertDirectStream({Js(token)})", cancellationToken);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch
-        {
-            // The page may be gone; the CDP sink is still restored below.
-        }
-        session.SetFrameSink(new CdpFrameSink(PublishCapturedFrameAsync));
-        _captureTransport = "cdp";
-        SetBackendStatus(
-            WallpaperBackendStatus.NativeDynamic,
-            "The direct frame stream was unreachable from Codex, so the verified CDP transport was restored.");
-        await StopFrameStreamAsync(null);
     }
 
     private async Task ApplyCaptureExhaustedAsync(
@@ -1018,8 +865,6 @@ public sealed class CdpInjectionService : IAsyncDisposable
     {
         var capture = Interlocked.Exchange(ref _captureSession, null);
         _captureToken = null;
-        _captureTransport = "none";
-        await StopFrameStreamAsync(null);
         if (capture is not null)
         {
             await capture.DisposeAsync();
@@ -1130,8 +975,6 @@ public sealed class CdpInjectionService : IAsyncDisposable
             || typeof window.__codexWallpaperSkinBeginCapturedStream !== 'undefined'
             || typeof window.__codexWallpaperSkinSetCapturedFrame !== 'undefined'
             || typeof window.__codexWallpaperSkinReadCapturePointer !== 'undefined'
-            || typeof window.__codexWallpaperSkinTryDirectStream !== 'undefined'
-            || typeof window.__codexWallpaperSkinRevertDirectStream !== 'undefined'
             || typeof window.__codexWallpaperSkinCleanup !== 'undefined'
             || typeof window.__cwsCreateSceneWallpaper !== 'undefined'
             || typeof window.__cwsWeSceneLibrary !== 'undefined'
@@ -1223,8 +1066,6 @@ public sealed class CdpInjectionService : IAsyncDisposable
           delete window.__codexWallpaperSkinBeginCapturedStream;
           delete window.__codexWallpaperSkinSetCapturedFrame;
           delete window.__codexWallpaperSkinReadCapturePointer;
-          delete window.__codexWallpaperSkinTryDirectStream;
-          delete window.__codexWallpaperSkinRevertDirectStream;
           delete window.__codexWallpaperSkinCleanup;
           delete window.__cwsCreateSceneWallpaper;
           delete window.__cwsWeSceneLibrary;
@@ -1252,8 +1093,6 @@ public sealed class CdpInjectionService : IAsyncDisposable
             && typeof window.__codexWallpaperSkinBeginCapturedStream === 'undefined'
             && typeof window.__codexWallpaperSkinSetCapturedFrame === 'undefined'
             && typeof window.__codexWallpaperSkinReadCapturePointer === 'undefined'
-            && typeof window.__codexWallpaperSkinTryDirectStream === 'undefined'
-            && typeof window.__codexWallpaperSkinRevertDirectStream === 'undefined'
             && typeof window.__codexWallpaperSkinCleanup === 'undefined'
             && typeof window.__cwsCreateSceneWallpaper === 'undefined'
             && typeof window.__cwsWeSceneLibrary === 'undefined'
@@ -1304,10 +1143,6 @@ public sealed class CdpInjectionService : IAsyncDisposable
             && window.__codexWallpaperSkinSetCapturedFrame === existing.helpers.setCapturedFrame
             && typeof window.__codexWallpaperSkinReadCapturePointer === 'function'
             && window.__codexWallpaperSkinReadCapturePointer === existing.helpers.readCapturePointer
-            && typeof window.__codexWallpaperSkinTryDirectStream === 'function'
-            && window.__codexWallpaperSkinTryDirectStream === existing.helpers.tryDirectStream
-            && typeof window.__codexWallpaperSkinRevertDirectStream === 'function'
-            && window.__codexWallpaperSkinRevertDirectStream === existing.helpers.revertDirectStream
             && typeof window.__codexWallpaperSkinCleanup === 'function'
             && window.__codexWallpaperSkinCleanup === existing.helpers.cleanup;
           if (existingHealthy) return 'ready';
@@ -1362,8 +1197,6 @@ public sealed class CdpInjectionService : IAsyncDisposable
           delete window.__codexWallpaperSkinBeginCapturedStream;
           delete window.__codexWallpaperSkinSetCapturedFrame;
           delete window.__codexWallpaperSkinReadCapturePointer;
-          delete window.__codexWallpaperSkinTryDirectStream;
-          delete window.__codexWallpaperSkinRevertDirectStream;
           delete window.__codexWallpaperSkinCleanup;
 
           const nativeStyle = getComputedStyle(root);
@@ -1454,7 +1287,6 @@ public sealed class CdpInjectionService : IAsyncDisposable
             palette: null, observer: null, rafId: 0, visibilityHandler: null, nativeSurface,
             capturePointer: { x: .5, y: .5, down: false, buttons: { left: false, middle: false, right: false } },
             captureInputHandlers: null, captureInputEvents: [], captureInputOverflow: false,
-            captureTransport: 'cdp', captureStreamUrl: null,
             captureFrameBusy: false, captureToken: null,
             captureFrameCount: 0, captureRejectedCount: 0, captureLastError: '',
             styleText, helpers: null
@@ -1766,7 +1598,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
             document.addEventListener('pointerleave', leave, { passive: true, capture: true });
             window.addEventListener('wheel', wheel, { passive: true, capture: true });
           };
-          window.__codexWallpaperSkinBeginCapturedStream = (token, streamUrl) => {
+          window.__codexWallpaperSkinBeginCapturedStream = token => {
             if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/.test(token)) return false;
             state.captureToken = token;
             state.captureFrameBusy = false;
@@ -1775,61 +1607,9 @@ public sealed class CdpInjectionService : IAsyncDisposable
             state.captureLastError = '';
             state.captureInputEvents = [];
             state.captureInputOverflow = false;
-            state.captureTransport = 'cdp';
-            // Only a canonical loopback stream URL is accepted, and the page must
-            // prove it can reach it before the transport is switched.
-            state.captureStreamUrl = typeof streamUrl === 'string'
-              && /^http:\/\/127\.0\.0\.1:\d{2,5}\/stream\?t=[A-Za-z0-9]{16,64}$/.test(streamUrl)
-              ? streamUrl : null;
             // Input tracking starts with the lease, so interaction is never gated
             // on the first successfully captured frame.
             installCaptureInputHandlers();
-            return true;
-          };
-          // Proves the page can actually fetch from the loopback stream before the
-          // transport switches: a 1x1 image from the same origin, port and token.
-          // A page policy that blocks it leaves the CDP path completely untouched.
-          window.__codexWallpaperSkinTryDirectStream = token => new Promise(resolve => {
-            if (token !== state.captureToken || !state.captureStreamUrl) { resolve('cdp'); return; }
-            const media = state.media;
-            if (!(media instanceof HTMLImageElement) || !media.isConnected || media.parentNode !== state.host) {
-              resolve('cdp');
-              return;
-            }
-            const probe = new Image();
-            let settled = false;
-            const finish = transport => {
-              if (settled) return;
-              settled = true;
-              clearTimeout(timer);
-              probe.onload = null;
-              probe.onerror = null;
-              resolve(transport);
-            };
-            const timer = setTimeout(() => finish('cdp'), 1500);
-            probe.onload = () => {
-              try {
-                if (state.disposed || window.__codexWallpaperSkin !== state || token !== state.captureToken) {
-                  finish('cdp');
-                  return;
-                }
-                state.captureTransport = 'stream';
-                // The last accepted frame stays on screen until the stream paints,
-                // so switching transport can never blank the background.
-                media.src = state.captureStreamUrl;
-                finish('stream');
-              } catch (_) {
-                finish('cdp');
-              }
-            };
-            probe.onerror = () => finish('cdp');
-            probe.src = state.captureStreamUrl.replace('/stream?', '/probe?');
-          });
-          // Returns to the CDP transport without disturbing what is on screen; the
-          // next published frame replaces it within one capture interval.
-          window.__codexWallpaperSkinRevertDirectStream = token => {
-            if (token !== state.captureToken) return false;
-            state.captureTransport = 'cdp';
             return true;
           };
           // Independent input channel: input delivery never waits for a frame.
@@ -1946,8 +1726,6 @@ public sealed class CdpInjectionService : IAsyncDisposable
                 && window.__codexWallpaperSkinBeginCapturedStream === state.helpers.beginCapturedStream
                 && window.__codexWallpaperSkinSetCapturedFrame === state.helpers.setCapturedFrame
                 && window.__codexWallpaperSkinReadCapturePointer === state.helpers.readCapturePointer
-                && window.__codexWallpaperSkinTryDirectStream === state.helpers.tryDirectStream
-                && window.__codexWallpaperSkinRevertDirectStream === state.helpers.revertDirectStream
                 && window.__codexWallpaperSkinCleanup === state.helpers.cleanup;
               if (!runtimeIntact()) {
                 throw new Error('The wallpaper runtime was restored or replaced while media was decoding.');
@@ -2009,10 +1787,6 @@ public sealed class CdpInjectionService : IAsyncDisposable
                     && window.__codexWallpaperSkinBeginCapturedStream === state.helpers.beginCapturedStream
                     && window.__codexWallpaperSkinSetCapturedFrame === state.helpers.setCapturedFrame
                     && window.__codexWallpaperSkinReadCapturePointer === state.helpers.readCapturePointer
-                && window.__codexWallpaperSkinTryDirectStream === state.helpers.tryDirectStream
-                && window.__codexWallpaperSkinRevertDirectStream === state.helpers.revertDirectStream
-                    && window.__codexWallpaperSkinTryDirectStream === state.helpers.tryDirectStream
-                    && window.__codexWallpaperSkinRevertDirectStream === state.helpers.revertDirectStream
                     && window.__codexWallpaperSkinCleanup === state.helpers.cleanup;
                   if (!runtimeIntact) {
                     if (window.__codexWallpaperSkin === state && typeof window.__codexWallpaperSkinCleanup === 'function') {
@@ -2112,10 +1886,6 @@ public sealed class CdpInjectionService : IAsyncDisposable
               delete window.__codexWallpaperSkinBeginCapturedStream;
               delete window.__codexWallpaperSkinSetCapturedFrame;
               delete window.__codexWallpaperSkinReadCapturePointer;
-            delete window.__codexWallpaperSkinTryDirectStream;
-            delete window.__codexWallpaperSkinRevertDirectStream;
-          delete window.__codexWallpaperSkinTryDirectStream;
-          delete window.__codexWallpaperSkinRevertDirectStream;
               delete window.__codexWallpaperSkinCleanup;
             }
             return 'cleaned';
@@ -2129,8 +1899,6 @@ public sealed class CdpInjectionService : IAsyncDisposable
             beginCapturedStream: window.__codexWallpaperSkinBeginCapturedStream,
             setCapturedFrame: window.__codexWallpaperSkinSetCapturedFrame,
             readCapturePointer: window.__codexWallpaperSkinReadCapturePointer,
-            tryDirectStream: window.__codexWallpaperSkinTryDirectStream,
-            revertDirectStream: window.__codexWallpaperSkinRevertDirectStream,
             cleanup: window.__codexWallpaperSkinCleanup
           };
           return 'ready';

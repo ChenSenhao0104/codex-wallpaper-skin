@@ -37,3 +37,17 @@ Application wallpapers execute arbitrary programs and remain outside the product
 **Status:** accepted
 
 Automation may build and test candidates, but every GitHub Release is created as a draft and published only after explicit maintainer approval. Code signing is deferred until a later distribution stage.
+
+## ADR-007 — The injected layer cannot reach an HTTP frame stream
+
+**Status:** accepted (measured on Windows build 26200, Codex 2026-09-20)
+
+Issue #1 section 3 asks to avoid per-frame JPEG/Base64 transport. A loopback MJPEG server was implemented, unit-tested (loopback-only bind, per-session token, two served paths, multipart framing, latest-wins backpressure) and wired behind a page-side reachability probe that could switch transports at runtime and fall back to CDP.
+
+Measured against a live Codex page, the probe returned `cdp:probe-refused/fetch-refused`: a Codex `app://` page refuses **both** an `<img>` load and a `fetch` to `http://127.0.0.1:<port>`, including a same-machine loopback with a per-session token. An HTTP frame stream is therefore unreachable from the injected layer, and no `blob`/`data` alternative changes that, because the channel itself is blocked rather than the encoding.
+
+Decision: the MJPEG server and its wiring were removed rather than shipped as network code that can never run on the supported platform. Consequences for the transport axis:
+
+- the CDP channel remains the only transport, so the injected presentation layer still performs no script-initiated network access of its own, and the injected runtime keeps its "no `fetch`, no `XMLHttpRequest`" property, which the self-tests assert;
+- transport cost must be attacked by sending **smaller or partial payloads over CDP** (for example WebP at equal quality, or changed-region updates) rather than by changing the channel;
+- if a future Codex build allows loopback requests from `app://`, the reachability-probe design recorded in this decision is the pattern to reintroduce, and it must stay feature-detected rather than assumed.

@@ -12,7 +12,6 @@ Security-sensitive areas include:
 - bypassing `scene.pkg`, texture, shader, dimension, or WebGL resource limits;
 - escaping the selected media or Wallpaper Engine project directory;
 - reading Codex authentication, browser storage, chats, or network traffic;
-- cleanup that removes nodes, files, or processes not owned by this project;
-- the loopback frame stream that the native capture path may open: it must stay bound to `127.0.0.1`, must require its per-session token on every request, must serve only its two documented paths, and must never accept a caller-supplied bind address, port range or path.
+- cleanup that removes nodes, files, or processes not owned by this project.
 
 Do not publish a proof of concept until a fix and coordinated disclosure date are agreed.
