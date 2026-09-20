@@ -2,22 +2,67 @@ using System.Runtime.InteropServices;
 
 namespace CodexWallpaperSkin;
 
+/// <summary>Result of decoding a produced stream with Media Foundation's own reader.</summary>
+internal sealed record MediaDecodeReport(
+    int Frames,
+    int Width,
+    int Height,
+    double MediaSeconds,
+    long DecodedBytes,
+    bool OrientationVerified,
+    string Detail)
+{
+    public bool Passed => Frames > 0 && OrientationVerified;
+
+    public string Describe(bool orientationExpected) =>
+        Passed
+            ? $"PASS Media Foundation decode ({Frames} frames, {Width}x{Height}, {MediaSeconds:F2}s of media, "
+                + $"{DecodedBytes} decoded bytes{(orientationExpected ? ", orientation ok" : string.Empty)})"
+            : $"FAIL Media Foundation decode: {Detail}";
+}
+
 /// <summary>
-/// Decodes a produced fragmented MP4 with Media Foundation's own reader and
-/// reports what came back.
+/// Decodes a produced fragmented MP4 with Media Foundation's own reader.
 ///
 /// Two acceptance questions are answered here, both of which a structural box
 /// check cannot answer: does a Windows media component actually decode the
-/// stream the encoder wrote, and is the frame orientation correct? The fixture
-/// carries a known high-contrast marker in its top-left corner, so a decoded
+/// stream the encoder wrote, and is the frame orientation correct? When the
+/// fixture carries a known high-contrast marker in its top-left corner, a decoded
 /// frame whose top-left is not the marker proves the RGB stride declaration was
 /// wrong.
+///
+/// The stream is fed from memory through <see cref="MediaFoundationReadStream"/>,
+/// so the check never needs file system access.
 /// </summary>
 internal static class MediaFoundationDecodeCheck
 {
     private const int SourceReaderFirstVideoStream = unchecked((int)0xFFFFFFFC);
     private const int SourceReaderEndOfStream = 0x2;
     private const int MaximumSamples = 200_000;
+
+    /// <summary>Decodes an in-memory stream. <paramref name="expectedWidth"/> and height are 0 when unknown.</summary>
+    internal static bool TryDecodeInMemory(
+        byte[] stream,
+        int expectedWidth,
+        int expectedHeight,
+        bool orientationExpected,
+        out string summary,
+        out string failure)
+    {
+        summary = string.Empty;
+        if (!MediaFoundationInterop.TryStartup(out failure))
+        {
+            return false;
+        }
+        using var source = new MediaFoundationReadStream(stream);
+        var report = Decode(source.InterfacePointer, expectedWidth, expectedHeight, orientationExpected, out failure);
+        if (report is null)
+        {
+            return false;
+        }
+        summary = report.Describe(orientationExpected);
+        return report.Passed;
+    }
 
     internal static bool TryDecode(string path, out string summary, out string failure)
     {
@@ -32,29 +77,100 @@ internal static class MediaFoundationDecodeCheck
         {
             return false;
         }
+        var report = DecodeFile(path, out failure);
+        if (report is null)
+        {
+            return false;
+        }
+        summary = report.Describe(orientationExpected: false);
+        return report.Passed;
+    }
 
+    private static MediaDecodeReport? DecodeFile(string path, out string failure)
+    {
         IntPtr reader = IntPtr.Zero;
         IntPtr attributes = IntPtr.Zero;
-        IntPtr rgb32 = IntPtr.Zero;
         try
         {
             var hr = MediaFoundationInterop.MFCreateAttributes(out attributes, 2);
             if (MediaFoundationInterop.Succeeded(hr))
             {
-                MediaFoundationInterop.SetAttributeUInt32(attributes, MediaFoundationInterop.SourceReaderEnableVideoProcessing, 1);
+                MediaFoundationInterop.SetAttributeUInt32(
+                    attributes, MediaFoundationInterop.SourceReaderEnableVideoProcessing, 1);
             }
             hr = MediaFoundationInterop.MFCreateSourceReaderFromURL(path, attributes, out reader);
             if (!MediaFoundationInterop.Succeeded(hr) || reader == IntPtr.Zero)
             {
                 failure = $"Media Foundation could not open the produced stream (0x{hr:X8}).";
-                return false;
+                return null;
             }
+            return ReadAll(reader, 0, 0, false, out failure);
+        }
+        catch (Exception exception)
+        {
+            failure = exception.Message;
+            return null;
+        }
+        finally
+        {
+            if (attributes != IntPtr.Zero) Marshal.Release(attributes);
+            if (reader != IntPtr.Zero) Marshal.Release(reader);
+        }
+    }
 
-            hr = MediaFoundationInterop.MFCreateMediaType(out rgb32);
+    private static MediaDecodeReport? Decode(
+        IntPtr byteStream,
+        int expectedWidth,
+        int expectedHeight,
+        bool orientationExpected,
+        out string failure)
+    {
+        IntPtr reader = IntPtr.Zero;
+        IntPtr attributes = IntPtr.Zero;
+        try
+        {
+            var hr = MediaFoundationInterop.MFCreateAttributes(out attributes, 2);
+            if (MediaFoundationInterop.Succeeded(hr))
+            {
+                MediaFoundationInterop.SetAttributeUInt32(
+                    attributes, MediaFoundationInterop.SourceReaderEnableVideoProcessing, 1);
+            }
+            hr = MediaFoundationInterop.MFCreateSourceReaderFromByteStream(byteStream, attributes, out reader);
+            if (!MediaFoundationInterop.Succeeded(hr) || reader == IntPtr.Zero)
+            {
+                failure = $"Media Foundation could not open the in-memory stream (0x{hr:X8}).";
+                return null;
+            }
+            return ReadAll(reader, expectedWidth, expectedHeight, orientationExpected, out failure);
+        }
+        catch (Exception exception)
+        {
+            failure = exception.Message;
+            return null;
+        }
+        finally
+        {
+            if (attributes != IntPtr.Zero) Marshal.Release(attributes);
+            if (reader != IntPtr.Zero) Marshal.Release(reader);
+        }
+    }
+
+    private static MediaDecodeReport? ReadAll(
+        IntPtr reader,
+        int expectedWidth,
+        int expectedHeight,
+        bool orientationExpected,
+        out string failure)
+    {
+        failure = string.Empty;
+        IntPtr rgb32 = IntPtr.Zero;
+        try
+        {
+            var hr = MediaFoundationInterop.MFCreateMediaType(out rgb32);
             if (!MediaFoundationInterop.Succeeded(hr))
             {
                 failure = $"The decode output media type could not be created (0x{hr:X8}).";
-                return false;
+                return null;
             }
             MediaFoundationInterop.SetAttributeGuid(rgb32, MediaFoundationInterop.MajorType, MediaFoundationInterop.MediaTypeVideo);
             MediaFoundationInterop.SetAttributeGuid(rgb32, MediaFoundationInterop.Subtype, MediaFoundationInterop.VideoFormatRgb32);
@@ -62,7 +178,7 @@ internal static class MediaFoundationDecodeCheck
             if (!MediaFoundationInterop.Succeeded(hr))
             {
                 failure = $"Media Foundation refused to decode to RGB32 (0x{hr:X8}).";
-                return false;
+                return null;
             }
 
             var samples = 0;
@@ -81,7 +197,7 @@ internal static class MediaFoundationDecodeCheck
                 if (!MediaFoundationInterop.Succeeded(hr))
                 {
                     failure = $"Media Foundation failed while decoding sample {samples} (0x{hr:X8}).";
-                    return false;
+                    return null;
                 }
                 if ((streamFlags & SourceReaderEndOfStream) != 0)
                 {
@@ -97,26 +213,24 @@ internal static class MediaFoundationDecodeCheck
                     if (!MediaFoundationInterop.Succeeded(hr) || buffer == IntPtr.Zero)
                     {
                         failure = $"A decoded sample had no contiguous buffer (0x{hr:X8}).";
-                        return false;
+                        return null;
                     }
                     try
                     {
-                        hr = MediaFoundationInterop.LockBuffer(buffer, out var data, out var maximumLength, out var currentLength);
+                        hr = MediaFoundationInterop.LockBuffer(buffer, out var data, out _, out var currentLength);
                         if (!MediaFoundationInterop.Succeeded(hr) || data == IntPtr.Zero)
                         {
                             failure = $"A decoded frame could not be read (0x{hr:X8}).";
-                            return false;
+                            return null;
                         }
                         try
                         {
                             if (firstFrame is null && currentLength > 0)
                             {
-                                // 1280x720x4 is the fixture geometry; the decoder is
-                                // asked for RGB32 so the buffer is tightly packed.
                                 var length = checked((int)currentLength);
                                 firstFrame = new byte[length];
                                 Marshal.Copy(data, firstFrame, 0, length);
-                                (width, height) = EstimateGeometry(length);
+                                (width, height) = ResolveGeometry(length, expectedWidth, expectedHeight);
                             }
                         }
                         finally
@@ -145,35 +259,30 @@ internal static class MediaFoundationDecodeCheck
             if (samples == 0 || firstFrame is null)
             {
                 failure = "Media Foundation decoded no frames from the produced stream.";
-                return false;
+                return null;
             }
-            if (!TryCheckTopLeftMarker(firstFrame, width, height, out var markerDetail))
+            var orientationVerified = true;
+            if (orientationExpected && !TryCheckTopLeftMarker(firstFrame, width, height, out var detail))
             {
-                failure = "The decoded frame orientation was wrong: " + markerDetail;
-                return false;
+                orientationVerified = false;
+                failure = "The decoded frame orientation was wrong: " + detail;
             }
-
             var seconds = firstTimestamp < 0 ? 0 : (lastTimestamp - firstTimestamp) / 10_000_000d;
-            summary = $"PASS Media Foundation decode ({samples} frames, {width}x{height}, "
-                + $"{seconds:F2}s of media, {bytes} decoded bytes, orientation ok)";
-            return true;
-        }
-        catch (Exception exception)
-        {
-            failure = exception.Message;
-            return false;
+            return new MediaDecodeReport(samples, width, height, seconds, bytes, orientationVerified, failure);
         }
         finally
         {
             if (rgb32 != IntPtr.Zero) Marshal.Release(rgb32);
-            if (attributes != IntPtr.Zero) Marshal.Release(attributes);
-            if (reader != IntPtr.Zero) Marshal.Release(reader);
         }
     }
 
-    /// <summary>Infers a 16:9 geometry from the decoded RGB32 buffer length.</summary>
-    private static (int Width, int Height) EstimateGeometry(int length)
+    /// <summary>Uses the caller's geometry when known, otherwise infers it from the decoded buffer length.</summary>
+    private static (int Width, int Height) ResolveGeometry(int length, int expectedWidth, int expectedHeight)
     {
+        if (expectedWidth > 0 && expectedHeight > 0 && length >= expectedWidth * expectedHeight * 4)
+        {
+            return (expectedWidth, expectedHeight);
+        }
         foreach (var (width, height) in new[] { (1280, 720), (1920, 1080), (960, 540), (640, 360) })
         {
             if (length >= width * height * 4)
@@ -182,8 +291,8 @@ internal static class MediaFoundationDecodeCheck
             }
         }
         var pixels = Math.Max(1, length / 4);
-        var inferred = (int)Math.Round(Math.Sqrt(pixels * 16d / 9d));
-        var inferredHeight = Math.Max(1, pixels / Math.Max(1, inferred));
+        var inferred = Math.Max(2, (int)Math.Round(Math.Sqrt(pixels * 16d / 9d)));
+        var inferredHeight = Math.Max(2, pixels / Math.Max(1, inferred));
         return (inferred, inferredHeight);
     }
 

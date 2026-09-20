@@ -200,7 +200,8 @@ public static class Program
                     throw new ArgumentException("--gpu-stream-smoke-test requires a project.json path.");
                 }
                 return await RunGpuStreamSmokeTestAsync(
-                    args[gpuStreamTestIndex + 1], ReadDoubleOption(args, "--seconds", 10));
+                    args[gpuStreamTestIndex + 1], ReadDoubleOption(args, "--seconds", 10),
+                    ReadDoubleOption(args, "--scale", .75));
             }
 
             var decodeIndex = Array.FindIndex(args,
@@ -288,11 +289,15 @@ public static class Program
     /// encode, container assembly and disposal without needing the Codex page.
     /// The renderer half is covered by scripts/runtime-smoke-test.mjs.
     /// </summary>
-    private static async Task<int> RunGpuStreamSmokeTestAsync(string projectPath, double seconds)
+    private static async Task<int> RunGpuStreamSmokeTestAsync(string projectPath, double seconds, double sceneScale)
     {
         if (seconds is < 2 or > 120)
         {
             throw new ArgumentException("--seconds must be between 2 and 120 for the GPU stream smoke test.");
+        }
+        if (sceneScale is < 0.5 or > 1)
+        {
+            throw new ArgumentException("--scale must be between 0.5 and 1 for the GPU stream smoke test.");
         }
         var wallpaper = WallpaperCatalog.ParseProject(projectPath);
         if (!wallpaper.IsWallpaperEngineScene)
@@ -300,7 +305,7 @@ public static class Program
             throw new InvalidDataException("The GPU stream smoke test accepts Wallpaper Engine Scene projects only.");
         }
 
-        var settings = new WallpaperSettings { Muted = true, SceneFrameRate = 60, SceneResolutionScale = .75 };
+        var settings = new WallpaperSettings { Muted = true, SceneFrameRate = 60, SceneResolutionScale = sceneScale };
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(seconds + 60));
         await using var session = await WallpaperEngineCaptureSession.StartAsync(
             wallpaper, settings, 1600, 1000, timeout.Token, useGpuMediaPath: true);
@@ -310,15 +315,21 @@ public static class Program
                 "The GPU media path was not selected: "
                 + (session.GpuStartFailureReason ?? "no reason was reported"));
         }
-        if (session.Status != GpuStreamStatus.GpuDynamic60)
+        if (!GpuStreamStatusLabel.IsGpuDynamic(session.Status))
         {
             throw new InvalidOperationException(
-                $"The GPU media path reported '{session.StatusLabel}' instead of the 60 FPS target.");
+                $"The GPU media path reported '{session.StatusLabel}' instead of a GPU mode: "
+                + (session.GpuFailureReason ?? session.GpuStatusNote ?? "no reason was reported"));
+        }
+        if (!string.IsNullOrWhiteSpace(session.GpuStatusNote))
+        {
+            Console.WriteLine("  note: " + session.GpuStatusNote);
         }
 
         var batches = 0;
         var fragments = 0;
         var bytes = 0L;
+        using var captured = new MemoryStream();
         var deadline = DateTimeOffset.UtcNow.AddSeconds(seconds);
         session.StartStreamingGpu(
             (batch, _) =>
@@ -326,6 +337,10 @@ public static class Program
                 batches++;
                 fragments += batch.Count;
                 bytes += batch.ByteCount;
+                foreach (var fragment in batch.Fragments)
+                {
+                    captured.Write(fragment.Bytes, 0, fragment.Bytes.Length);
+                }
                 return Task.FromResult("presented");
             },
             _ => Task.FromResult<CapturedPointer?>(null));
@@ -347,16 +362,40 @@ public static class Program
         {
             throw new InvalidOperationException("The GPU media path failed during the run: " + failure);
         }
-        var minimumBatches = (int)(seconds * 10);
-        if (batches < minimumBatches || snapshot is null || snapshot.EncodedFrames < 30)
+        var minimumBatches = (int)(seconds * 4);
+        if (batches < minimumBatches || snapshot is null || snapshot.EncodedFragments < 30)
         {
             throw new TimeoutException(
                 $"The GPU media path produced too little media: {batches} batches (expected at least {minimumBatches}), "
-                + $"{snapshot?.EncodedFrames ?? 0} encoded frames, {snapshot?.PresentedFragments ?? 0} acknowledged fragments.");
+                + $"{snapshot?.EncodedFrames ?? 0} encoded frames, {snapshot?.EncodedFragments ?? 0} encoded fragments.");
+        }
+
+        // Inspect and decode exactly what the live path produced, so the reported
+        // cadence is the stream's own measurement rather than an assumption that
+        // one fragment equals one frame.
+        var stream = captured.ToArray();
+        var report = Mp4StreamInspector.Inspect(stream);
+        var avc = Mp4StreamInspector.InspectAvcBitstream(stream);
+        Console.WriteLine("  " + report.Describe());
+        Console.WriteLine("  " + avc.Describe());
+        var decoded = MediaFoundationDecodeCheck.TryDecodeInMemory(
+            stream, snapshot.CaptureWidth, snapshot.CaptureHeight, orientationExpected: false,
+            out var decodeSummary, out var decodeFailure);
+        Console.WriteLine("  " + (decoded ? decodeSummary : "decode check: " + decodeFailure));
+
+        // Honesty gate: Media Foundation repeats frames to fill a declared rate, so
+        // a coded-frame count far above the submitted count would mean the product
+        // is claiming a cadence the machine never sustained.
+        if (snapshot.SubmittedFrames > 0 && snapshot.CodedFrames > snapshot.SubmittedFrames * 1.25)
+        {
+            throw new InvalidOperationException(
+                $"The encoder coded {snapshot.CodedFrames} frames from {snapshot.SubmittedFrames} submitted frames, "
+                + "so the declared frame rate is being filled with repeated frames rather than measured cadence.");
         }
         Console.WriteLine("  " + snapshot.Describe());
         Console.WriteLine(
-            $"PASS GPU media path ({status}; {codec}; {batches} transport batches, {fragments} fragments, {bytes} bytes, "
+            $"PASS GPU media path ({status}; {codec}; {batches} transport batches, {fragments} fragments "
+            + $"({report.SampleCount} muxed samples, {avc.NalUnits} AVC NAL units), {bytes} bytes, "
             + $"encoder={snapshot.EncoderMode}, capture={snapshot.CaptureWidth}x{snapshot.CaptureHeight}, "
             + $"private window released)");
         return 0;

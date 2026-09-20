@@ -291,6 +291,9 @@ internal static class GpuStreamSelfTest
             Stage(report.Describe());
             var avc = Mp4StreamInspector.InspectAvcBitstream(stream);
             Stage(avc.Describe());
+            var decoded = MediaFoundationDecodeCheck.TryDecodeInMemory(
+                stream, options.Width, options.Height, orientationExpected: true, out var decodeSummary, out var decodeFailure);
+            Stage(decoded ? decodeSummary : "decode check: " + decodeFailure);
             Stage(created.StreamDiagnostics);
 
             if (!string.IsNullOrWhiteSpace(options.OutputPath))
@@ -314,12 +317,14 @@ internal static class GpuStreamSelfTest
                 && report.Width == options.Width
                 && report.Height == options.Height
                 && report.SampleCount > 0
-                && avc.IsDecodable;
+                && avc.IsDecodable
+                && decoded;
             var summary = passed
                 ? $"PASS GPU H.264 encoder ({created.EncoderMode}, {options.Width}x{options.Height}@{options.FrameRate}, "
                     + $"{report.SampleCount} samples, {mediaChunks} fragments, {stream.Length} bytes, "
-                    + $"{avc.NalUnits} AVC NAL units, sps={avc.SequenceParameterSets} pps={avc.PictureParameterSets} idr={avc.InstantaneousRefreshFrames})"
-                : "FAIL GPU H.264 encoder: " + DescribeFailure(created, submitted, totalFrames, initChunks, mediaChunks, report, avc);
+                    + $"{avc.NalUnits} AVC NAL units, sps={avc.SequenceParameterSets} pps={avc.PictureParameterSets} idr={avc.InstantaneousRefreshFrames}, "
+                    + $"decode verified with orientation)"
+                : "FAIL GPU H.264 encoder: " + DescribeFailure(created, submitted, totalFrames, initChunks, mediaChunks, report, avc, decodeFailure);
             return new GpuEncoderSmokeResult(passed, summary, details);
         }
         finally
@@ -342,9 +347,14 @@ internal static class GpuStreamSelfTest
         int initChunks,
         int mediaChunks,
         Mp4StreamReport report,
-        AvcBitstreamReport avc)
+        AvcBitstreamReport avc,
+        string decodeFailure)
     {
         var builder = new StringBuilder();
+        if (decodeFailure.Length > 0)
+        {
+            builder.Append("decode=").Append(decodeFailure).Append("; ");
+        }
         if (encoder.FailureReason is not null)
         {
             builder.Append("encoder=").Append(encoder.FailureReason).Append("; ");

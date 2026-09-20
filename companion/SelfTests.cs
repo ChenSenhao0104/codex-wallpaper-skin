@@ -549,12 +549,13 @@ public static class SelfTests
             for (var index = 0; index < 600; index++)
             {
                 diagnostics.CountCaptured();
-                diagnostics.CountEncoded(1000 + index);
+                diagnostics.CountEncodedFragment(1000 + index);
                 diagnostics.CountDeliveredFragment();
                 diagnostics.CountPresented();
                 diagnostics.RecordLatency(TimeSpan.FromMilliseconds(index % 120));
                 diagnostics.ObserveQueueDepth(index % 7);
             }
+            diagnostics.SetSubmittedFrames(600);
             diagnostics.CountRejected();
             diagnostics.CountDropped();
             diagnostics.CountStaleFragment();
@@ -562,6 +563,9 @@ public static class SelfTests
 
             var snapshot = diagnostics.Snapshot(GpuStreamStatus.GpuDynamic60);
             Equal(600L, snapshot.CapturedFrames);
+            Equal(600L, snapshot.EncodedFrames);
+            Equal(600L, snapshot.EncodedFragments);
+            True(snapshot.EncodedBytes > 0);
             Equal(600L, snapshot.PresentedFragments);
             Equal(6, snapshot.MaximumQueueDepth);
             Equal(1, snapshot.RecoveryCount);
@@ -731,9 +735,33 @@ public static class SelfTests
                 out var tooSmall, out var smallReason));
             True(tooSmall is null && smallReason.Length > 0);
             True(!MediaFoundationH264Encoder.TryCreate(
-                new GpuEncoderOptions(1920, 1080, 24, 8_000_000, true, TimeSpan.FromMilliseconds(100)),
-                out _, out var rateReason));
-            True(rateReason.Contains("30 FPS fallback", StringComparison.Ordinal));
+                new GpuEncoderOptions(1920, 1080, 5, 8_000_000, true, TimeSpan.FromMilliseconds(100)),
+                out _, out var slowReason));
+            True(slowReason.Contains("frames per second", StringComparison.Ordinal));
+            True(!MediaFoundationH264Encoder.TryCreate(
+                new GpuEncoderOptions(1920, 1080, 144, 8_000_000, true, TimeSpan.FromMilliseconds(100)),
+                out _, out var fastReason));
+            True(fastReason.Contains("frames per second", StringComparison.Ordinal));
+
+            // The declared rate is the measured cadence, never more than the user
+            // asked for: declaring a higher rate would be filled with repeated
+            // frames, and a lower one would discard frames the machine could feed.
+            Equal(60, GpuStreamStatusLabel.AlignFrameRate(75, 60));
+            Equal(45, GpuStreamStatusLabel.AlignFrameRate(45, 60));
+            Equal(19, GpuStreamStatusLabel.AlignFrameRate(19, 60));
+            Equal(30, GpuStreamStatusLabel.AlignFrameRate(60, 30));
+            Equal(GpuStreamStatusLabel.MinimumGpuFrameRate, GpuStreamStatusLabel.AlignFrameRate(2, 60));
+            Equal(60, GpuStreamStatusLabel.AlignFrameRate(0, 60));
+            True(GpuStreamStatusLabel.IsBelowRequested(19, 60));
+            True(!GpuStreamStatusLabel.IsBelowRequested(60, 60));
+            True(!GpuStreamStatusLabel.IsBelowRequested(30, 30));
+
+            // The coded frame count is what a cadence claim may rest on, so a
+            // fragment table must be readable without decoding.
+            var fragment = CreateMediaFragment(4);
+            True(Mp4StreamInspector.TryReadFragmentSampleCount(fragment, out var samples));
+            Equal(4, samples);
+            True(!Mp4StreamInspector.TryReadFragmentSampleCount(new byte[] { 0, 0, 0, 8, 0x66, 0x72, 0x65, 0x65 }, out _));
 
             // The captured-frame gate is shared by both media paths.
             var uniform = new byte[64 * 64 * 4];

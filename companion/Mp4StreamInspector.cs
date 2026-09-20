@@ -323,6 +323,34 @@ internal static class Mp4StreamInspector
         return false;
     }
 
+    /// <summary>
+    /// Reads the coded frame count of one media fragment from its own fragment
+    /// table. The count matters because Media Foundation will pad a declared
+    /// frame rate by repeating frames when the input arrives more slowly, so the
+    /// number of coded frames is the only honest measure of the stream's cadence.
+    /// </summary>
+    public static bool TryReadFragmentSampleCount(ReadOnlySpan<byte> chunk, out int sampleCount)
+    {
+        sampleCount = 0;
+        var offset = 0;
+        while (offset + 8 <= chunk.Length)
+        {
+            if (!TryReadBox(chunk, offset, out var type, out var size, out var headerBytes))
+            {
+                return false;
+            }
+            if (type == "moof"
+                && FindBox(chunk.Slice(offset + headerBytes, size - headerBytes), "traf", out var traf)
+                && FindBox(traf, "trun", out var trun))
+            {
+                sampleCount = ReadTrunSampleCount(trun);
+                return sampleCount > 0;
+            }
+            offset += size;
+        }
+        return false;
+    }
+
     private static bool FindBox(ReadOnlySpan<byte> container, string type, out ReadOnlySpan<byte> body)
     {
         body = default;

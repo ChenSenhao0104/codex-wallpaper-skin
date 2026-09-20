@@ -101,9 +101,10 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
             failure = "The requested GPU encode size is outside the supported window.";
             return false;
         }
-        if (options.FrameRate is not (30 or 60))
+        if (options.FrameRate is < GpuStreamStatusLabel.MinimumGpuFrameRate or > GpuStreamStatusLabel.TargetFrameRate)
         {
-            failure = "The GPU media path supports the 60 FPS target and the 30 FPS fallback only.";
+            failure = $"The GPU media path supports {GpuStreamStatusLabel.MinimumGpuFrameRate} to "
+                + $"{GpuStreamStatusLabel.TargetFrameRate} frames per second.";
             return false;
         }
         if (options.BitrateBitsPerSecond < 500_000 || options.BitrateBitsPerSecond > 80_000_000)
@@ -697,7 +698,7 @@ internal sealed class MediaFoundationByteStream : IMFByteStream, IDisposable
         if (callback != IntPtr.Zero)
         {
             _lastAsyncWritten = written;
-            MediaFoundationInterop.CompleteAsyncWrite(callback, state, result);
+            MediaFoundationInterop.CompleteAsyncCallback(callback, state, result);
         }
         return result;
     }

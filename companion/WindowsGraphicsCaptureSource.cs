@@ -68,6 +68,13 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
     /// <summary>Raw frames taken by the consumer. The difference is what the bounded channel superseded.</summary>
     public long ConsumedRawFrames => Interlocked.Read(ref _consumedRawFrames);
 
+    /// <summary>
+    /// Frames the raw channel can hold. The difference between published and
+    /// consumed frames includes these still queued, so only frames beyond the
+    /// capacity were actually superseded and dropped.
+    /// </summary>
+    public const int RawFrameCapacity = 2;
+
     private WindowsGraphicsCaptureSource(
         GraphicsCaptureItem item,
         IDirect3DDevice winRtDevice,
@@ -82,7 +89,7 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
         _rawPixels = rawPixels;
         if (rawPixels)
         {
-            _rawFrames = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(2)
+            _rawFrames = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(RawFrameCapacity)
             {
                 FullMode = BoundedChannelFullMode.DropOldest,
                 SingleReader = true,

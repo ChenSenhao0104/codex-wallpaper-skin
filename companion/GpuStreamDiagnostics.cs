@@ -21,7 +21,9 @@ public sealed class GpuStreamDiagnostics
     private int _latencyCursor;
     private long _capturedFrames;
     private long _rejectedFrames;
-    private long _encodedFrames;
+    private long _submittedFrames;
+    private long _codedFrames;
+    private long _encodedFragments;
     private long _encodedBytes;
     private long _droppedFrames;
     private long _deliveredFragments;
@@ -57,17 +59,63 @@ public sealed class GpuStreamDiagnostics
     public void CountDropped() => Interlocked.Increment(ref _droppedFrames);
     public void CountStaleFragment() => Interlocked.Increment(ref _staleFragments);
     public void CountRejectedFragment() => Interlocked.Increment(ref _rejectedFragments);
-    public void CountDeliveredFragment() => Interlocked.Increment(ref _deliveredFragments);
 
-    public void CountEncoded(int bytes)
+    /// <summary>
+    /// Gauges, not counters. The capture channel holds the most recent frames and
+    /// supersedes older ones, so the number left behind is the difference between
+    /// what the source published and what this pipeline consumed; accumulating
+    /// that difference on every read would report nonsense.
+    /// </summary>
+    public void SetCaptureGauges(long publishedFrames, long supersededFrames)
     {
-        Interlocked.Increment(ref _encodedFrames);
+        Interlocked.Exchange(ref _publishedFrames, Math.Max(0, publishedFrames));
+        Interlocked.Exchange(ref _supersededFrames, Math.Max(0, supersededFrames));
+    }
+
+    private long _publishedFrames;
+    private long _supersededFrames;
+
+    /// <summary>Counts delivered fragments. One transport message carries a bounded group of them.</summary>
+    public void CountDeliveredFragment(int count = 1) => Interlocked.Add(ref _deliveredFragments, Math.Max(0, count));
+
+    /// <summary>Counts one encoded fragment, which is one Media Source Extensions unit.</summary>
+    public void CountEncodedFragment(int bytes)
+    {
+        Interlocked.Increment(ref _encodedFragments);
         Interlocked.Add(ref _encodedBytes, bytes);
     }
 
-    public void CountPresented()
+    /// <summary>
+    /// Counts the coded frames a fragment contains. This is what the product may
+    /// claim as its cadence; the number of submitted frames is reported next to it
+    /// so padding is visible rather than flattering.
+    /// </summary>
+    public void CountCodedFrames(int frames) => Interlocked.Add(ref _codedFrames, Math.Max(0, frames));
+
+    /// <summary>Mirrors the encoder's submitted-frame count so the snapshot reports frames, not fragments.</summary>
+    public void SetSubmittedFrames(long frames) => Interlocked.Exchange(ref _submittedFrames, Math.Max(0, frames));
+
+    /// <summary>
+    /// Average per-frame wait for a captured frame and per-frame encode hand-off
+    /// cost. They are separated so a throughput ceiling can be attributed: the
+    /// readback itself happens on the capture callback thread, so a large wait
+    /// means the source produced frames slowly, not that this pipeline was slow.
+    /// </summary>
+    public void SetFrameTimings(double waitMs, double submitMs, double slowestWaitMs)
     {
-        Interlocked.Increment(ref _presentedFragments);
+        _averageReadbackMs = Math.Round(waitMs, 2);
+        _averageSubmitMs = Math.Round(submitMs, 2);
+        _slowestReadbackMs = Math.Round(slowestWaitMs, 2);
+    }
+
+    private double _averageReadbackMs;
+    private double _averageSubmitMs;
+    private double _slowestReadbackMs;
+
+    /// <summary>Counts presented fragments, which is the cadence the product actually claims.</summary>
+    public void CountPresented(int count = 1)
+    {
+        Interlocked.Add(ref _presentedFragments, Math.Max(0, count));
         Interlocked.Exchange(ref _lastPresentedUnixMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
     }
 
@@ -122,7 +170,12 @@ public sealed class GpuStreamDiagnostics
         Note = note;
         var seconds = Math.Max(0.001, _clock.Elapsed.TotalSeconds);
         var captured = Interlocked.Read(ref _capturedFrames);
-        var encoded = Interlocked.Read(ref _encodedFrames);
+        var submitted = Interlocked.Read(ref _submittedFrames);
+        var coded = Interlocked.Read(ref _codedFrames);
+        var encodedFragments = Interlocked.Read(ref _encodedFragments);
+        // The honest cadence is the number of frames actually coded, not the
+        // declared rate and not the fragment count.
+        var cadenceFrames = coded > 0 ? coded : submitted;
         var presented = Interlocked.Read(ref _presentedFragments);
         var lastPresented = Interlocked.Read(ref _lastPresentedUnixMs);
         var (median, p95) = Percentiles();
@@ -137,11 +190,16 @@ public sealed class GpuStreamDiagnostics
             CaptureHeight: CaptureHeight,
             RequestedFrameRate: RequestedFrameRate,
             ObservedCapturedFps: Math.Round(captured / seconds, 1),
-            ObservedEncodedFps: Math.Round(encoded / seconds, 1),
+            ObservedEncodedFps: Math.Round(cadenceFrames / seconds, 1),
             ObservedPresentedFps: Math.Round(presentedFps, 1),
             CapturedFrames: captured,
+            PublishedFrames: Interlocked.Read(ref _publishedFrames),
+            SupersededFrames: Interlocked.Read(ref _supersededFrames),
             RejectedFrames: Interlocked.Read(ref _rejectedFrames),
-            EncodedFrames: encoded,
+            EncodedFrames: cadenceFrames,
+            SubmittedFrames: submitted,
+            CodedFrames: coded,
+            EncodedFragments: encodedFragments,
             EncodedBytes: Interlocked.Read(ref _encodedBytes),
             DroppedFrames: Interlocked.Read(ref _droppedFrames),
             DeliveredFragments: Interlocked.Read(ref _deliveredFragments),
@@ -158,6 +216,9 @@ public sealed class GpuStreamDiagnostics
             // transport failure, but a GPU mode that cannot hold 30 FPS is
             // degraded and must be diagnosable rather than reported as success.
             DegradedCadence: GpuStreamStatusLabel.IsDegradedCadence(status, seconds, presentedFps),
+            AverageReadbackMs: _averageReadbackMs,
+            AverageSubmitMs: _averageSubmitMs,
+            SlowestReadbackMs: _slowestReadbackMs,
             Note: note ?? Note);
     }
 
@@ -191,8 +252,13 @@ public sealed record GpuStreamDiagnosticsSnapshot(
     double ObservedEncodedFps,
     double ObservedPresentedFps,
     long CapturedFrames,
+    long PublishedFrames,
+    long SupersededFrames,
     long RejectedFrames,
     long EncodedFrames,
+    long SubmittedFrames,
+    long CodedFrames,
+    long EncodedFragments,
     long EncodedBytes,
     long DroppedFrames,
     long DeliveredFragments,
@@ -206,6 +272,9 @@ public sealed record GpuStreamDiagnosticsSnapshot(
     double LongestRecoveryMs,
     DateTimeOffset? LastPresentedAt,
     bool DegradedCadence,
+    double AverageReadbackMs,
+    double AverageSubmitMs,
+    double SlowestReadbackMs,
     string? Note)
 {
     /// <summary>Compact single-line form for the controller window and Doctor output.</summary>
@@ -214,10 +283,12 @@ public sealed record GpuStreamDiagnosticsSnapshot(
         var note = string.IsNullOrWhiteSpace(Note) ? string.Empty : $" note={Note}";
         return $"{Status}; transport={Transport}; capture={CaptureWidth}x{CaptureHeight}; "
             + $"fps requested={RequestedFrameRate} captured={ObservedCapturedFps} encoded={ObservedEncodedFps} presented={ObservedPresentedFps}; "
-            + $"frames captured={CapturedFrames} rejected={RejectedFrames} dropped={DroppedFrames}; "
-            + $"fragments delivered={DeliveredFragments} presented={PresentedFragments} stale={StaleFragments} rejected={RejectedFragments}; "
+            + $"frames captured={CapturedFrames} published={PublishedFrames} superseded={SupersededFrames} "
+            + $"rejected={RejectedFrames} dropped={DroppedFrames} submitted={SubmittedFrames} coded={CodedFrames} bytes={EncodedBytes}; "
+            + $"fragments encoded={EncodedFragments} delivered={DeliveredFragments} presented={PresentedFragments} stale={StaleFragments} rejected={RejectedFragments}; "
             + $"queueMax={MaximumQueueDepth}; latency median={MedianEncodeToPresentMs}ms p95={P95EncodeToPresentMs}ms; "
             + $"encoder={EncoderMode} decoder={DecoderMode}; recoveries={RecoveryCount} longestRecovery={LongestRecoveryMs}ms; "
+            + $"frameCost wait={AverageReadbackMs}ms (slowest {SlowestReadbackMs}ms) submit={AverageSubmitMs}ms; "
             + $"stream={StreamId}{(DegradedCadence ? "; degraded" : string.Empty)}{note}";
     }
 }

@@ -100,7 +100,6 @@ internal sealed class GpuMediaPipeline : IDisposable
         pipeline = null;
         ArgumentNullException.ThrowIfNull(settings);
 
-        var frameRate = GpuStreamStatusLabel.NormalizeFrameRate(settings.SceneFrameRate);
         var capture = WindowsGraphicsCaptureSource.TryStartRaw(window, out failure);
         if (capture is null)
         {
@@ -118,6 +117,16 @@ internal sealed class GpuMediaPipeline : IDisposable
             {
                 return false;
             }
+
+            // The frame rate declared to the encoder must be one the machine can
+            // actually feed. Media Foundation fills a declared rate by repeating
+            // frames when input arrives more slowly, which would let the product
+            // claim 60 FPS while the user sees about 17 unique frames per second.
+            // The capture cadence is therefore measured first and the honest rate
+            // is declared, capped by what the user asked for.
+            var requestedFrameRate = GpuStreamStatusLabel.NormalizeFrameRate(settings.SceneFrameRate);
+            var measuredFrameRate = MeasureCaptureFrameRate(capture, requestedFrameRate);
+            var frameRate = GpuStreamStatusLabel.AlignFrameRate(measuredFrameRate, requestedFrameRate);
 
             var bitrate = Math.Clamp(
                 (int)(width * (long)height * frameRate * 0.09),
@@ -137,10 +146,14 @@ internal sealed class GpuMediaPipeline : IDisposable
 
             var instance = new GpuMediaPipeline(
                 capture, encoder, Guid.NewGuid().ToString("N"), width, height, frameRate, firstFrame!);
-            // The first frame is submitted so Media Foundation writes the
-            // initialisation segment immediately: the page cannot initialise its
-            // Media Source until ftyp and moov have arrived.
-            if (!instance.Submit(firstFrame!, out failure))
+            // The first frame is submitted so the encoder writes the
+            // initialisation segment immediately: the page cannot create its
+            // Media Source buffer until ftyp and moov have arrived. Media
+            // Foundation finalises a fragment only when the next frame arrives,
+            // so priming keeps feeding frames until the initialisation segment
+            // actually appears instead of assuming one frame is enough.
+            if (!instance.Submit(firstFrame!, out failure)
+                || !instance.PrimeForInitialisationSegment(TimeSpan.FromSeconds(5), out failure))
             {
                 instance.Dispose();
                 return false;
@@ -163,6 +176,29 @@ internal sealed class GpuMediaPipeline : IDisposable
                 capture.DisposeAsync().AsTask().GetAwaiter().GetResult();
             }
         }
+    }
+
+    /// <summary>
+    /// Measures how many frames per second the capture source can actually
+    /// deliver, so the encoder can be told the truth instead of a rate that
+    /// Media Foundation would fill by repeating frames.
+    /// </summary>
+    private static int MeasureCaptureFrameRate(WindowsGraphicsCaptureSource capture, int requestedFrameRate)
+    {
+        var window = TimeSpan.FromMilliseconds(600);
+        var started = capture.PublishedRawFrames;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var buffer = new byte[1];
+        while (clock.Elapsed < window)
+        {
+            // Drain the channel so the producer keeps publishing, but do not feed
+            // the encoder yet: this measurement precedes its creation.
+            capture.TryReadRawFrame(40, out _, out _, out _);
+        }
+        var published = capture.PublishedRawFrames - started;
+        var seconds = Math.Max(0.05, clock.Elapsed.TotalSeconds);
+        var measured = (int)Math.Round(published / seconds);
+        return measured <= 0 ? requestedFrameRate : measured;
     }
 
     private static bool WaitForFirstFrame(
@@ -228,9 +264,17 @@ internal sealed class GpuMediaPipeline : IDisposable
             }
             _batcher.Add(chunk);
             drained = true;
-            Diagnostics.CountEncoded(chunk.Bytes.Length);
+            Diagnostics.CountEncodedFragment(chunk.Bytes.Length);
+            // The coded frame count comes from the fragment's own table: Media
+            // Foundation may repeat frames to fill the declared rate, so this is
+            // the only honest measure of the stream's cadence.
+            if (Mp4StreamInspector.TryReadFragmentSampleCount(chunk.Bytes, out var codedFrames))
+            {
+                Diagnostics.CountCodedFrames(codedFrames);
+            }
         }
         Diagnostics.ObserveQueueDepth(PendingFragments);
+        Diagnostics.SetSubmittedFrames(_encoder.SubmittedFrames);
         if (HasFailed)
         {
             failure = FailureReason ?? "The GPU media pipeline failed.";
@@ -252,12 +296,12 @@ internal sealed class GpuMediaPipeline : IDisposable
         switch (pageStatus)
         {
             case "presented":
-                Diagnostics.CountDeliveredFragment();
-                Diagnostics.CountPresented();
+                Diagnostics.CountDeliveredFragment(batch.Count);
+                Diagnostics.CountPresented(batch.Count);
                 Diagnostics.RecordLatency(now - batch.CreatedAt);
                 break;
             case "appended":
-                Diagnostics.CountDeliveredFragment();
+                Diagnostics.CountDeliveredFragment(batch.Count);
                 break;
             case "stale":
                 Diagnostics.CountStaleFragment();
@@ -284,8 +328,18 @@ internal sealed class GpuMediaPipeline : IDisposable
 
     public void CountRecovery(TimeSpan duration) => Diagnostics.CountRecovery(duration);
 
-    public GpuStreamDiagnosticsSnapshot Snapshot(GpuStreamStatus status, string? note = null) =>
-        Diagnostics.Snapshot(status, note);
+    public GpuStreamDiagnosticsSnapshot Snapshot(GpuStreamStatus status, string? note = null)
+    {
+        Diagnostics.SetSubmittedFrames(_encoder.SubmittedFrames);
+        var published = _capture.PublishedRawFrames;
+        var consumed = _capture.ConsumedRawFrames;
+        Diagnostics.SetCaptureGauges(
+            published,
+            Math.Max(0, published - consumed - WindowsGraphicsCaptureSource.RawFrameCapacity));
+        var (readMs, submitMs, slowestReadMs) = FrameTimings();
+        Diagnostics.SetFrameTimings(readMs, submitMs, slowestReadMs);
+        return Diagnostics.Snapshot(status, note);
+    }
 
     /// <summary>Reads the newest captured frame and submits it to the encoder.</summary>
     public bool CaptureAndSubmit(int timeoutMilliseconds, out string failure)
@@ -301,8 +355,10 @@ internal sealed class GpuMediaPipeline : IDisposable
             failure = _encoder.FailureReason ?? "The GPU media pipeline failed.";
             return false;
         }
-        if (!_capture.TryReadRawFrame(timeoutMilliseconds, out var pixels, out var width, out var height)
-            || pixels is null)
+        var readStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+        var hasFrame = _capture.TryReadRawFrame(timeoutMilliseconds, out var pixels, out var width, out var height);
+        var readElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(readStarted);
+        if (!hasFrame || pixels is null)
         {
             // A Scene may intentionally stop producing frames while it is
             // visually static, and a short read timeout simply means no new frame
@@ -312,12 +368,14 @@ internal sealed class GpuMediaPipeline : IDisposable
         }
 
         // A frame the bounded capture channel had to supersede never reached the
-        // encoder: that is the drop the diagnostics must report.
-        var superseded = _capture.PublishedRawFrames - _capture.ConsumedRawFrames;
-        for (var index = 0; index < superseded; index++)
-        {
-            CountDroppedFrame();
-        }
+        // encoder. This is a gauge rather than a running total: the difference
+        // between published and consumed already counts every superseded frame,
+        // so accumulating it per read would multiply the same drop.
+        var published = _capture.PublishedRawFrames;
+        var consumed = _capture.ConsumedRawFrames;
+        Diagnostics.SetCaptureGauges(
+            published,
+            Math.Max(0, published - consumed - WindowsGraphicsCaptureSource.RawFrameCapacity));
         if (width != Width || height != Height)
         {
             // A capture size change invalidates the encoder configuration, so the
@@ -333,7 +391,10 @@ internal sealed class GpuMediaPipeline : IDisposable
             return true;
         }
         CountCapturedFrame(accepted: true);
-        return Submit(pixels, out failure);
+        var submitStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+        var submitted = Submit(pixels, out failure);
+        RecordFrameTiming(readElapsed, System.Diagnostics.Stopwatch.GetElapsedTime(submitStarted));
+        return submitted;
     }
 
     private bool Submit(byte[] pixels, out string failure)
@@ -344,6 +405,75 @@ internal sealed class GpuMediaPipeline : IDisposable
             return false;
         }
         return true;
+    }
+
+    /// <summary>
+    /// Splits the per-frame cost so a throughput ceiling can be attributed instead
+    /// of guessed: reading is the Windows Graphics Capture readback, submitting is
+    /// the Media Foundation sample copy and encode hand-off.
+    /// </summary>
+    public void RecordFrameTiming(TimeSpan read, TimeSpan submit)
+    {
+        var readMs = read.TotalMilliseconds;
+        var submitMs = submit.TotalMilliseconds;
+        Interlocked.Add(ref _totalReadTicks, (long)(readMs * 1000));
+        Interlocked.Add(ref _totalSubmitTicks, (long)(submitMs * 1000));
+        Interlocked.Increment(ref _timedFrames);
+        var current = Volatile.Read(ref _slowestReadMs);
+        while (readMs > current)
+        {
+            var observed = Interlocked.CompareExchange(ref _slowestReadMs, readMs, current);
+            if (observed == current) break;
+            current = observed;
+        }
+    }
+
+    private long _totalReadTicks;
+    private long _totalSubmitTicks;
+    private long _timedFrames;
+    private double _slowestReadMs;
+
+    private (double ReadMs, double SubmitMs, double SlowestReadMs) FrameTimings()
+    {
+        var frames = Interlocked.Read(ref _timedFrames);
+        if (frames == 0)
+        {
+            return (0, 0, 0);
+        }
+        return (
+            Interlocked.Read(ref _totalReadTicks) / 1000d / frames,
+            Interlocked.Read(ref _totalSubmitTicks) / 1000d / frames,
+            Volatile.Read(ref _slowestReadMs));
+    }
+
+    /// <summary>
+    /// Feeds frames until the encoder has emitted a complete initialisation
+    /// segment, or the budget expires. Bounded, so a machine whose encoder never
+    /// produces a streamable header is diagnosed instead of hanging the apply.
+    /// </summary>
+    private bool PrimeForInitialisationSegment(TimeSpan budget, out string failure)
+    {
+        failure = string.Empty;
+        var deadline = DateTimeOffset.UtcNow + budget;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            DrainFragments(0, out _);
+            if (Codec is not null)
+            {
+                return true;
+            }
+            if (HasFailed)
+            {
+                failure = FailureReason ?? "The GPU media pipeline failed while priming the encoder.";
+                return false;
+            }
+            // CaptureAndSubmit enforces the size and quality gates and is
+            // harmless when the scene is momentarily static.
+            CaptureAndSubmit(120, out _);
+        }
+        failure = "The encoder produced no streamable initialisation segment within "
+            + $"{budget.TotalSeconds:F0} seconds.";
+        return false;
     }
 
     public void Finish() => _encoder.Finish();

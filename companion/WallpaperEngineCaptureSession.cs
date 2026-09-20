@@ -232,10 +232,12 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                 {
                     try
                     {
-                        gpuPipeline.DrainFragments(3000, out _);
+                        // TryStart already primed the encoder until the
+                        // initialisation segment existed, so a missing codec here
+                        // means the container is not streamable at all.
                         if (gpuPipeline.Codec is null)
                         {
-                            gpuFailure = "The encoder did not produce a streamable initialisation segment within 3 seconds.";
+                            gpuFailure = "The encoder produced no streamable initialisation segment.";
                         }
                         else
                         {
@@ -309,13 +311,23 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         if (_gpuPipeline is null) throw new InvalidOperationException("This session is not using the GPU media path.");
         if (_streamTask is not null) throw new InvalidOperationException("Wallpaper Engine capture is already streaming.");
         _streamTask = Task.WhenAll(
-            Task.Run(() => StreamGpuFramesAsync(publishBatch, _lifetime.Token)),
+            // Capture and encode must run independently of transport pacing. A
+            // live measurement showed a single combined loop consuming only about
+            // 17 frames per second, because every transport decision cost the
+            // capture a frame; the encoder is now fed by its own loop and the
+            // transport only drains what the encoder produced.
+            Task.Run(() => FeedGpuFramesAsync(_lifetime.Token)),
+            Task.Run(() => PublishGpuBatchesAsync(publishBatch, _lifetime.Token)),
             Task.Run(() => StreamPointerAsync(readPointer, _lifetime.Token)));
     }
 
-    private async Task StreamGpuFramesAsync(
-        Func<GpuFrameBatch, CancellationToken, Task<string>> publishBatch,
-        CancellationToken cancellationToken)
+    /// <summary>
+    /// Keeps the encoder fed from the capture source at the capture cadence. It
+    /// never awaits the transport, so a slow consumer throttles through the
+    /// encoder's bounded queue and the capture channel's drop-oldest policy
+    /// instead of starving the feed.
+    /// </summary>
+    private async Task FeedGpuFramesAsync(CancellationToken cancellationToken)
     {
         var pipeline = _gpuPipeline;
         if (pipeline is null)
@@ -333,7 +345,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                     await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
                     continue;
                 }
-                if (!pipeline.CaptureAndSubmit(4, out var captureFailure))
+                if (!pipeline.CaptureAndSubmit(16, out var captureFailure))
                 {
                     // A capture or encoder failure invalidates the container, so
                     // the GPU path stops with a diagnosed reason and the last
@@ -342,11 +354,44 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                     Volatile.Write(ref _stopRequested, 1);
                     break;
                 }
-                pipeline.DrainFragments(0, out _);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            _gpuFailure = "The GPU capture loop failed: " + exception.Message;
+            Volatile.Write(ref _stopRequested, 1);
+        }
+        finally
+        {
+            UpdateGpuStatus();
+        }
+    }
+
+    /// <summary>Drains encoder output, batches it and delivers it with backpressure from the page.</summary>
+    private async Task PublishGpuBatchesAsync(
+        Func<GpuFrameBatch, CancellationToken, Task<string>> publishBatch,
+        CancellationToken cancellationToken)
+    {
+        var pipeline = _gpuPipeline;
+        if (pipeline is null)
+        {
+            return;
+        }
+        try
+        {
+            while (Volatile.Read(ref _stopRequested) == 0
+                && !cancellationToken.IsCancellationRequested
+                && IsWindow(_windowHandle))
+            {
+                // Waiting on the encoder queue is the pacing signal: no spin, no
+                // fixed sleep, and a fragment is delivered as soon as it exists.
+                pipeline.DrainFragments(15, out _);
                 var now = DateTimeOffset.UtcNow;
                 if (!pipeline.ShouldFlushBatch(now))
                 {
-                    await Task.Delay(2, cancellationToken);
                     continue;
                 }
                 var batch = pipeline.TakeBatch(now);
@@ -354,9 +399,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                 {
                     continue;
                 }
-
-                var delivery = await DeliverAsync(pipeline, batch, publishBatch, cancellationToken);
-                if (delivery is null)
+                if (await DeliverAsync(pipeline, batch, publishBatch, cancellationToken) is null)
                 {
                     break;
                 }
@@ -432,14 +475,36 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private void UpdateGpuStatus()
     {
         var recovering = Volatile.Read(ref _recovering) != 0;
+        var pipeline = _gpuPipeline;
+        var declared = pipeline?.FrameRate ?? _frameRate;
+        var requested = GpuStreamStatusLabel.NormalizeFrameRate(_frameRate);
         Status = GpuStreamStatusLabel.Decide(new GpuStreamStatusInput(
-            GpuPathActive: _gpuPipeline is not null && _gpuFailure is null,
+            GpuPathActive: pipeline is not null && _gpuFailure is null,
             Recovering: recovering,
-            RequestedFrameRate: _gpuPipeline?.FrameRate ?? _frameRate,
+            // The declared rate decides the label: a stream that had to be
+            // declared below the target is reported as the fallback, never as the
+            // 60 FPS target, because Media Foundation would otherwise fill the
+            // difference with repeated frames.
+            RequestedFrameRate: declared,
             CompatibilityCaptureAvailable: true,
             StaticFallbackAvailable: !string.IsNullOrWhiteSpace(_gpuFailure)));
         StatusLabel = GpuStreamStatusLabel.Describe(Status);
+        if (_gpuFailure is null && pipeline is not null
+            && GpuStreamStatusLabel.IsBelowRequested(declared, requested))
+        {
+            GpuStatusNote = $"the Wallpaper Engine capture surface sustains about {declared} frames per second at "
+                + $"{pipeline.Width}x{pipeline.Height}, so a {requested} FPS rate was not declared to the encoder "
+                + "(a higher rate would only be filled with repeated frames); "
+                + "reduce the scene render scale for a higher cadence";
+        }
+        else
+        {
+            GpuStatusNote = _gpuFailure;
+        }
     }
+
+    /// <summary>Human-readable reason the status is not the 60 FPS target, when there is one.</summary>
+    public string? GpuStatusNote { get; private set; }
 
     public async Task UpdateSettingsAsync(WallpaperSettings settings, CancellationToken cancellationToken = default)
     {

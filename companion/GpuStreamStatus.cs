@@ -52,6 +52,10 @@ public static class GpuStreamStatusLabel
         && observedSeconds >= 5
         && presentedFps < FallbackFrameRate - 2;
 
+    /// <summary>True when the stream is being run below the mode the user asked for.</summary>
+    public static bool IsBelowRequested(int declaredFrameRate, int requestedFrameRate) =>
+        declaredFrameRate < NormalizeFrameRate(requestedFrameRate);
+
     /// <summary>
     /// Maps a stored or reported label back to its state so a persisted status
     /// from another build cannot silently claim a GPU state it never reached.
@@ -77,6 +81,29 @@ public static class GpuStreamStatusLabel
     /// </summary>
     public static int NormalizeFrameRate(int requested) =>
         requested >= TargetFrameRate ? TargetFrameRate : FallbackFrameRate;
+
+    /// <summary>
+    /// Chooses the frame rate to declare to the encoder from the measured capture
+    /// cadence, never above what the user asked for.
+    ///
+    /// The measured cadence itself is declared rather than snapping to 30 or 60.
+    /// Declaring a higher rate makes Media Foundation repeat frames so the product
+    /// can claim a cadence the user cannot see; declaring a lower one makes the
+    /// encoder discard frames it was fast enough to accept. Declaring what was
+    /// measured keeps the media timeline equal to real time in both directions.
+    /// </summary>
+    public static int AlignFrameRate(int measuredFrameRate, int requestedFrameRate)
+    {
+        var requested = NormalizeFrameRate(requestedFrameRate);
+        if (measuredFrameRate <= 0)
+        {
+            return requested;
+        }
+        return Math.Clamp(measuredFrameRate, MinimumGpuFrameRate, requested);
+    }
+
+    /// <summary>Lowest cadence still reported as a GPU mode rather than as a failure.</summary>
+    public const int MinimumGpuFrameRate = 10;
 
     /// <summary>
     /// Selects the honest product status. The order matters: an active recovery

@@ -348,14 +348,16 @@ internal static class MediaFoundationInterop
         GetMethod<SetCurrentLengthDelegate>(buffer, BufferSetCurrentLength)(buffer, length);
 
     /// <summary>
-    /// Completes the asynchronous byte-stream write contract.
+    /// Completes the asynchronous byte-stream callback contract, shared by the
+    /// write and read paths.
     ///
-    /// IMFByteStream::BeginWrite must invoke its IMFAsyncCallback before the
-    /// caller may call EndWrite. A stream that writes immediately but never
-    /// signals completion makes the MPEG-4 sink wait forever, which surfaces as
-    /// WriteSample never returning rather than as an error.
+    /// IMFByteStream::BeginWrite and BeginRead must invoke their
+    /// IMFAsyncCallback before the caller may call EndWrite or EndRead. A stream
+    /// that performs the operation immediately but never signals completion
+    /// makes the MPEG-4 sink wait forever, which surfaces as WriteSample never
+    /// returning rather than as an error.
     /// </summary>
-    internal static void CompleteAsyncWrite(IntPtr callback, IntPtr state, int status)
+    internal static void CompleteAsyncCallback(IntPtr callback, IntPtr state, int status)
     {
         IntPtr result = IntPtr.Zero;
         try
@@ -502,6 +504,10 @@ internal static class MediaFoundationInterop
     [DllImport("mfreadwrite.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
     internal static extern int MFCreateSourceReaderFromURL(
         string url, IntPtr attributes, out IntPtr sourceReader);
+
+    [DllImport("mfreadwrite.dll", ExactSpelling = true)]
+    internal static extern int MFCreateSourceReaderFromByteStream(
+        IntPtr byteStream, IntPtr attributes, out IntPtr sourceReader);
 
     [DllImport("mfreadwrite.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
     private static extern int MFCreateSinkWriterFromURL(
