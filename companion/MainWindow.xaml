@@ -256,7 +256,12 @@
                     </Grid>
                     <ListBox x:Name="WallpaperList" Grid.Row="2" SelectionChanged="WallpaperList_SelectionChanged"
                              Background="#0E1116" Foreground="White" BorderBrush="{StaticResource BorderBrush}"
-                             DisplayMemberPath="DisplayLabel" Padding="5"/>
+                             DisplayMemberPath="DisplayLabel" Padding="5"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                        <ListBox.Resources>
+                            <Style TargetType="ScrollBar" BasedOn="{StaticResource SettingsScrollBarStyle}"/>
+                        </ListBox.Resources>
+                    </ListBox>
                     <DockPanel Grid.Row="3" Margin="0,8,0,0">
                         <TextBlock x:Name="WallpaperLibrarySummary" DockPanel.Dock="Right"
                                    Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"/>
