@@ -39,6 +39,15 @@ This is one shared specification for the Codex and DeepSeek implementation branc
 - Support switching wallpapers, cancellation, Codex reconnect, companion shutdown and Restore without orphaned windows.
 - Do not require Codex to be closed before the companion starts. Diagnose and improve the existing CDP activation/attach flow independently from wallpaper rendering.
 
+### 2a. Windows restart and connection recovery
+
+- Treat these as distinct states in the GUI: Codex is closed; Codex is starting with CDP; Codex is connected; Codex is already running without CDP; a queued wallpaper is waiting; retry failed.
+- `Connect` must not expose raw listener/process diagnostics as the primary user experience. If no process owns the configured loopback port and Codex is closed, offer or perform the verified Activate-with-CDP flow and connect after readiness.
+- If Codex is already running without CDP, do not terminate it or interrupt its current task. Explain that Chromium cannot gain a startup-only debugging channel retroactively, retain the requested wallpaper, and provide visible queued/cancel/retry state.
+- The queued state must survive controller closure and Windows restart, must not be reported as an applied wallpaper, and must clear only after successful apply or explicit cancellation.
+- Startup registration must point to the currently running portable executable and report when a moved/replaced executable has made an older registration stale.
+- Technical diagnostics remain available in Doctor, but normal recovery guidance must be concise and actionable.
+
 ### 3. Capture and transport
 
 - Prefer Windows Graphics Capture backed by D3D11 for the production high-fidelity path. A documented fallback may be retained for systems where WGC is unavailable.
@@ -76,12 +85,13 @@ The full matrix is in `docs/compatibility/WALLPAPER_ENGINE_MATRIX.md`. Real Work
 2. Saki water interaction responds to pointer movement; common button/wheel interactions are correctly transported in synthetic tests.
 3. PKGV0024 and packages larger than the safe fallback parser limits can still use the native backend.
 4. Codex may already be open when the companion connects/activates CDP; no forced sign-out/restart loop.
-5. Empty/gray/transient frames never replace the last known-good image.
-6. Existing local image, ordinary video and direct Wallpaper Engine video behavior does not regress.
-7. Restore removes the complete presentation layer and terminates owned capture resources.
-8. Application wallpaper projects remain rejected.
-9. Release build, self-tests, runtime smoke test and repository hygiene checks pass.
-10. No private or copyrighted local test material is committed.
+5. After Windows restart, `Connect` recovers from an absent listener without a raw modal error; a running-without-CDP state is queued and explained without claiming success.
+6. Empty/gray/transient frames never replace the last known-good image.
+7. Existing local image, ordinary video and direct Wallpaper Engine video behavior does not regress.
+8. Restore removes the complete presentation layer and terminates owned capture resources.
+9. Application wallpaper projects remain rejected.
+10. Release build, self-tests, runtime smoke test and repository hygiene checks pass.
+11. No private or copyrighted local test material is committed.
 
 ## Required evidence from each implementation
 

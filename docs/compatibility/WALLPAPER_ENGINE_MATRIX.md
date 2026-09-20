@@ -43,6 +43,8 @@ Record `pass`, `fail`, `fallback` or `not applicable`, plus the active backend a
 | Web wallpaper | Explicitly controlled native backend or clearly labeled preview fallback |
 | Application wallpaper | Rejected |
 | Capture unavailable/fails | Last-good frame, bounded retry, then clearly labeled safe fallback |
+| Controller opened before Codex after Windows restart | Connect activates verified Codex CDP and waits for readiness; no raw missing-listener modal |
+| Codex already open without CDP | Preserve current task, show queued/cancel/retry state, and never claim the wallpaper is already applied |
 
 ## Result table
 
