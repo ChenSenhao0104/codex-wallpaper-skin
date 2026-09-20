@@ -19,6 +19,9 @@ public sealed class CdpInjectionService : IAsyncDisposable
     public bool IsConnected => _client?.IsConnected == true;
     public bool HasActiveCapture => _captureSession?.IsRunning == true;
     public Task ActiveCaptureCompletion => _captureSession?.Completion ?? Task.CompletedTask;
+
+    /// <summary>Human-readable capture health for Doctor and local measurements.</summary>
+    public string? CaptureMetricsSummary => _captureSession?.MetricsSummary;
     public CdpTarget? Target => _client?.Target;
 
     public async Task<CdpTarget> ConnectAsync(string endpoint, CancellationToken cancellationToken = default)
@@ -127,7 +130,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
                             throw new InvalidOperationException("Codex rejected the native capture stream lease.");
                         }
                         _captureSession = session;
-                        session.StartStreaming(PublishCapturedFrameAsync);
+                        session.StartStreaming(PublishCapturedFrameAsync, ReadCapturePointerAsync);
                         return initial with
                         {
                             Mode = "wallpaper-engine-capture",
@@ -386,7 +389,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
         }
     }
 
-    private async Task<CapturedPointer?> PublishCapturedFrameAsync(
+    private async Task PublishCapturedFrameAsync(
         byte[] frame,
         CancellationToken cancellationToken)
     {
@@ -397,12 +400,34 @@ public sealed class CdpInjectionService : IAsyncDisposable
         var evaluation = await client.EvaluateAsync(
             $"window.__codexWallpaperSkinSetCapturedFrame({Js(token)}, {Js(encoded)})",
             cancellationToken);
+        var value = evaluation.GetProperty("result").GetProperty("value");
+        if (value.ValueKind != JsonValueKind.Object)
+        {
+            throw new InvalidOperationException("Another controller replaced the native capture stream.");
+        }
+    }
+
+    /// <summary>
+    /// Reads normalized pointer state on its own CDP call so input forwarding is
+    /// never gated on a successfully captured or accepted frame.
+    /// </summary>
+    internal async Task<CapturedPointer?> ReadCapturePointerAsync(CancellationToken cancellationToken)
+    {
+        var client = RequireClient();
+        var token = _captureToken;
+        if (token is null)
+        {
+            return null;
+        }
         try
         {
+            var evaluation = await client.EvaluateAsync(
+                $"window.__codexWallpaperSkinReadCapturePointer({Js(token)})",
+                cancellationToken);
             var value = evaluation.GetProperty("result").GetProperty("value");
             if (value.ValueKind != JsonValueKind.Object)
             {
-                throw new InvalidOperationException("Another controller replaced the native capture stream.");
+                return null;
             }
             return new CapturedPointer(
                 Math.Clamp(value.GetProperty("x").GetDouble(), 0, 1),
@@ -410,7 +435,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
                 value.GetProperty("down").GetBoolean(),
                 value.GetProperty("hidden").GetBoolean());
         }
-        catch (InvalidOperationException)
+        catch (OperationCanceledException)
         {
             throw;
         }
@@ -533,6 +558,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
             || typeof window.__codexWallpaperSkinSetSettings !== 'undefined'
             || typeof window.__codexWallpaperSkinBeginCapturedStream !== 'undefined'
             || typeof window.__codexWallpaperSkinSetCapturedFrame !== 'undefined'
+            || typeof window.__codexWallpaperSkinReadCapturePointer !== 'undefined'
             || typeof window.__codexWallpaperSkinCleanup !== 'undefined'
             || typeof window.__cwsCreateSceneWallpaper !== 'undefined'
             || typeof window.__cwsWeSceneLibrary !== 'undefined'
@@ -620,6 +646,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
           delete window.__codexWallpaperSkinSetSettings;
           delete window.__codexWallpaperSkinBeginCapturedStream;
           delete window.__codexWallpaperSkinSetCapturedFrame;
+          delete window.__codexWallpaperSkinReadCapturePointer;
           delete window.__codexWallpaperSkinCleanup;
           delete window.__cwsCreateSceneWallpaper;
           delete window.__cwsWeSceneLibrary;
@@ -646,6 +673,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
             && typeof window.__codexWallpaperSkinSetSettings === 'undefined'
             && typeof window.__codexWallpaperSkinBeginCapturedStream === 'undefined'
             && typeof window.__codexWallpaperSkinSetCapturedFrame === 'undefined'
+            && typeof window.__codexWallpaperSkinReadCapturePointer === 'undefined'
             && typeof window.__codexWallpaperSkinCleanup === 'undefined'
             && typeof window.__cwsCreateSceneWallpaper === 'undefined'
             && typeof window.__cwsWeSceneLibrary === 'undefined'
@@ -694,6 +722,8 @@ public sealed class CdpInjectionService : IAsyncDisposable
             && window.__codexWallpaperSkinBeginCapturedStream === existing.helpers.beginCapturedStream
             && typeof window.__codexWallpaperSkinSetCapturedFrame === 'function'
             && window.__codexWallpaperSkinSetCapturedFrame === existing.helpers.setCapturedFrame
+            && typeof window.__codexWallpaperSkinReadCapturePointer === 'function'
+            && window.__codexWallpaperSkinReadCapturePointer === existing.helpers.readCapturePointer
             && typeof window.__codexWallpaperSkinCleanup === 'function'
             && window.__codexWallpaperSkinCleanup === existing.helpers.cleanup;
           if (existingHealthy) return 'ready';
@@ -744,6 +774,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
           delete window.__codexWallpaperSkinSetSettings;
           delete window.__codexWallpaperSkinBeginCapturedStream;
           delete window.__codexWallpaperSkinSetCapturedFrame;
+          delete window.__codexWallpaperSkinReadCapturePointer;
           delete window.__codexWallpaperSkinCleanup;
 
           const nativeStyle = getComputedStyle(root);
@@ -834,6 +865,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
             palette: null, observer: null, rafId: 0, visibilityHandler: null, nativeSurface,
             capturePointer: { x: .5, y: .5, down: false }, capturePointerHandlers: null,
             captureFrameBusy: false, captureToken: null,
+            captureFrameCount: 0, captureRejectedCount: 0, captureLastError: '',
             styleText, helpers: null
           };
 
@@ -1052,11 +1084,43 @@ public sealed class CdpInjectionService : IAsyncDisposable
             root.style.setProperty('--cws-root-alpha', '0');
             const palette = applyPalette(); scheduleSurfaceScan(); return palette;
           };
+          const capturePointerState = () => ({
+            x: state.capturePointer.x,
+            y: state.capturePointer.y,
+            down: state.capturePointer.down,
+            hidden: !!document.hidden
+          });
+          const installCapturePointerHandlers = () => {
+            if (state.capturePointerHandlers) return;
+            const update = event => {
+              state.capturePointer.x = clamp(event.clientX / Math.max(1, innerWidth), 0, 1);
+              state.capturePointer.y = clamp(event.clientY / Math.max(1, innerHeight), 0, 1);
+            };
+            const down = event => { update(event); state.capturePointer.down = true; };
+            const up = event => { update(event); state.capturePointer.down = false; };
+            state.capturePointerHandlers = { move: update, down, up };
+            window.addEventListener('pointermove', update, { passive: true, capture: true });
+            window.addEventListener('pointerdown', down, { passive: true, capture: true });
+            window.addEventListener('pointerup', up, { passive: true, capture: true });
+            window.addEventListener('pointercancel', up, { passive: true, capture: true });
+          };
           window.__codexWallpaperSkinBeginCapturedStream = token => {
             if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/.test(token)) return false;
             state.captureToken = token;
             state.captureFrameBusy = false;
+            state.captureFrameCount = 0;
+            state.captureRejectedCount = 0;
+            state.captureLastError = '';
+            // Pointer tracking starts with the lease, so interaction is never
+            // gated on the first successfully captured frame.
+            installCapturePointerHandlers();
             return true;
+          };
+          // Independent pointer channel: input delivery never waits for a frame.
+          window.__codexWallpaperSkinReadCapturePointer = token => {
+            if (token !== state.captureToken) return false;
+            if (state.disposed || window.__codexWallpaperSkin !== state) return false;
+            return capturePointerState();
           };
           window.__codexWallpaperSkinSetCapturedFrame = (token, encoded) => {
             if (token !== state.captureToken) return false;
@@ -1070,32 +1134,47 @@ public sealed class CdpInjectionService : IAsyncDisposable
             if (!(media instanceof HTMLImageElement) || !media.isConnected || media.parentNode !== state.host) {
               throw new Error('The native capture target is unavailable.');
             }
-            if (!state.capturePointerHandlers) {
-              const update = event => {
-                state.capturePointer.x = clamp(event.clientX / Math.max(1, innerWidth), 0, 1);
-                state.capturePointer.y = clamp(event.clientY / Math.max(1, innerHeight), 0, 1);
-              };
-              const down = event => { update(event); state.capturePointer.down = true; };
-              const up = event => { update(event); state.capturePointer.down = false; };
-              state.capturePointerHandlers = { move: update, down, up };
-              window.addEventListener('pointermove', update, { passive: true, capture: true });
-              window.addEventListener('pointerdown', down, { passive: true, capture: true });
-              window.addEventListener('pointerup', up, { passive: true, capture: true });
-              window.addEventListener('pointercancel', up, { passive: true, capture: true });
+            installCapturePointerHandlers();
+            if (state.captureFrameBusy) {
+              // Coalesce while a decode is in flight; ordering of the frames that
+              // do arrive is preserved.
+              state.captureRejectedCount++;
+              state.captureLastError = 'a frame was already decoding';
+              return capturePointerState();
             }
-            if (!state.captureFrameBusy) {
-              state.captureFrameBusy = true;
-              const release = () => { state.captureFrameBusy = false; };
-              media.onload = release;
-              media.onerror = release;
-              media.src = `data:image/jpeg;base64,${encoded}`;
-            }
-            return {
-              x: state.capturePointer.x,
-              y: state.capturePointer.y,
-              down: state.capturePointer.down,
-              hidden: !!document.hidden
+            // Atomic presentation: decode into a back buffer and swap it into the
+            // visible layer only after it decodes successfully. A blank, partial
+            // or undecodable frame therefore never replaces the last known-good
+            // image and never flashes.
+            state.captureFrameBusy = true;
+            const candidate = new Image();
+            const release = () => {
+              state.captureFrameBusy = false;
+              candidate.onload = null;
+              candidate.onerror = null;
             };
+            candidate.onload = () => {
+              try {
+                const intact = !state.disposed && window.__codexWallpaperSkin === state
+                  && state.media === media && media.isConnected && media.parentNode === state.host;
+                if (intact) {
+                  media.src = candidate.src;
+                  state.captureFrameCount++;
+                } else {
+                  state.captureRejectedCount++;
+                  state.captureLastError = 'the wallpaper was replaced while the frame decoded';
+                }
+              } finally {
+                release();
+              }
+            };
+            candidate.onerror = () => {
+              state.captureRejectedCount++;
+              state.captureLastError = 'the captured frame could not be decoded';
+              release();
+            };
+            candidate.src = `data:image/jpeg;base64,${encoded}`;
+            return capturePointerState();
           };
           window.__codexWallpaperSkinFinishUpload = async (token, mediaKind, settings, sceneOptions) => {
             const upload = state.uploads.get(token);
@@ -1150,6 +1229,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
                 && window.__codexWallpaperSkinSetSettings === state.helpers.setSettings
                 && window.__codexWallpaperSkinBeginCapturedStream === state.helpers.beginCapturedStream
                 && window.__codexWallpaperSkinSetCapturedFrame === state.helpers.setCapturedFrame
+                && window.__codexWallpaperSkinReadCapturePointer === state.helpers.readCapturePointer
                 && window.__codexWallpaperSkinCleanup === state.helpers.cleanup;
               if (!runtimeIntact()) {
                 throw new Error('The wallpaper runtime was restored or replaced while media was decoding.');
@@ -1210,6 +1290,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
                     && window.__codexWallpaperSkinSetSettings === state.helpers.setSettings
                     && window.__codexWallpaperSkinBeginCapturedStream === state.helpers.beginCapturedStream
                     && window.__codexWallpaperSkinSetCapturedFrame === state.helpers.setCapturedFrame
+                    && window.__codexWallpaperSkinReadCapturePointer === state.helpers.readCapturePointer
                     && window.__codexWallpaperSkinCleanup === state.helpers.cleanup;
                   if (!runtimeIntact) {
                     if (window.__codexWallpaperSkin === state && typeof window.__codexWallpaperSkinCleanup === 'function') {
@@ -1302,6 +1383,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
               delete window.__codexWallpaperSkinSetSettings;
               delete window.__codexWallpaperSkinBeginCapturedStream;
               delete window.__codexWallpaperSkinSetCapturedFrame;
+              delete window.__codexWallpaperSkinReadCapturePointer;
               delete window.__codexWallpaperSkinCleanup;
             }
             return 'cleaned';
@@ -1314,6 +1396,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
             setSettings: window.__codexWallpaperSkinSetSettings,
             beginCapturedStream: window.__codexWallpaperSkinBeginCapturedStream,
             setCapturedFrame: window.__codexWallpaperSkinSetCapturedFrame,
+            readCapturePointer: window.__codexWallpaperSkinReadCapturePointer,
             cleanup: window.__codexWallpaperSkinCleanup
           };
           return 'ready';

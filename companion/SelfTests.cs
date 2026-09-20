@@ -335,6 +335,402 @@ public static class SelfTests
             True(!CdpInjectionService.BootstrapScript.Contains("XMLHttpRequest", StringComparison.Ordinal));
         });
 
+        Check("connection recovery classifies every product state", () =>
+        {
+            Equal(CodexConnectionState.CodexClosed, ConnectionRecovery.Classify(
+                new ConnectionProbe(true, false, false, false, 0, false, QueueFailureReason.None)));
+            Equal(CodexConnectionState.CodexStarting, ConnectionRecovery.Classify(
+                new ConnectionProbe(true, true, true, false, 0, false, QueueFailureReason.None)));
+            Equal(CodexConnectionState.CodexConnected, ConnectionRecovery.Classify(
+                new ConnectionProbe(true, true, true, true, 0, false, QueueFailureReason.None)));
+            Equal(CodexConnectionState.RunningWithoutCdp, ConnectionRecovery.Classify(
+                new ConnectionProbe(true, false, false, false, 2, false, QueueFailureReason.None)));
+            Equal(CodexConnectionState.Queued, ConnectionRecovery.Classify(
+                new ConnectionProbe(true, false, false, false, 2, true, QueueFailureReason.None)));
+            Equal(CodexConnectionState.RetryFailed, ConnectionRecovery.Classify(
+                new ConnectionProbe(true, false, false, false, 0, true, QueueFailureReason.CdpNotReady)));
+            Equal(CodexConnectionState.RetryFailed, ConnectionRecovery.Classify(
+                new ConnectionProbe(true, true, false, false, 0, false, QueueFailureReason.None)));
+            Equal(CodexConnectionState.RetryFailed, ConnectionRecovery.Classify(
+                new ConnectionProbe(false, false, false, false, 0, false, QueueFailureReason.None)));
+            // A reachable Codex page always wins, and a queued wallpaper never
+            // reports itself as applied.
+            Equal(CodexConnectionState.CodexConnected, ConnectionRecovery.Classify(
+                new ConnectionProbe(true, true, true, true, 1, true, QueueFailureReason.CdpNotReady)));
+        });
+        Check("recovery guidance is concise and free of raw diagnostics", () =>
+        {
+            foreach (var state in Enum.GetValues<CodexConnectionState>())
+            {
+                var badge = ConnectionRecovery.Badge(state);
+                var guidance = ConnectionRecovery.Guidance(state);
+                var action = ConnectionRecovery.ActionLabel(state);
+                True(badge.Length is > 0 and <= 32);
+                True(guidance.Length is > 0 and <= 260);
+                True(action.Length is > 0 and <= 32);
+                foreach (var forbidden in new[] { "PID", "0x", "Exception", "127.0.0.1", "hr=", "SocketException", "stack" })
+                {
+                    True(!guidance.Contains(forbidden, StringComparison.OrdinalIgnoreCase));
+                    True(!badge.Contains(forbidden, StringComparison.OrdinalIgnoreCase));
+                }
+            }
+        });
+        Check("queued wallpaper survives and never reports itself as applied", () =>
+        {
+            var state = new AppState();
+            var applied = new WallpaperEntry
+            {
+                Id = "local:applied",
+                Title = "Applied",
+                Source = "Local",
+                Note = string.Empty,
+                Support = WallpaperSupport.Direct,
+                MediaPath = "applied.png"
+            };
+            state.LastAppliedWallpaperId = applied.Id;
+            state.Wallpapers = [applied];
+
+            var now = new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
+            WallpaperQueue.Enqueue(state, applied.Id, QueueFailureReason.CodexRunningWithoutCdp, now);
+            True(WallpaperQueue.HasQueued(state));
+            Equal(applied.Id, WallpaperQueue.QueuedWallpaperId(state));
+            Equal(now, state.PendingQueuedAt);
+            Equal(0, state.PendingAttempts);
+            Equal(QueueFailureReason.CodexRunningWithoutCdp, state.PendingLastFailure);
+
+            WallpaperQueue.RecordFailure(state, QueueFailureReason.CdpNotReady, now.AddMinutes(1));
+            Equal(1, state.PendingAttempts);
+            Equal(QueueFailureReason.CdpNotReady, state.PendingLastFailure);
+            Equal(now.AddMinutes(1), state.PendingLastAttemptAt);
+
+            WallpaperQueue.Clear(state);
+            True(!WallpaperQueue.HasQueued(state));
+            Equal(0, state.PendingAttempts);
+            Equal(QueueFailureReason.None, state.PendingLastFailure);
+            True(state.PendingQueuedAt is null && state.PendingLastAttemptAt is null);
+            // Cancelling a queue must not look like applying or restoring.
+            Equal(applied.Id, state.LastAppliedWallpaperId);
+
+            Throws<ArgumentException>(() => WallpaperQueue.Enqueue(state, string.Empty, QueueFailureReason.None, now));
+            Throws<ArgumentException>(() => WallpaperQueue.Enqueue(state, new string('x', 2049), QueueFailureReason.None, now));
+        });
+        Check("state schema 6 keeps a queue across restart", () =>
+        {
+            var legacy = new AppState
+            {
+                SchemaVersion = 5,
+                PendingWallpaperId = "local:queued",
+                PendingActivation = true
+            };
+            StateStore.MigrateState(legacy);
+            Equal(6, legacy.SchemaVersion);
+            True(WallpaperQueue.HasQueued(legacy));
+            Equal(0, legacy.PendingAttempts);
+            Equal(QueueFailureReason.None, legacy.PendingLastFailure);
+
+            var orphaned = new AppState { PendingWallpaperId = null, PendingActivation = true, PendingAttempts = 4 };
+            StateStore.NormalizeState(orphaned);
+            True(!orphaned.PendingActivation);
+            Equal(0, orphaned.PendingAttempts);
+
+            var bounded = new AppState { PendingWallpaperId = "local:x", PendingActivation = true, PendingAttempts = 9_999 };
+            StateStore.NormalizeState(bounded);
+            Equal(1_000, bounded.PendingAttempts);
+            True(WallpaperQueue.HasQueued(bounded));
+            Throws<InvalidDataException>(() => StateStore.ValidateStateForSave(
+                new AppState { PendingWallpaperId = "local:x", PendingAttempts = -1 }));
+        });
+        Check("controller invocation round-trips and detects a moved executable", () =>
+        {
+            var expected = new ControllerInvocation(@"C:\apps\skin\CodexWallpaperSkin.exe", null, "--wait-and-restore");
+            Equal(StartupRegistrationStatus.Disabled, StartupRegistration.Evaluate(null, expected));
+            Equal(StartupRegistrationStatus.Disabled, StartupRegistration.Evaluate("   ", expected));
+            Equal(StartupRegistrationStatus.Unreadable, StartupRegistration.Evaluate("CodexWallpaperSkin.exe", expected));
+            Equal(StartupRegistrationStatus.Current, StartupRegistration.Evaluate(
+                "\"C:\\apps\\skin\\CodexWallpaperSkin.exe\" --wait-and-restore", expected));
+            Equal(StartupRegistrationStatus.Current, StartupRegistration.Evaluate(
+                "\"c:\\APPS\\skin\\CodexWallpaperSkin.exe\" --wait-and-restore", expected));
+            Equal(StartupRegistrationStatus.LegacyArgument, StartupRegistration.Evaluate(
+                "\"C:\\apps\\skin\\CodexWallpaperSkin.exe\" --auto-restore", expected));
+            Equal(StartupRegistrationStatus.StaleExecutable, StartupRegistration.Evaluate(
+                "\"C:\\old\\CodexWallpaperSkin.exe\" --wait-and-restore", expected));
+            Equal(StartupRegistrationStatus.StaleExecutable, StartupRegistration.Evaluate(
+                "\"C:\\apps\\skin\\CodexWallpaperSkin.exe\" --unknown-switch", expected));
+
+            var parsed = ControllerInvocation.Parse("\"C:\\Program Files\\dotnet\\dotnet.exe\" \"D:\\skin build\\CodexWallpaperSkin.dll\" --wait-and-restore");
+            True(parsed is not null);
+            Equal("D:\\skin build\\CodexWallpaperSkin.dll", parsed!.AssemblyPath);
+            Equal("--wait-and-restore", parsed.Argument);
+            var reparsed = ControllerInvocation.Parse(parsed.ToCommandLine());
+            True(reparsed is not null);
+            True(reparsed!.Matches(parsed));
+            True(parsed.TargetsSameBinary(reparsed));
+            True(parsed.Matches(new ControllerInvocation(parsed.Executable, parsed.AssemblyPath, "--WAIT-AND-RESTORE")));
+            True(!parsed.TargetsSameBinary(expected));
+
+            var startup = new StartupRegistrationState(StartupRegistrationStatus.StaleExecutable, parsed);
+            True(startup.NeedsRepair);
+            True(startup.IsEnabled);
+            True(!new StartupRegistrationState(StartupRegistrationStatus.Disabled, null).IsEnabled);
+            True(!new StartupRegistrationState(StartupRegistrationStatus.Current, parsed).NeedsRepair);
+        });
+        Check("connection coordinator recovers after a Windows restart", () =>
+        {
+            // Codex is closed: Connect must activate the verified flow, wait for
+            // readiness, then apply the queued wallpaper.
+            var state = QueuedState("local:queued", QueueFailureReason.None);
+            var environment = new FakeConnectionEnvironment
+            {
+                ProbeResults = { new EndpointProbe(true, false, false, false, 0) },
+                ProbeAfterActivation = new EndpointProbe(true, true, true, true, 1)
+            };
+            var session = new FakeAttachSession { SucceedAfterAttempts = 1 };
+            var result = ConnectionCoordinator.ConnectAsync(state, session, environment, applyQueuedWallpaper: true)
+                .GetAwaiter().GetResult();
+            Equal(ConnectionOutcome.Connected, result.Outcome);
+            Equal(CodexConnectionState.CodexConnected, result.State);
+            True(result.ActivatedCodex);
+            Equal(1, environment.ActivationCount);
+            Equal(1, session.ApplyCount);
+            True(!WallpaperQueue.HasQueued(state));
+            Equal("local:queued", state.LastAppliedWallpaperId);
+            Equal("local:queued", result.AppliedWallpaper?.Id);
+        });
+        Check("connect only reapplies a previous wallpaper when restore is enabled", () =>
+        {
+            var entry = new WallpaperEntry
+            {
+                Id = "local:last",
+                Title = "Last applied",
+                Source = "Local",
+                Note = string.Empty,
+                Support = WallpaperSupport.Direct,
+                MediaPath = "last.png"
+            };
+            var state = new AppState
+            {
+                Wallpapers = [entry],
+                LastAppliedWallpaperId = entry.Id,
+                AutoRestoreOnLaunch = false
+            };
+            var environment = new FakeConnectionEnvironment
+            {
+                ProbeResults = { new EndpointProbe(true, true, true, true, 1) }
+            };
+            var session = new FakeAttachSession();
+            var result = ConnectionCoordinator.ConnectAsync(state, session, environment, applyQueuedWallpaper: true)
+                .GetAwaiter().GetResult();
+            Equal(ConnectionOutcome.Connected, result.Outcome);
+            Equal(0, session.ApplyCount);
+            True(result.AppliedWallpaper is null);
+            Equal(entry.Id, state.LastAppliedWallpaperId);
+
+            state.AutoRestoreOnLaunch = true;
+            var restoring = new FakeAttachSession();
+            var restored = ConnectionCoordinator.ConnectAsync(state, restoring, environment, applyQueuedWallpaper: true)
+                .GetAwaiter().GetResult();
+            Equal(1, restoring.ApplyCount);
+            Equal(entry.Id, restored.AppliedWallpaper?.Id);
+        });
+        Check("running Codex without CDP is queued, never killed", () =>
+        {
+            var state = QueuedState("local:queued", QueueFailureReason.None);
+            state.LastAppliedWallpaperId = null;
+            var environment = new FakeConnectionEnvironment
+            {
+                ProbeResults = { new EndpointProbe(true, false, false, false, 3) }
+            };
+            var session = new FakeAttachSession();
+            var result = ConnectionCoordinator.ConnectAsync(state, session, environment, applyQueuedWallpaper: true)
+                .GetAwaiter().GetResult();
+            Equal(ConnectionOutcome.Queued, result.Outcome);
+            Equal(CodexConnectionState.Queued, result.State);
+            Equal(0, environment.ActivationCount);
+            Equal(0, session.AttachCount);
+            True(WallpaperQueue.HasQueued(state));
+            Equal(QueueFailureReason.CodexRunningWithoutCdp, state.PendingLastFailure);
+            True(state.LastAppliedWallpaperId is null);
+            Equal("local:queued", state.PendingWallpaperId);
+        });
+        Check("Codex already starting with CDP is waited for, not re-activated", () =>
+        {
+            var state = QueuedState("local:queued", QueueFailureReason.None);
+            var environment = new FakeConnectionEnvironment
+            {
+                // The verified Codex process already owns the loopback port but its
+                // page target is not exposed yet.
+                ProbeResults = { new EndpointProbe(true, true, true, false, 1) }
+            };
+            var session = new FakeAttachSession { SucceedAfterAttempts = 3 };
+            var result = ConnectionCoordinator.ConnectAsync(state, session, environment, applyQueuedWallpaper: true)
+                .GetAwaiter().GetResult();
+            Equal(ConnectionOutcome.Connected, result.Outcome);
+            Equal(0, environment.ActivationCount);
+            True(!result.ActivatedCodex);
+            True(environment.Elapsed > TimeSpan.Zero);
+            True(!WallpaperQueue.HasQueued(state));
+            Equal("local:queued", state.LastAppliedWallpaperId);
+        });
+        Check("unverified listener and readiness failure fall back safely", () =>
+        {
+            // An unverified program owns the port: recovery must move to a fresh
+            // loopback port instead of attaching to it.
+            var state = QueuedState("local:queued", QueueFailureReason.None);
+            var environment = new FakeConnectionEnvironment
+            {
+                ProbeResults =
+                {
+                    new EndpointProbe(true, true, false, false, 0),
+                    new EndpointProbe(true, false, false, false, 0)
+                },
+                ProbeAfterActivation = new EndpointProbe(true, true, true, true, 1)
+            };
+            var session = new FakeAttachSession { SucceedAfterAttempts = 1 };
+            var result = ConnectionCoordinator.ConnectAsync(state, session, environment, applyQueuedWallpaper: true)
+                .GetAwaiter().GetResult();
+            Equal(ConnectionOutcome.Connected, result.Outcome);
+            Equal(1, environment.CreatedEndpointCount);
+            Equal(environment.CreatedEndpoint, state.CdpBaseUrl);
+            Equal(1, environment.ActivationCount);
+
+            // A blocked port on a machine where Codex is already open without its
+            // channel must still queue instead of activating Codex.
+            var blocked = QueuedState("local:queued", QueueFailureReason.None);
+            blocked.LastAppliedWallpaperId = null;
+            var blockedEnvironment = new FakeConnectionEnvironment
+            {
+                ProbeResults =
+                {
+                    new EndpointProbe(true, true, false, false, 0),
+                    new EndpointProbe(true, false, false, false, 2)
+                }
+            };
+            var blockedSession = new FakeAttachSession();
+            var blockedResult = ConnectionCoordinator.ConnectAsync(
+                blocked, blockedSession, blockedEnvironment, applyQueuedWallpaper: true).GetAwaiter().GetResult();
+            Equal(ConnectionOutcome.Queued, blockedResult.Outcome);
+            Equal(0, blockedEnvironment.ActivationCount);
+            True(WallpaperQueue.HasQueued(blocked));
+            Equal(QueueFailureReason.CodexRunningWithoutCdp, blocked.PendingLastFailure);
+
+            // Codex never becomes ready: bounded retry, queue preserved.
+            var failing = QueuedState("local:queued", QueueFailureReason.None);
+            failing.LastAppliedWallpaperId = null;
+            var failingEnvironment = new FakeConnectionEnvironment
+            {
+                ProbeResults = { new EndpointProbe(true, false, false, false, 0) }
+            };
+            var failingSession = new FakeAttachSession { SucceedAfterAttempts = int.MaxValue };
+            var failed = ConnectionCoordinator.ConnectAsync(failing, failingSession, failingEnvironment, applyQueuedWallpaper: true)
+                .GetAwaiter().GetResult();
+            Equal(ConnectionOutcome.RetryFailed, failed.Outcome);
+            Equal(CodexConnectionState.RetryFailed, failed.State);
+            True(failingEnvironment.Elapsed >= TimeSpan.FromSeconds(30));
+            True(WallpaperQueue.HasQueued(failing));
+            Equal(1, failing.PendingAttempts);
+            Equal(QueueFailureReason.CdpNotReady, failing.PendingLastFailure);
+            True(failing.LastAppliedWallpaperId is null);
+        });
+        Check("apply failure keeps the queue and reports no success", () =>
+        {
+            var state = QueuedState("local:queued", QueueFailureReason.None);
+            state.LastAppliedWallpaperId = null;
+            var environment = new FakeConnectionEnvironment
+            {
+                ProbeResults = { new EndpointProbe(true, true, true, true, 1) }
+            };
+            var session = new FakeAttachSession { ApplyException = new IOException("renderer rejected the frame") };
+            var result = ConnectionCoordinator.ConnectAsync(state, session, environment, applyQueuedWallpaper: true)
+                .GetAwaiter().GetResult();
+            Equal(ConnectionOutcome.RetryFailed, result.Outcome);
+            Equal(0, environment.ActivationCount);
+            True(WallpaperQueue.HasQueued(state));
+            Equal("local:queued", state.PendingWallpaperId);
+            True(state.LastAppliedWallpaperId is null);
+
+            // A passive attach never activates Codex and never applies a queue.
+            var passive = QueuedState("local:queued", QueueFailureReason.None);
+            var passiveEnvironment = new FakeConnectionEnvironment
+            {
+                ProbeResults = { new EndpointProbe(true, false, false, false, 0) }
+            };
+            var passiveSession = new FakeAttachSession();
+            True(!ConnectionCoordinator.TryAttachWithoutActivationAsync(
+                passive, passiveSession, passiveEnvironment).GetAwaiter().GetResult());
+            Equal(0, passiveEnvironment.ActivationCount);
+            Equal(0, passiveSession.ApplyCount);
+            True(WallpaperQueue.HasQueued(passive));
+        });
+
+        Check("frame quality rejects empty and uniform captures", () =>
+        {
+            var uniform = new byte[256 * 4];
+            for (var offset = 0; offset < uniform.Length; offset += 4)
+            {
+                uniform[offset] = 128;
+                uniform[offset + 1] = 128;
+                uniform[offset + 2] = 128;
+                uniform[offset + 3] = 255;
+            }
+            var uniformResult = FrameQualityEvaluator.Evaluate(uniform);
+            True(!uniformResult.Acceptable);
+            Equal(256, uniformResult.SampleCount);
+            True(uniformResult.Reason.Contains("uniform", StringComparison.OrdinalIgnoreCase));
+
+            var black = new byte[256 * 4];
+            for (var offset = 0; offset < black.Length; offset += 4)
+            {
+                black[offset + 3] = 255;
+            }
+            var blackResult = FrameQualityEvaluator.Evaluate(black);
+            True(!blackResult.Acceptable);
+            True(blackResult.Reason.Contains("black", StringComparison.OrdinalIgnoreCase));
+
+            // A surface too small to describe anything is never presented either.
+            True(!FrameQualityEvaluator.Evaluate(new byte[16]).Acceptable);
+
+            var scene = new byte[256 * 4];
+            for (var offset = 0; offset < scene.Length; offset += 4)
+            {
+                var value = (byte)(offset / 4 % 200);
+                scene[offset] = value;
+                scene[offset + 1] = (byte)(value / 2);
+                scene[offset + 2] = (byte)(255 - value);
+                scene[offset + 3] = 255;
+            }
+            var sceneResult = FrameQualityEvaluator.Evaluate(scene);
+            True(sceneResult.Acceptable);
+            True(sceneResult.LuminanceSpread >= FrameQualityEvaluator.MinimumLuminanceSpread);
+
+            // A legitimately dark scene still has structure and must be accepted;
+            // the gate rejects blank surfaces, not dark wallpapers.
+            var darkScene = new byte[256 * 4];
+            for (var offset = 0; offset < darkScene.Length; offset += 4)
+            {
+                var value = (byte)(4 + offset / 4 % 12);
+                darkScene[offset] = value;
+                darkScene[offset + 1] = value;
+                darkScene[offset + 2] = value;
+                darkScene[offset + 3] = 255;
+            }
+            True(FrameQualityEvaluator.Evaluate(darkScene).Acceptable);
+        });
+        Check("native frames are presented atomically", () =>
+        {
+            var bootstrap = CdpInjectionService.BootstrapScript;
+            True(bootstrap.Contains("__codexWallpaperSkinReadCapturePointer", StringComparison.Ordinal));
+            True(bootstrap.Contains("installCapturePointerHandlers", StringComparison.Ordinal));
+            True(bootstrap.Contains("candidate.onload", StringComparison.Ordinal));
+            True(bootstrap.Contains("candidate.onerror", StringComparison.Ordinal));
+            True(bootstrap.Contains("new Image()", StringComparison.Ordinal));
+            True(bootstrap.Contains("captureRejectedCount", StringComparison.Ordinal));
+            // The visible layer is only ever swapped after a successful decode.
+            True(!bootstrap.Contains("media.onload = release", StringComparison.Ordinal));
+            True(CdpInjectionService.ArtifactProbeScript.Contains("__codexWallpaperSkinReadCapturePointer", StringComparison.Ordinal));
+            True(CdpInjectionService.CleanupScript.Contains("delete window.__codexWallpaperSkinReadCapturePointer", StringComparison.Ordinal));
+            True(CdpInjectionService.CleanupVerificationScript.Contains("__codexWallpaperSkinReadCapturePointer", StringComparison.Ordinal));
+        });
+
         return new SelfTestResult(passed, failed, messages);
 
         void Check(string name, Action test)
@@ -350,6 +746,118 @@ public static class SelfTests
                 failed++;
                 messages.Add("FAIL " + name + ": " + exception.Message);
             }
+        }
+    }
+
+    private static AppState QueuedState(string wallpaperId, QueueFailureReason reason)
+    {
+        var entry = new WallpaperEntry
+        {
+            Id = wallpaperId,
+            Title = "Queued wallpaper",
+            Source = "Local",
+            Note = string.Empty,
+            Support = WallpaperSupport.Direct,
+            MediaPath = "queued.png"
+        };
+        var state = new AppState { Wallpapers = [entry] };
+        WallpaperQueue.Enqueue(state, wallpaperId, reason, new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        return state;
+    }
+
+    /// <summary>
+    /// Deterministic stand-in for Windows: scripted probes, a virtual clock and
+    /// no real process or registry access.
+    /// </summary>
+    private sealed class FakeConnectionEnvironment : IConnectionEnvironment
+    {
+        private readonly DateTimeOffset _origin = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        private int _probeIndex;
+
+        public List<EndpointProbe> ProbeResults { get; } = [];
+
+        public EndpointProbe ProbeAfterActivation { get; set; } = new(true, true, true, true, 1);
+
+        public int ActivationCount { get; private set; }
+
+        public int CreatedEndpointCount { get; private set; }
+
+        public string CreatedEndpoint { get; private set; } = "http://127.0.0.1:59999";
+
+        public TimeSpan Elapsed { get; private set; }
+
+        public DateTimeOffset UtcNow => _origin + Elapsed;
+
+        public TimeSpan ReadinessTimeout { get; } = TimeSpan.FromSeconds(30);
+
+        public TimeSpan ReadinessPollInterval { get; } = TimeSpan.FromMilliseconds(500);
+
+        public Task<EndpointProbe> ProbeAsync(string endpoint, CancellationToken cancellationToken)
+        {
+            if (ActivationCount > 0 || ProbeResults.Count == 0)
+            {
+                return Task.FromResult(ProbeAfterActivation);
+            }
+            var index = Math.Min(_probeIndex, ProbeResults.Count - 1);
+            _probeIndex++;
+            return Task.FromResult(ProbeResults[index]);
+        }
+
+        public string CreateUnusedEndpoint()
+        {
+            CreatedEndpointCount++;
+            CreatedEndpoint = "http://127.0.0.1:" + (59999 + CreatedEndpointCount);
+            return CreatedEndpoint;
+        }
+
+        public Task ActivateAsync(string aumid, string endpoint, CancellationToken cancellationToken)
+        {
+            ActivationCount++;
+            return Task.CompletedTask;
+        }
+
+        public Task DelayAsync(TimeSpan delay, CancellationToken cancellationToken)
+        {
+            Elapsed += delay;
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class FakeAttachSession : ICodexAttachSession
+    {
+        public bool IsConnected { get; private set; }
+
+        public int AttachCount { get; private set; }
+
+        public int ApplyCount { get; private set; }
+
+        public int SucceedAfterAttempts { get; set; } = 1;
+
+        public Exception? ApplyException { get; set; }
+
+        public Task AttachAsync(string endpoint, CancellationToken cancellationToken)
+        {
+            AttachCount++;
+            if (AttachCount >= SucceedAfterAttempts)
+            {
+                IsConnected = true;
+                return Task.CompletedTask;
+            }
+            throw new InvalidOperationException("CDP page is not ready yet.");
+        }
+
+        public Task<WallpaperApplyResult> ApplyAsync(
+            WallpaperEntry wallpaper,
+            WallpaperSettings settings,
+            IProgress<double>? progress,
+            CancellationToken cancellationToken)
+        {
+            ApplyCount++;
+            if (ApplyException is not null)
+            {
+                throw ApplyException;
+            }
+            return Task.FromResult(new WallpaperApplyResult(null, "video", null));
         }
     }
 

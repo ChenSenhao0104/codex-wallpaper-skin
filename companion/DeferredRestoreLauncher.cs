@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Reflection;
 
 namespace CodexWallpaperSkin;
 
@@ -9,25 +8,19 @@ public static class DeferredRestoreLauncher
 
     public static void EnsureRunning()
     {
-        var processPath = Environment.ProcessPath
-            ?? throw new InvalidOperationException("The controller executable path could not be determined.");
+        var invocation = ControllerInvocation.ForCurrentProcess(WorkerArgument);
         var startInfo = new ProcessStartInfo
         {
-            FileName = processPath,
+            FileName = invocation.Executable,
             UseShellExecute = false,
             CreateNoWindow = true,
             WindowStyle = ProcessWindowStyle.Hidden
         };
-        if (Path.GetFileName(processPath).Equals("dotnet.exe", StringComparison.OrdinalIgnoreCase))
+        if (invocation.AssemblyPath is not null)
         {
-            var assemblyPath = Assembly.GetEntryAssembly()?.Location;
-            if (string.IsNullOrWhiteSpace(assemblyPath))
-            {
-                throw new InvalidOperationException("The controller assembly path could not be determined.");
-            }
-            startInfo.ArgumentList.Add(assemblyPath);
+            startInfo.ArgumentList.Add(invocation.AssemblyPath);
         }
-        startInfo.ArgumentList.Add(WorkerArgument);
+        startInfo.ArgumentList.Add(invocation.Argument);
         _ = Process.Start(startInfo)
             ?? throw new InvalidOperationException("The deferred wallpaper restore worker could not be started.");
     }
@@ -50,6 +43,7 @@ public static class DeferredRestoreLauncher
                 var running = CdpProcessIdentity.FindRunningOfficialCodexProcessIds();
                 if (running.Count > 0 && !CdpEndpoint.IsAvailableForActivation(state.CdpBaseUrl))
                 {
+                    RecordQueueFailure(state, QueueFailureReason.CodexRunningWithoutCdp);
                     await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
                     continue;
                 }
@@ -69,10 +63,22 @@ public static class DeferredRestoreLauncher
                 }
                 catch (CodexAlreadyRunningWithoutCdpException)
                 {
+                    RecordQueueFailure(state, QueueFailureReason.CodexRunningWithoutCdp);
                     await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
                 }
-                catch (TimeoutException) when (CdpProcessIdentity.FindRunningOfficialCodexProcessIds().Count > 0)
+                catch (TimeoutException)
                 {
+                    RecordQueueFailure(state, QueueFailureReason.CdpNotReady);
+                    await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+                }
+                catch (Exception exception) when (
+                    CdpProcessIdentity.FindRunningOfficialCodexProcessIds().Count > 0
+                    || exception is InvalidOperationException or FileNotFoundException or IOException)
+                {
+                    // A background retry must never surface a modal error. Record
+                    // the bounded reason so the controller window can explain the
+                    // state and offer an explicit retry after the next restart.
+                    RecordQueueFailure(state, QueueFailureReason.ActivationFailed);
                     await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
                 }
             }
@@ -81,6 +87,32 @@ public static class DeferredRestoreLauncher
         finally
         {
             if (ownsMutex) mutex.ReleaseMutex();
+        }
+    }
+
+    private static void RecordQueueFailure(AppState state, QueueFailureReason reason)
+    {
+        try
+        {
+            if (!WallpaperQueue.HasQueued(state))
+            {
+                var wallpaperId = state.PendingWallpaperId ?? state.LastAppliedWallpaperId;
+                if (string.IsNullOrWhiteSpace(wallpaperId))
+                {
+                    return;
+                }
+                WallpaperQueue.Enqueue(state, wallpaperId, reason, DateTimeOffset.UtcNow);
+            }
+            else
+            {
+                WallpaperQueue.RecordFailure(state, reason, DateTimeOffset.UtcNow);
+            }
+            StateStore.Save(state);
+        }
+        catch
+        {
+            // The queue is best-effort background bookkeeping; a failed save must
+            // not terminate the restore worker or interrupt Codex.
         }
     }
 }

@@ -10,8 +10,9 @@ public sealed class CodexAlreadyRunningWithoutCdpException : InvalidOperationExc
 {
     public CodexAlreadyRunningWithoutCdpException(IReadOnlyList<int> processIds, Exception? innerException = null)
         : base(
-            "Codex is already running without the local wallpaper control channel. "
-            + "The wallpaper has been queued and will be restored after Codex is next closed normally; your current task was not interrupted.",
+            "Codex is already open without its local wallpaper channel, and Chromium can only enable that channel while "
+            + "Codex starts. The current task was not interrupted and the wallpaper is queued; it stays queued until it is "
+            + "applied or you cancel it.",
             innerException)
     {
         ProcessIds = processIds;
@@ -120,8 +121,7 @@ public static class AutoRestoreService
 
         var result = await injection.ApplyAsync(wallpaper, state.Settings, progress, cancellationToken);
         state.LastAppliedWallpaperId = wallpaper.Id;
-        state.PendingWallpaperId = null;
-        state.PendingActivation = false;
+        WallpaperQueue.Clear(state);
         return new AutoRestoreResult(wallpaper, target, result, activated);
     }
 

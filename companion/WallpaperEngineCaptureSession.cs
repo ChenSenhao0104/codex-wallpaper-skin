@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Interop;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
 
 namespace CodexWallpaperSkin;
@@ -25,6 +26,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private const uint WmLeftButtonUp = 0x0202;
     private const nuint MkLeftButton = 0x0001;
     private const int MaximumFrameBytes = 2 * 1024 * 1024;
+    private const int MaximumConsecutiveRejections = 30;
     private readonly string _engineExecutable;
     private readonly string _windowName;
     private readonly IntPtr _windowHandle;
@@ -37,6 +39,11 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private readonly double _baseVolume;
     private bool _lastPointerDown;
     private bool _disposed;
+    private int _windowWidth;
+    private int _windowHeight;
+    private int _publishedFrames;
+    private int _rejectedFrames;
+    private string? _lastRejectionReason;
 
     private WallpaperEngineCaptureSession(
         string engineExecutable,
@@ -46,7 +53,9 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         int frameRate,
         bool pauseWhenHidden,
         double baseRate,
-        double baseVolume)
+        double baseVolume,
+        int windowWidth,
+        int windowHeight)
     {
         _engineExecutable = engineExecutable;
         _windowName = windowName;
@@ -56,11 +65,23 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         _pauseWhenHidden = pauseWhenHidden;
         _baseRate = baseRate;
         _baseVolume = baseVolume;
+        _windowWidth = windowWidth;
+        _windowHeight = windowHeight;
     }
 
     public byte[] InitialFrame { get; }
     public bool IsRunning => !_disposed && _streamTask is { IsCompleted: false };
     public Task Completion => _streamTask ?? Task.CompletedTask;
+
+    /// <summary>Frames accepted, published and rejected since streaming started.</summary>
+    public int PublishedFrameCount => Volatile.Read(ref _publishedFrames);
+    public int RejectedFrameCount => Volatile.Read(ref _rejectedFrames);
+    public string LastRejectionReason => Volatile.Read(ref _lastRejectionReason) ?? string.Empty;
+
+    public string MetricsSummary =>
+        $"capture {_windowWidth}x{_windowHeight} at {_frameRate} FPS, {PublishedFrameCount} published, "
+        + $"{RejectedFrameCount} rejected"
+        + (LastRejectionReason.Length == 0 ? string.Empty : $" (last: {LastRejectionReason})");
 
     public static bool CanUse(WallpaperEntry wallpaper) =>
         wallpaper.IsScene
@@ -118,10 +139,10 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
             }
 
             await Task.Delay(350, cancellationToken);
-            var initialFrame = await Task.Run(() => CaptureJpeg(handle), cancellationToken);
+            var initialFrame = await Task.Run(() => CaptureInitialFrame(handle), cancellationToken);
             return new WallpaperEngineCaptureSession(
                 controlExecutable, windowName, handle, initialFrame, settings.SceneFrameRate,
-                settings.PauseWhenHidden, baseRate, baseVolume);
+                settings.PauseWhenHidden, baseRate, baseVolume, width, height);
         }
         catch
         {
@@ -130,12 +151,15 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         }
     }
 
-    public void StartStreaming(Func<byte[], CancellationToken, Task<CapturedPointer?>> publishFrame)
+    public void StartStreaming(
+        Func<byte[], CancellationToken, Task> publishFrame,
+        Func<CancellationToken, Task<CapturedPointer?>> readPointer)
     {
         ArgumentNullException.ThrowIfNull(publishFrame);
+        ArgumentNullException.ThrowIfNull(readPointer);
         if (_disposed) throw new ObjectDisposedException(nameof(WallpaperEngineCaptureSession));
         if (_streamTask is not null) throw new InvalidOperationException("Wallpaper Engine capture is already streaming.");
-        _streamTask = Task.Run(() => StreamAsync(publishFrame, _lifetime.Token));
+        _streamTask = Task.Run(() => StreamAsync(publishFrame, readPointer, _lifetime.Token));
     }
 
     public async Task UpdateSettingsAsync(WallpaperSettings settings, CancellationToken cancellationToken = default)
@@ -153,10 +177,12 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     }
 
     private async Task StreamAsync(
-        Func<byte[], CancellationToken, Task<CapturedPointer?>> publishFrame,
+        Func<byte[], CancellationToken, Task> publishFrame,
+        Func<CancellationToken, Task<CapturedPointer?>> readPointer,
         CancellationToken cancellationToken)
     {
         var consecutiveFailures = 0;
+        var consecutiveRejections = 0;
         try
         {
             while (!cancellationToken.IsCancellationRequested && IsWindow(_windowHandle))
@@ -166,15 +192,49 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                     await Task.Delay(TimeSpan.FromMilliseconds(450), cancellationToken);
                 }
                 var started = Stopwatch.GetTimestamp();
+
+                // Pointer input travels on its own channel so interaction never
+                // waits for a successfully captured or accepted frame.
                 try
                 {
-                    var frame = CaptureJpeg(_windowHandle);
-                    var pointer = await publishFrame(frame, cancellationToken);
-                    if (pointer is not null && !pointer.Hidden)
+                    var pointer = await readPointer(cancellationToken);
+                    if (pointer is not null)
                     {
-                        ForwardPointer(pointer);
+                        if (!pointer.Hidden) ForwardPointer(pointer);
+                        _lastPageHidden = pointer.Hidden;
                     }
-                    if (pointer is not null) _lastPageHidden = pointer.Hidden;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch
+                {
+                    // Pointer loss alone must not end a healthy capture stream.
+                }
+
+                try
+                {
+                    var analysis = CaptureFrame(_windowHandle, out var frame);
+                    if (frame is not null && analysis.Acceptable)
+                    {
+                        await publishFrame(frame, cancellationToken);
+                        Interlocked.Increment(ref _publishedFrames);
+                        Volatile.Write(ref _lastRejectionReason, null);
+                        consecutiveRejections = 0;
+                    }
+                    else
+                    {
+                        // Empty, uniform and partial surfaces are never presented;
+                        // the last known-good frame stays visible in Codex.
+                        Interlocked.Increment(ref _rejectedFrames);
+                        Volatile.Write(ref _lastRejectionReason, analysis.Reason);
+                        consecutiveRejections++;
+                        if (consecutiveRejections >= MaximumConsecutiveRejections)
+                        {
+                            break;
+                        }
+                    }
                     consecutiveFailures = 0;
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -217,8 +277,24 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         }
     }
 
-    private static byte[] CaptureJpeg(IntPtr handle)
+    private static byte[] CaptureInitialFrame(IntPtr handle)
     {
+        var analysis = CaptureFrame(handle, out var frame);
+        if (frame is null)
+        {
+            throw new InvalidDataException(
+                "Wallpaper Engine has not produced a usable first frame yet: " + analysis.Reason);
+        }
+        return frame;
+    }
+
+    /// <summary>
+    /// Captures one surface and classifies it. <paramref name="frame"/> is null
+    /// when the surface must not be presented; the caller keeps the previous one.
+    /// </summary>
+    private static FrameQuality CaptureFrame(IntPtr handle, out byte[]? frame)
+    {
+        frame = null;
         if (!IsWindow(handle) || !GetClientRect(handle, out var rect))
         {
             throw new IOException("The Wallpaper Engine render window is no longer available.");
@@ -251,13 +327,23 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
             var source = Imaging.CreateBitmapSourceFromHBitmap(
                 bitmapHandle, IntPtr.Zero, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
             source.Freeze();
+
+            // Reject empty, uniform and stale surfaces before they reach Codex.
+            var samples = SampleSurface(source);
+            var quality = FrameQualityEvaluator.Evaluate(samples);
+            if (!quality.Acceptable)
+            {
+                return quality;
+            }
+
             var encoded = EncodeJpeg(source, 85);
             if (encoded.Length > MaximumFrameBytes) encoded = EncodeJpeg(source, 65);
             if (encoded.Length is <= 0 or > MaximumFrameBytes)
             {
-                throw new InvalidDataException("The captured Wallpaper Engine frame exceeded the streaming budget.");
+                return quality with { Reason = "The captured frame exceeded the streaming budget." };
             }
-            return encoded;
+            frame = encoded;
+            return quality;
         }
         finally
         {
@@ -266,6 +352,28 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
             DeleteDC(memoryDc);
             ReleaseDC(handle, windowDc);
         }
+    }
+
+    /// <summary>
+    /// Copies a bounded number of evenly spaced rows as tightly packed 32-bit
+    /// BGRA. Sampling keeps the quality check cheap at 15 FPS on large surfaces.
+    /// </summary>
+    private static byte[] SampleSurface(BitmapSource source)
+    {
+        var width = source.PixelWidth;
+        var height = source.PixelHeight;
+        var source32 = source.Format == PixelFormats.Bgr32
+            ? source
+            : new FormatConvertedBitmap(source, PixelFormats.Bgr32, null, 0);
+        var rowCount = Math.Clamp(height, 1, 48);
+        var stride = width * 4;
+        var buffer = new byte[stride * rowCount];
+        for (var index = 0; index < rowCount; index++)
+        {
+            var y = rowCount == 1 ? 0 : (int)((long)index * (height - 1) / (rowCount - 1));
+            source32.CopyPixels(new Int32Rect(0, y, width, 1), buffer, stride, index * stride);
+        }
+        return buffer;
     }
 
     private static byte[] EncodeJpeg(BitmapSource bitmap, int quality)

@@ -132,7 +132,7 @@ public sealed class PaletteResult
 
 public sealed class AppState
 {
-    public const int CurrentSchema = 5;
+    public const int CurrentSchema = 6;
     public int SchemaVersion { get; set; } = CurrentSchema;
     public string CdpBaseUrl { get; set; } = CdpEndpoint.CreateUnusedLoopbackUrl();
     public string? Aumid { get; set; }
@@ -141,6 +141,11 @@ public sealed class AppState
     public string? LastAppliedWallpaperId { get; set; }
     public string? PendingWallpaperId { get; set; }
     public bool PendingActivation { get; set; }
+    public DateTimeOffset? PendingQueuedAt { get; set; }
+    public DateTimeOffset? PendingLastAttemptAt { get; set; }
+    public int PendingAttempts { get; set; }
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public QueueFailureReason PendingLastFailure { get; set; }
     public bool AutoRestoreOnLaunch { get; set; } = true;
     public List<WallpaperEntry> Wallpapers { get; set; } = [];
     public WallpaperSettings Settings { get; set; } = new();
@@ -166,5 +171,10 @@ public sealed class DiagnosticReport
     public List<string> AumidCandidates { get; set; } = [];
     public string? SavedWallpaper { get; set; }
     public bool SavedWallpaperExists { get; set; }
+    public string ConnectionState { get; set; } = string.Empty;
+    public bool WallpaperQueued { get; set; }
+    public string QueueSummary { get; set; } = string.Empty;
+    public string StartupRegistration { get; set; } = string.Empty;
+    public string? StartupRegistrationExecutable { get; set; }
     public List<string> Notes { get; set; } = [];
 }

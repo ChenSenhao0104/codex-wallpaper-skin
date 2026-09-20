@@ -89,7 +89,7 @@ public static class StateStore
         }
     }
 
-    private static AppState NormalizeState(AppState state)
+    internal static AppState NormalizeState(AppState state)
     {
         state.Settings ??= new WallpaperSettings();
         state.Settings.Normalize();
@@ -125,11 +125,22 @@ public static class StateStore
         state.PendingWallpaperId = state.PendingWallpaperId is { Length: <= 2048 }
             ? state.PendingWallpaperId
             : null;
-        if (string.IsNullOrWhiteSpace(state.PendingWallpaperId)) state.PendingActivation = false;
+        state.PendingAttempts = Math.Clamp(state.PendingAttempts, 0, 1_000);
+        if (!Enum.IsDefined(state.PendingLastFailure))
+        {
+            state.PendingLastFailure = QueueFailureReason.None;
+        }
+        if (string.IsNullOrWhiteSpace(state.PendingWallpaperId))
+        {
+            // A queue without a wallpaper is not a queue. Clearing the derived
+            // fields here keeps a cancelled or completed queue from reappearing
+            // as a stale "waiting" state after a restart.
+            WallpaperQueue.Clear(state);
+        }
         return state;
     }
 
-    private static void MigrateState(AppState state)
+    internal static void MigrateState(AppState state)
     {
         if (state.SchemaVersion < 3)
         {
@@ -157,6 +168,17 @@ public static class StateStore
             state.PendingWallpaperId = null;
             state.PendingActivation = false;
             state.SchemaVersion = 5;
+        }
+        if (state.SchemaVersion < 6)
+        {
+            // v0.3.0 had a boolean queue only. Recovery states need to survive a
+            // restart with their attempt history, so the reason and timestamps
+            // start empty and fill in on the next attempt.
+            state.PendingQueuedAt = null;
+            state.PendingLastAttemptAt = null;
+            state.PendingAttempts = 0;
+            state.PendingLastFailure = QueueFailureReason.None;
+            state.SchemaVersion = 6;
         }
     }
 
@@ -194,6 +216,10 @@ public static class StateStore
             || state.PendingWallpaperId is { Length: > 2048 })
         {
             throw new InvalidDataException("A saved identifier or path exceeds its safety limit.");
+        }
+        if (state.PendingAttempts is < 0 or > 1_000 || !Enum.IsDefined(state.PendingLastFailure))
+        {
+            throw new InvalidDataException("The saved wallpaper queue contains an invalid attempt counter or reason.");
         }
 
         var identifiers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

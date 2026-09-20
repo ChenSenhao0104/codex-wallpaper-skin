@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
@@ -14,6 +15,8 @@ public partial class MainWindow : Window
 {
     private readonly ObservableCollection<WallpaperEntry> _wallpapers = [];
     private readonly CdpInjectionService _injection = new();
+    private readonly CdpAttachSession _attachSession;
+    private readonly WindowsConnectionEnvironment _connectionEnvironment = new();
     private readonly DispatcherTimer _settingsTimer;
     private AppState _state;
     private bool _loading = true;
@@ -23,11 +26,13 @@ public partial class MainWindow : Window
     private bool _saveFailureShown;
     private string? _stateWarning;
     private bool _startupChangeGuard;
+    private CodexConnectionState _connectionState = CodexConnectionState.CodexClosed;
 
     public MainWindow()
     {
         InitializeComponent();
         _state = StateStore.Load();
+        _attachSession = new CdpAttachSession(_injection);
         _settingsTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(180) };
         _settingsTimer.Tick += SettingsTimer_Tick;
 
@@ -48,14 +53,6 @@ public partial class MainWindow : Window
         }
         LoadSettings(_state.Settings);
         AutoRestoreCheck.IsChecked = _state.AutoRestoreOnLaunch;
-        try
-        {
-            StartupRestoreCheck.IsChecked = StartupRegistration.IsEnabled();
-        }
-        catch
-        {
-            StartupRestoreCheck.IsChecked = false;
-        }
 
         var selected = _wallpapers.FirstOrDefault(item => item.Id == _state.SelectedWallpaperId);
         if (selected is not null)
@@ -64,6 +61,9 @@ public partial class MainWindow : Window
         }
         _loading = false;
         UpdateSettingLabels();
+        RefreshStartupState(reportToStatus: false);
+        SetConnectionState(_connectionState, null);
+        UpdateQueuePanel();
         if (!string.IsNullOrWhiteSpace(StateStore.LastLoadWarning))
         {
             _stateWarning = StateStore.LastLoadWarning;
@@ -77,77 +77,190 @@ public partial class MainWindow : Window
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
         Loaded -= MainWindow_Loaded;
-        if (!_state.AutoRestoreOnLaunch || string.IsNullOrWhiteSpace(_state.LastAppliedWallpaperId))
+        await RefreshConnectionStateAsync();
+        if (!_state.AutoRestoreOnLaunch)
         {
             return;
         }
+        if (!WallpaperQueue.HasQueued(_state) && string.IsNullOrWhiteSpace(_state.LastAppliedWallpaperId))
+        {
+            return;
+        }
+
+        // Opening the controller is an explicit user action, so recovery runs
+        // here: it either attaches to Codex, starts it with its verified local
+        // channel, or explains that the request is queued because Codex is
+        // already running without one. Codex is never terminated.
         await RunBusyAsync(async cancellationToken =>
         {
             _state.Wallpapers = _wallpapers.ToList();
             UploadProgress.Value = 0;
             UploadProgress.Visibility = Visibility.Visible;
-            SetStatus("Restoring the last applied wallpaper…");
+            SetStatus("Preparing Codex and the requested wallpaper…");
             var progress = new Progress<double>(value => UploadProgress.Value = value * 100);
-            AutoRestoreResult restored;
             try
             {
-                restored = await AutoRestoreService.RestoreAsync(
-                    _state, _injection, activateIfNeeded: true, progress, cancellationToken);
+                await ConnectAndApplyAsync(progress, cancellationToken);
             }
-            catch (CodexAlreadyRunningWithoutCdpException)
+            finally
             {
                 UploadProgress.Visibility = Visibility.Collapsed;
-                var remembered = AutoRestoreService.ResolveLastWallpaper(_state);
-                if (remembered is not null) QueueDeferredRestore(remembered);
-                return;
             }
-            UploadProgress.Visibility = Visibility.Collapsed;
-            EndpointTextBox.Text = _state.CdpBaseUrl;
-            AumidTextBox.Text = _state.Aumid ?? string.Empty;
-            ConnectButton.Content = "Reconnect";
-            var listed = _wallpapers.FirstOrDefault(item => item.Id.Equals(restored.Wallpaper.Id, StringComparison.OrdinalIgnoreCase));
-            if (listed is not null)
-            {
-                WallpaperList.SelectedItem = listed;
-            }
-            SaveState();
-            SetStatus($"Restored {restored.Wallpaper.Title} from the previous session."
-                + (restored.ActivatedCodex ? " Codex was started with its verified local CDP endpoint." : string.Empty));
         });
     }
 
     private async void Connect_Click(object sender, RoutedEventArgs e)
     {
-        await RunBusyAsync(async cancellationToken =>
+        try
         {
-            var endpoint = EndpointTextBox.Text.Trim();
-            if (!CdpEndpoint.IsLoopbackHttp(endpoint))
+            await RunBusyAsync(async cancellationToken =>
             {
-                throw new InvalidOperationException("Use a loopback endpoint such as http://127.0.0.1:9222. Remote CDP endpoints are intentionally blocked.");
-            }
-            SetStatus("Connecting to Codex CDP…");
-            var target = await _injection.ConnectAsync(endpoint, cancellationToken);
-            _state.CdpBaseUrl = endpoint;
-            SaveState();
-            ConnectButton.Content = "Reconnect";
-            if (_state.AutoRestoreOnLaunch && !string.IsNullOrWhiteSpace(_state.LastAppliedWallpaperId))
+                SyncConnectionState();
+                UploadProgress.Value = 0;
+                UploadProgress.Visibility = Visibility.Visible;
+                SetConnectionState(CodexConnectionState.CodexStarting, "Checking Codex and its local wallpaper channel…");
+                var progress = new Progress<double>(value => UploadProgress.Value = value * 100);
+                await ConnectAndApplyAsync(progress, cancellationToken);
+                UploadProgress.Visibility = Visibility.Collapsed;
+            });
+        }
+        catch (Exception exception)
+        {
+            // Section 2a: Connect never surfaces a raw listener or process error.
+            // Expected conditions are already reported as queued/retry states.
+            SetConnectionState(CodexConnectionState.RetryFailed, ConnectionRecovery.Guidance(CodexConnectionState.RetryFailed));
+            SetStatus("Connect did not finish. " + exception.Message);
+        }
+    }
+
+    /// <summary>
+    /// Single recovery entry point shared by Connect, Retry, Apply and startup.
+    /// Applies a requested/queued wallpaper only after a verified attachment.
+    /// </summary>
+    private async Task ConnectAndApplyAsync(IProgress<double>? progress, CancellationToken cancellationToken)
+    {
+        var result = await ConnectionCoordinator.ConnectAsync(
+            _state,
+            _attachSession,
+            _connectionEnvironment,
+            applyQueuedWallpaper: true,
+            progress,
+            cancellationToken);
+        ApplyConnectionResult(result);
+    }
+
+    private void ApplyConnectionResult(ConnectionAttemptResult result)
+    {
+        EndpointTextBox.Text = _state.CdpBaseUrl;
+        AumidTextBox.Text = _state.Aumid ?? string.Empty;
+        if (result.AppliedWallpaper is not null)
+        {
+            var listed = _wallpapers.FirstOrDefault(item =>
+                item.Id.Equals(result.AppliedWallpaper.Id, StringComparison.OrdinalIgnoreCase));
+            if (listed is not null)
             {
-                _state.Wallpapers = _wallpapers.ToList();
-                var remembered = AutoRestoreService.ResolveLastWallpaper(_state);
-                if (remembered?.CanApply == true)
-                {
-                    UploadProgress.Value = 0;
-                    UploadProgress.Visibility = Visibility.Visible;
-                    SetStatus($"Connected. Restoring {remembered.Title}…");
-                    var progress = new Progress<double>(value => UploadProgress.Value = value * 100);
-                    await _injection.ApplyAsync(remembered, _state.Settings, progress, cancellationToken);
-                    UploadProgress.Visibility = Visibility.Collapsed;
-                    SetStatus($"Connected and restored {remembered.Title} from the previous session.");
-                    return;
-                }
+                WallpaperList.SelectedItem = listed;
             }
-            SetStatus($"Connected: {target.Title} — {target.Url}");
-        });
+        }
+        SaveState();
+        SetConnectionState(result.State, result.Guidance);
+        if (result.AppliedWallpaper is not null && result.ApplyResult is not null)
+        {
+            SetStatus(DescribeApplyOutcome(result.AppliedWallpaper, result.ApplyResult));
+        }
+        else
+        {
+            SetStatus(result.Guidance);
+        }
+        if (result.Outcome == ConnectionOutcome.Queued)
+        {
+            // Codex is running without its channel. Hand the queue to the
+            // background worker so it is applied once Codex is closed normally.
+            try { DeferredRestoreLauncher.EnsureRunning(); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// Probes without activating anything. Used when the window opens and after
+    /// external changes, so the badge reflects reality instead of an assumption.
+    /// </summary>
+    private async Task RefreshConnectionStateAsync()
+    {
+        try
+        {
+            SyncConnectionState();
+            var probe = await _connectionEnvironment.ProbeAsync(_state.CdpBaseUrl, CancellationToken.None);
+            _connectionState = ConnectionRecovery.Classify(new ConnectionProbe(
+                probe.EndpointIsLoopback,
+                probe.PortHasListener,
+                probe.ListenerVerifiedAsCodex,
+                probe.CodexPageAvailable,
+                probe.OfficialCodexProcessCount,
+                WallpaperQueue.HasQueued(_state),
+                _state.PendingLastFailure));
+            SetConnectionState(_connectionState, null);
+        }
+        catch
+        {
+            // Probing is best-effort on open; the badge simply stays as-is.
+        }
+    }
+
+    private void SetConnectionState(CodexConnectionState state, string? guidance)
+    {
+        _connectionState = state;
+        ConnectionStateText.Text = ConnectionRecovery.Badge(state);
+        var (background, border, foreground) = state switch
+        {
+            CodexConnectionState.CodexConnected => ("#12301F", "#2F7A4A", "#C9F2D8"),
+            CodexConnectionState.CodexClosed => ("#1F2A3D", "#31527F", "#CFE0FF"),
+            CodexConnectionState.RetryFailed => ("#331A1E", "#7A3140", "#FFD2D9"),
+            _ => ("#2A2213", "#6B5620", "#FFE1A8")
+        };
+        ConnectionStateBadge.Background = Brush(background);
+        ConnectionStateBadge.BorderBrush = Brush(border);
+        ConnectionStateText.Foreground = Brush(foreground);
+        RecoveryGuidanceText.Text = string.IsNullOrWhiteSpace(guidance) ? ConnectionRecovery.Guidance(state) : guidance;
+        ConnectButton.Content = ConnectionRecovery.ActionLabel(state);
+        UpdateQueuePanel();
+    }
+
+    private void UpdateQueuePanel()
+    {
+        var queued = WallpaperQueue.HasQueued(_state);
+        QueuePanel.Visibility = queued ? Visibility.Visible : Visibility.Collapsed;
+        if (!queued)
+        {
+            return;
+        }
+        var entry = AutoRestoreService.ResolveLastWallpaper(_state);
+        QueueText.Text = WallpaperQueue.Describe(_state, entry)
+            + " It stays queued across a restart until it is applied or you cancel it.";
+    }
+
+    private void RefreshStartupState(bool reportToStatus)
+    {
+        StartupRegistrationState startup;
+        try
+        {
+            startup = StartupRegistration.GetState();
+        }
+        catch (Exception exception)
+        {
+            StartupStateText.Text = "Windows sign-in restore could not be read: " + exception.Message;
+            RepairStartupButton.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        _startupChangeGuard = true;
+        StartupRestoreCheck.IsChecked = startup.IsEnabled;
+        _startupChangeGuard = false;
+        StartupStateText.Text = StartupRegistration.Describe(startup);
+        RepairStartupButton.Visibility = startup.NeedsRepair ? Visibility.Visible : Visibility.Collapsed;
+        if (reportToStatus && startup.NeedsRepair)
+        {
+            SetStatus(StartupRegistration.Describe(startup));
+        }
     }
 
     private async void Doctor_Click(object sender, RoutedEventArgs e)
@@ -155,13 +268,13 @@ public partial class MainWindow : Window
         await RunBusyAsync(async cancellationToken =>
         {
             SyncConnectionState();
-            var report = await DiagnosticsService.RunAsync(_state, cancellationToken);
+            var report = await DiagnosticsService.RunAsync(_state, cancellationToken, _injection.CaptureMetricsSummary);
             var text = JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true });
             var dialog = new DiagnosticWindow(text) { Owner = this };
             dialog.ShowDialog();
             SetStatus(report.CdpReachable
-                ? $"Doctor: CDP reachable with {report.Targets.Count} target(s)."
-                : "Doctor: CDP not reachable. See the report for safe startup guidance.");
+                ? $"Doctor: {report.ConnectionState} with {report.Targets.Count} target(s)."
+                : $"Doctor: {report.ConnectionState}. Recovery guidance is in the report.");
         });
     }
 
@@ -191,68 +304,47 @@ public partial class MainWindow : Window
         await RunBusyAsync(async cancellationToken =>
         {
             SyncConnectionState();
-            var runningCodex = CdpProcessIdentity.FindRunningOfficialCodexProcessIds();
-            if (runningCodex.Count > 0 && !CdpEndpoint.IsAvailableForActivation(_state.CdpBaseUrl))
+            var probe = await _connectionEnvironment.ProbeAsync(_state.CdpBaseUrl, cancellationToken);
+            if (probe.CodexPageAvailable)
             {
-                var queued = WallpaperList.SelectedItem as WallpaperEntry
-                    ?? AutoRestoreService.ResolveLastWallpaper(_state);
-                if (queued?.CanApply == true)
-                {
-                    _state.Settings = ReadSettings();
-                    QueueDeferredRestore(queued);
-                }
-                else
-                {
-                    SetStatus("Codex is already open without its local wallpaper channel. Select a wallpaper and click Apply; it will be queued without interrupting the current task.");
-                }
+                SetConnectionState(CodexConnectionState.CodexConnected, null);
+                SetStatus("Codex already exposes its local wallpaper channel for this endpoint. Click Connect instead of activating again.");
                 return;
             }
-            if (!CdpEndpoint.IsAvailableForActivation(_state.CdpBaseUrl))
+            if (!probe.PortHasListener && probe.OfficialCodexProcessCount > 0)
             {
-                var officialCodexOwnsPort = false;
-                try
-                {
-                    var endpoint = CdpEndpoint.Normalize(_state.CdpBaseUrl);
-                    CdpProcessIdentity.EnsureOfficialCodexOwnsPort(endpoint.Port);
-                    officialCodexOwnsPort = true;
-                }
-                catch
-                {
-                    _state.CdpBaseUrl = CdpEndpoint.CreateUnusedLoopbackUrl();
-                    EndpointTextBox.Text = _state.CdpBaseUrl;
-                    SaveState();
-                    SetStatus($"The previous port was occupied by an unverified process. Selected an unused loopback endpoint: {_state.CdpBaseUrl}");
-                }
-
-                if (officialCodexOwnsPort)
-                {
-                    try
-                    {
-                        var targets = await CdpDiscovery.GetTargetsAsync(_state.CdpBaseUrl, cancellationToken);
-                        var target = CdpDiscovery.SelectCodexPage(targets);
-                        SetStatus($"Codex CDP is already available for {target.Title}. Click Connect instead of activating another endpoint.");
-                        return;
-                    }
-                    catch (Exception exception)
-                    {
-                        SetStatus($"The official Codex process owns this loopback port, but CDP is not ready yet ({exception.Message}). Keep this endpoint, wait a moment, then click Connect.");
-                        return;
-                    }
-                }
+                QueueRequestedWallpaper(QueueFailureReason.CodexRunningWithoutCdp);
+                SetConnectionState(
+                    CodexConnectionState.Queued,
+                    "Codex is already open without its local wallpaper channel. Activation cannot add that channel to a running Codex, "
+                    + "so the current task was left untouched and your wallpaper is queued.");
+                return;
             }
-            cancellationToken.ThrowIfCancellationRequested();
+            if (probe.PortHasListener && !probe.ListenerVerifiedAsCodex)
+            {
+                _state.CdpBaseUrl = CdpEndpoint.CreateUnusedLoopbackUrl();
+                EndpointTextBox.Text = _state.CdpBaseUrl;
+                SaveState();
+            }
+
             // WPF controls are Dispatcher-bound. Capture their values on the UI
             // thread and pass only immutable strings to the background worker.
-            var activationAumid = AumidTextBox.Text.Trim();
+            var activationAumid = string.IsNullOrWhiteSpace(AumidTextBox.Text)
+                ? AppActivation.OfficialAumid
+                : AumidTextBox.Text.Trim();
+            if (!AppActivation.IsOfficialAumid(activationAumid))
+            {
+                SetStatus("Activation requires the official Codex package identity. Use Detect app, or paste the AppID from Get-StartApps.");
+                return;
+            }
             var activationEndpoint = _state.CdpBaseUrl;
-            var result = await AppActivation.ActivateWithCdpAsync(
-                activationAumid,
-                activationEndpoint,
-                cancellationToken);
+            await _connectionEnvironment.ActivateAsync(activationAumid, activationEndpoint, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             _state.Aumid = activationAumid;
             SaveState();
-            SetStatus($"Activation requested (PID {result.ProcessId}). {result.Message} Wait for Codex to open, then click Connect.");
+            SetConnectionState(
+                CodexConnectionState.CodexStarting,
+                "Activation was requested without closing any Codex process. Connect finishes automatically once Codex exposes its local channel.");
         });
     }
 
@@ -417,58 +509,78 @@ public partial class MainWindow : Window
             UploadProgress.Value = 0;
             UploadProgress.Visibility = Visibility.Visible;
             var progress = new Progress<double>(value => UploadProgress.Value = value * 100);
-            WallpaperApplyResult applyResult;
             if (!_injection.IsConnected)
             {
+                // Selecting a wallpaper always keeps the request. If Codex cannot
+                // accept it right now the queue keeps it visible instead of
+                // failing, and it is never reported as applied.
                 _state.Wallpapers = _wallpapers.ToList();
-                _state.PendingWallpaperId = selected.Id;
-                _state.PendingActivation = true;
+                WallpaperQueue.Enqueue(_state, selected.Id, QueueFailureReason.None, DateTimeOffset.UtcNow);
                 SaveState();
+                UpdateQueuePanel();
                 SetStatus("Preparing Codex and the selected wallpaper…");
-                try
-                {
-                    var restored = await AutoRestoreService.RestoreAsync(
-                        _state, _injection, activateIfNeeded: true, progress, cancellationToken);
-                    applyResult = restored.ApplyResult;
-                    EndpointTextBox.Text = _state.CdpBaseUrl;
-                    ConnectButton.Content = "Reconnect";
-                }
-                catch (CodexAlreadyRunningWithoutCdpException)
-                {
-                    UploadProgress.Visibility = Visibility.Collapsed;
-                    QueueDeferredRestore(selected);
-                    return;
-                }
+                await ConnectAndApplyAsync(progress, cancellationToken);
+                UploadProgress.Visibility = Visibility.Collapsed;
+                return;
             }
-            else
-            {
-                SetStatus($"Uploading {Path.GetFileName(selected.EffectivePath)} to the Codex renderer…");
-                applyResult = await _injection.ApplyAsync(selected, settings, progress, cancellationToken);
-            }
+
+            SetStatus($"Uploading {Path.GetFileName(selected.EffectivePath)} to the Codex renderer…");
+            var applyResult = await _injection.ApplyAsync(selected, settings, progress, cancellationToken);
             UploadProgress.Visibility = Visibility.Collapsed;
             _state.LastAppliedWallpaperId = selected.Id;
-            _state.PendingWallpaperId = null;
-            _state.PendingActivation = false;
+            WallpaperQueue.Clear(_state);
             SaveState();
-            var paletteStatus = settings.AutoPalette
-                ? applyResult.Palette is null
-                    ? " Palette sampling was unavailable, so the neutral fallback remains active."
-                    : $" Palette: surface {applyResult.Palette.Surface}, accent {applyResult.Palette.Accent}, text contrast {applyResult.Palette.TextContrast:0.0}:1."
-                : " Automatic palette is off.";
-            var modeStatus = applyResult.Mode switch
-            {
-                "live-scene" => " Live 2D scene rendering is active.",
-                "scene-partial" => " Live 2D scene rendering is active with unsupported layers omitted.",
-                "scene-static" => " The renderer used the full-resolution scene texture fallback.",
-                "wallpaper-engine-capture" => " Wallpaper Engine high-fidelity rendering and pointer interaction are active.",
-                "animated-preview" => " The low-resolution animated Workshop preview is active.",
-                "static-preview" => " The static Workshop preview fallback is active.",
-                "video" => " Direct video playback is active.",
-                _ => " Direct image playback is active."
-            };
-            var warningStatus = string.IsNullOrWhiteSpace(applyResult.Warning) ? string.Empty : " Note: " + applyResult.Warning;
-            SetStatus($"Applied {selected.Title}.{modeStatus}{paletteStatus}{warningStatus} No Codex file was changed; Restore removes the whole layer.");
+            UpdateQueuePanel();
+            SetStatus(DescribeApplyOutcome(selected, applyResult));
         });
+    }
+
+    private async void RetryQueue_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await RunBusyAsync(async cancellationToken =>
+            {
+                SyncConnectionState();
+                QueueRequestedWallpaper(QueueFailureReason.None);
+                UploadProgress.Value = 0;
+                UploadProgress.Visibility = Visibility.Visible;
+                var progress = new Progress<double>(value => UploadProgress.Value = value * 100);
+                await ConnectAndApplyAsync(progress, cancellationToken);
+                UploadProgress.Visibility = Visibility.Collapsed;
+            });
+        }
+        catch (Exception exception)
+        {
+            SetStatus("Retry did not finish. " + exception.Message);
+        }
+    }
+
+    private void CancelQueue_Click(object sender, RoutedEventArgs e)
+    {
+        _state.Wallpapers = _wallpapers.ToList();
+        WallpaperQueue.Clear(_state);
+        SaveState();
+        UpdateQueuePanel();
+        SetConnectionState(_connectionState, null);
+        SetStatus("Cancelled the queued wallpaper. Nothing was applied to Codex, and the running Codex process was not changed.");
+    }
+
+    private void RepairStartup_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var repaired = StartupRegistration.Repair();
+            RefreshStartupState(reportToStatus: false);
+            SetStatus(repaired.Status == StartupRegistrationStatus.Current
+                ? "Repaired the Windows sign-in restore entry so it points at this app."
+                : StartupRegistration.Describe(repaired));
+        }
+        catch (Exception exception)
+        {
+            RefreshStartupState(reportToStatus: false);
+            ShowError("Windows startup preference could not be changed: " + exception.Message);
+        }
     }
 
     private async void Restore_Click(object sender, RoutedEventArgs e)
@@ -476,20 +588,20 @@ public partial class MainWindow : Window
         await RunBusyAsync(async cancellationToken =>
         {
             SyncConnectionState();
-            if (_state.PendingActivation && !CdpEndpoint.IsAvailableForActivation(_state.CdpBaseUrl))
+            if (WallpaperQueue.HasQueued(_state) && !_injection.IsConnected)
             {
                 _state.LastAppliedWallpaperId = null;
-                _state.PendingWallpaperId = null;
-                _state.PendingActivation = false;
+                WallpaperQueue.Clear(_state);
                 SaveState();
-                SetStatus("Cancelled the queued wallpaper restore. No running Codex process was changed.");
+                UpdateQueuePanel();
+                SetConnectionState(CodexConnectionState.CodexClosed, "Cancelled the queued wallpaper. No running Codex process was changed.");
                 return;
             }
             var cleanedPages = await _injection.CleanupAllAsync(_state.CdpBaseUrl, cancellationToken);
             _state.LastAppliedWallpaperId = null;
-            _state.PendingWallpaperId = null;
-            _state.PendingActivation = false;
+            WallpaperQueue.Clear(_state);
             SaveState();
+            UpdateQueuePanel();
             SetStatus($"Restored the original Codex background on {cleanedPages} app page(s). Temporary layers, style changes and Blob URLs were removed.");
         });
     }
@@ -534,7 +646,7 @@ public partial class MainWindow : Window
         _state.AutoRestoreOnLaunch = AutoRestoreCheck.IsChecked == true;
         SaveState();
         SetStatus(_state.AutoRestoreOnLaunch
-            ? "The last successfully applied wallpaper will be restored when this controller opens."
+            ? "The last requested wallpaper will be restored when this controller opens."
             : "Automatic restore when the controller opens is disabled.");
     }
 
@@ -548,8 +660,9 @@ public partial class MainWindow : Window
         try
         {
             StartupRegistration.SetEnabled(enabled);
+            RefreshStartupState(reportToStatus: false);
             SetStatus(enabled
-                ? "Windows sign-in restore enabled. It will restore immediately when possible, or wait without interrupting an already-open Codex task."
+                ? "Windows sign-in restore enabled. It will restore immediately when possible, or queue without interrupting an already-open Codex task."
                 : "Windows sign-in restore disabled.");
         }
         catch (Exception exception)
@@ -712,6 +825,7 @@ public partial class MainWindow : Window
             {
                 try { DeferredRestoreLauncher.EnsureRunning(); } catch { }
                 SetStatus(exception.Message);
+                UpdateQueuePanel();
             }
         }
         catch (Exception exception)
@@ -719,7 +833,8 @@ public partial class MainWindow : Window
             UploadProgress.Visibility = Visibility.Collapsed;
             if (!_closeRequested)
             {
-                ShowError(exception.Message);
+                SetConnectionState(CodexConnectionState.RetryFailed, ConnectionRecovery.Guidance(CodexConnectionState.RetryFailed));
+                SetStatus("The operation did not finish. " + exception.Message);
             }
         }
         finally
@@ -734,15 +849,50 @@ public partial class MainWindow : Window
         }
     }
 
-    private void QueueDeferredRestore(WallpaperEntry wallpaper)
+    /// <summary>Keeps the requested wallpaper queued without claiming success.</summary>
+    private void QueueRequestedWallpaper(QueueFailureReason reason)
     {
         _state.Wallpapers = _wallpapers.ToList();
-        _state.SelectedWallpaperId = wallpaper.Id;
-        _state.PendingWallpaperId = wallpaper.Id;
-        _state.PendingActivation = true;
+        var requested = WallpaperQueue.QueuedWallpaperId(_state)
+            ?? (WallpaperList.SelectedItem as WallpaperEntry)?.Id
+            ?? _state.LastAppliedWallpaperId;
+        if (string.IsNullOrWhiteSpace(requested))
+        {
+            return;
+        }
+        if (WallpaperQueue.HasQueued(_state))
+        {
+            WallpaperQueue.RecordFailure(_state, reason, DateTimeOffset.UtcNow);
+        }
+        else
+        {
+            WallpaperQueue.Enqueue(_state, requested!, reason, DateTimeOffset.UtcNow);
+        }
+        _state.SelectedWallpaperId = requested;
         SaveState();
-        DeferredRestoreLauncher.EnsureRunning();
-        SetStatus("Codex is already running without the wallpaper channel. The selected wallpaper is queued; the current task will not be interrupted, and it will be restored automatically after Codex is next closed normally.");
+        UpdateQueuePanel();
+    }
+
+    private string DescribeApplyOutcome(WallpaperEntry wallpaper, WallpaperApplyResult applyResult)
+    {
+        var paletteStatus = _state.Settings.AutoPalette
+            ? applyResult.Palette is null
+                ? " Palette sampling was unavailable, so the neutral fallback remains active."
+                : $" Palette: surface {applyResult.Palette.Surface}, accent {applyResult.Palette.Accent}, text contrast {applyResult.Palette.TextContrast:0.0}:1."
+            : " Automatic palette is off.";
+        var modeStatus = applyResult.Mode switch
+        {
+            "live-scene" => " Live 2D scene rendering is active.",
+            "scene-partial" => " Live 2D scene rendering is active with unsupported layers omitted.",
+            "scene-static" => " The renderer used the full-resolution scene texture fallback.",
+            "wallpaper-engine-capture" => " Wallpaper Engine high-fidelity rendering and pointer interaction are active.",
+            "animated-preview" => " The low-resolution animated Workshop preview is active.",
+            "static-preview" => " The static Workshop preview fallback is active.",
+            "video" => " Direct video playback is active.",
+            _ => " Direct image playback is active."
+        };
+        var warningStatus = string.IsNullOrWhiteSpace(applyResult.Warning) ? string.Empty : " Note: " + applyResult.Warning;
+        return $"Applied {wallpaper.Title}.{modeStatus}{paletteStatus}{warningStatus} No Codex file was changed; Restore removes the whole layer.";
     }
 
     private void Upsert(WallpaperEntry entry)
@@ -764,7 +914,10 @@ public partial class MainWindow : Window
         var endpoint = EndpointTextBox.Text.Trim();
         if (!CdpEndpoint.IsLoopbackHttp(endpoint))
         {
-            throw new InvalidOperationException("CDP endpoint must be a loopback URL.");
+            // Recovery guidance replaces an unusable endpoint instead of failing
+            // with a raw validation error.
+            endpoint = CdpEndpoint.CreateUnusedLoopbackUrl();
+            EndpointTextBox.Text = endpoint;
         }
         _state.CdpBaseUrl = endpoint;
         _state.Aumid = string.IsNullOrWhiteSpace(AumidTextBox.Text) ? null : AumidTextBox.Text.Trim();
@@ -812,6 +965,9 @@ public partial class MainWindow : Window
         MessageBox.Show(this, message, "Codex Wallpaper Skin", MessageBoxButton.OK, MessageBoxImage.Warning);
     }
 
+    private static SolidColorBrush Brush(string hex) =>
+        new((Color)ColorConverter.ConvertFromString(hex));
+
     private static bool IsWpfPreviewImage(string path)
     {
         return Path.GetExtension(path).ToLowerInvariant() is ".png" or ".jpg" or ".jpeg" or ".gif";
@@ -857,8 +1013,10 @@ public partial class MainWindow : Window
             try
             {
                 _state.Wallpapers = _wallpapers.ToList();
-                _state.PendingWallpaperId = _state.LastAppliedWallpaperId;
-                _state.PendingActivation = true;
+                if (!WallpaperQueue.HasQueued(_state))
+                {
+                    WallpaperQueue.Enqueue(_state, _state.LastAppliedWallpaperId!, QueueFailureReason.None, DateTimeOffset.UtcNow);
+                }
                 StateStore.Save(_state);
                 DeferredRestoreLauncher.EnsureRunning();
             }

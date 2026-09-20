@@ -132,6 +132,27 @@ class MockElement {
 
 globalThis.HTMLElement = MockElement;
 globalThis.HTMLImageElement = MockElement;
+
+// Native capture presents frames through an off-screen back buffer, so the mock
+// Image exposes an explicit decode outcome for the atomic-presentation test.
+globalThis.captureFrameDecode = 'succeed';
+class MockImage extends MockElement {
+  constructor() { super('IMG'); this.isCaptureBuffer = true; }
+  set src(value) {
+    this._src = value;
+    const mode = globalThis.captureFrameDecode;
+    if (mode === 'defer') return;
+    setTimeout(() => {
+      if (mode === 'fail') { this.onerror?.(new Error('mock capture decode failure')); return; }
+      this.complete = true;
+      this.naturalWidth = 1920;
+      this.naturalHeight = 1080;
+      this.onload?.();
+    }, 0);
+  }
+  get src() { return this._src; }
+}
+globalThis.Image = MockImage;
 globalThis.innerWidth = 1200;
 globalThis.innerHeight = 800;
 const windowListeners = new Map();
@@ -264,6 +285,7 @@ const bootstrap = (rendererVersion, hostVersion) => {
 };
 
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 const assertThrows = (operation, message) => {
   try { operation(); } catch { return; }
   throw new Error(message);
@@ -323,13 +345,34 @@ assert(!inertOverlay.hasAttribute('data-cws-surface'), 'pointer-inert overlay wa
 
 const captureLease = 'capturelease1234567890';
 assert(window.__codexWallpaperSkinBeginCapturedStream(captureLease) === true, 'native capture lease was rejected');
-window.__codexWallpaperSkinSetCapturedFrame(captureLease, btoa('mock-jpeg-frame'));
+// Pointer tracking starts with the lease, before any frame arrives.
 windowListeners.get('pointermove')?.({ clientX: 300, clientY: 600 });
-const capturedPointer = window.__codexWallpaperSkinSetCapturedFrame(captureLease, btoa('mock-jpeg-frame-2'));
-assert(capturedPointer && Math.abs(capturedPointer.x - .25) < .001 && Math.abs(capturedPointer.y - .75) < .001,
-  'native capture pointer coordinates were not normalized');
+const earlyPointer = window.__codexWallpaperSkinReadCapturePointer(captureLease);
+assert(earlyPointer && Math.abs(earlyPointer.x - .25) < .001 && Math.abs(earlyPointer.y - .75) < .001,
+  'native capture pointer input waited for a frame');
+assert(window.__codexWallpaperSkinReadCapturePointer('stalelease123456789') === false,
+  'a stale lease could read the active pointer channel');
+
+const framePointer = window.__codexWallpaperSkinSetCapturedFrame(captureLease, btoa('mock-jpeg-frame'));
+assert(framePointer && Math.abs(framePointer.x - .25) < .001, 'native capture pointer coordinates were not normalized');
+await tick();
 assert(window.__codexWallpaperSkin.media.src.startsWith('data:image/jpeg;base64,'),
   'native capture frame was not committed to the background image');
+assert(window.__codexWallpaperSkin.captureFrameCount === 1, 'an accepted frame was not counted');
+
+// A frame that cannot be decoded must never replace the last known-good image.
+const lastGoodFrame = window.__codexWallpaperSkin.media.src;
+globalThis.captureFrameDecode = 'fail';
+window.__codexWallpaperSkinSetCapturedFrame(captureLease, btoa('undecodable-frame'));
+await tick();
+assert(window.__codexWallpaperSkin.media.src === lastGoodFrame,
+  'an undecodable frame replaced the last known-good image');
+assert(window.__codexWallpaperSkin.captureRejectedCount === 1, 'a rejected frame was not counted');
+globalThis.captureFrameDecode = 'succeed';
+
+window.__codexWallpaperSkinSetCapturedFrame(captureLease, btoa('mock-jpeg-frame-2'));
+await tick();
+assert(window.__codexWallpaperSkin.media.src !== lastGoodFrame, 'a valid frame did not replace the previous one');
 assert(window.__codexWallpaperSkinSetCapturedFrame('stalelease123456789', btoa('stale')) === false,
   'a stale native capture stream could overwrite the active lease');
 
@@ -408,4 +451,4 @@ try { bootstrap(); } catch { mismatchRefused = true; }
 assert(mismatchRefused, 'runtime did not fail closed when the Codex surface marker was missing');
 assert(Function(`return ${cleanupVerification}`)() === true, 'surface-mismatch refusal left runtime artifacts');
 
-process.stdout.write(`PASS runtime image/video/scene/palette/quality/hidden-pause/integrity/pending-cleanup/orphan-repair/restore/mismatch-refusal (${applied.palette.surface}, ${applied.palette.accent}, ${applied.palette.textContrast}:1)\n`);
+process.stdout.write(`PASS runtime image/video/scene/palette/quality/hidden-pause/integrity/pending-cleanup/orphan-repair/restore/mismatch-refusal/atomic-native-frame/pointer-channel (${applied.palette.surface}, ${applied.palette.accent}, ${applied.palette.textContrast}:1)\n`);

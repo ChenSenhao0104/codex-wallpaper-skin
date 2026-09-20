@@ -52,17 +52,20 @@ Fill this table during product convergence; it evaluates behavior, not authors o
 
 | Workshop ID / control | Codex candidate | DeepSeek candidate | Converged product | Notes/evidence |
 | --- | --- | --- | --- | --- |
-| 2935530316 |  |  |  |  |
-| 3494484288 |  |  |  |  |
-| 2914257158 |  |  |  |  |
-| 3798584436 |  |  |  |  |
-| 3801532994 |  |  |  |  |
-| 3800850100 |  |  |  |  |
-| 3799703549 |  |  |  |  |
-| 3803167460 |  |  |  |  |
-| 3799253558 |  |  |  |  |
-| 3796846129 |  |  |  |  |
-| 3756621387 |  |  |  |  |
-| Static image control |  |  |  |  |
-| Ordinary video control |  |  |  |  |
-| Application rejection control |  |  |  |  |
+| 2935530316 |  | not run |  | Local manual protocol not executed in the automated increment; see `docs/tasks/ISSUE-1-DEEPSEEK-EVIDENCE.md`. |
+| 3494484288 |  | not run |  | Local manual protocol not executed in the automated increment. |
+| 2914257158 |  | not run |  | Local manual protocol not executed in the automated increment. |
+| 3798584436 |  | not run |  | Local manual protocol not executed in the automated increment. |
+| 3801532994 |  | not run |  | Local manual protocol not executed in the automated increment. |
+| 3800850100 |  | not run |  | Local manual protocol not executed in the automated increment. |
+| 3799703549 |  | not run |  | Local manual protocol not executed in the automated increment. |
+| 3803167460 |  | not run |  | Local manual protocol not executed in the automated increment. |
+| 3799253558 |  | not run |  | Local manual protocol not executed in the automated increment. |
+| 3796846129 |  | not run |  | Local manual protocol not executed in the automated increment. |
+| 3756621387 |  | not run |  | Local manual protocol not executed in the automated increment. |
+| Static image control |  | pass (auto) |  | `scripts/runtime-smoke-test.mjs` image path unchanged. |
+| Ordinary video control |  | pass (auto) |  | `scripts/runtime-smoke-test.mjs` video path unchanged. |
+| Application rejection control |  | pass (auto) |  | `--self-test`: application projects stay rejected. |
+| Controller opened before Codex after Windows restart |  | pass (auto) |  | `--self-test`: coordinator activates the verified CDP flow, waits for readiness, then applies the queued wallpaper. |
+| Codex already open without CDP |  | pass (auto) |  | `--self-test`: no activation, no attach, wallpaper retained as queued, `LastAppliedWallpaperId` untouched. |
+| Empty/gray/transient frame |  | pass (auto) |  | `--self-test` frame-quality gate plus the Node smoke test's failed-decode last-known-good check. |

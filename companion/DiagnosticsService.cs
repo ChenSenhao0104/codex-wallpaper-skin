@@ -2,8 +2,12 @@ namespace CodexWallpaperSkin;
 
 public static class DiagnosticsService
 {
-    public static async Task<DiagnosticReport> RunAsync(AppState state, CancellationToken cancellationToken = default)
+    public static async Task<DiagnosticReport> RunAsync(
+        AppState state,
+        CancellationToken cancellationToken = default,
+        string? captureMetrics = null)
     {
+        var environment = new WindowsConnectionEnvironment();
         var report = new DiagnosticReport
         {
             StateFileExists = File.Exists(StateStore.StatePath),
@@ -15,28 +19,69 @@ public static class DiagnosticsService
         report.SavedWallpaper = selected?.EffectivePath;
         report.SavedWallpaperExists = selected?.EffectivePath is { } selectedPath && File.Exists(selectedPath);
 
+        EndpointProbe? probe = null;
         if (report.CdpEndpointIsLoopback)
         {
             try
             {
-                var endpoint = CdpEndpoint.Normalize(state.CdpBaseUrl);
-                CdpProcessIdentity.EnsureOfficialCodexOwnsPort(endpoint.Port);
-                report.Targets = (await CdpDiscovery.GetTargetsAsync(state.CdpBaseUrl, cancellationToken)).ToList();
-                report.CdpReachable = true;
-                if (report.Targets.Count == 0)
+                probe = await environment.ProbeAsync(state.CdpBaseUrl, cancellationToken);
+                report.CdpReachable = probe.CodexPageAvailable;
+                if (report.CdpReachable)
                 {
-                    report.Notes.Add("CDP answered, but no page targets were exposed.");
+                    report.Targets = (await CdpDiscovery.GetTargetsAsync(state.CdpBaseUrl, cancellationToken)).ToList();
+                    if (report.Targets.Count == 0)
+                    {
+                        report.Notes.Add("CDP answered, but no page targets were exposed.");
+                    }
                 }
+                else if (probe.PortHasListener && !probe.ListenerVerifiedAsCodex)
+                {
+                    report.CdpError = "The loopback port is owned by a listener that is not the official Codex package.";
+                    report.Notes.Add("Another program holds this port. Connect moves to a fresh loopback port instead of attaching to it.");
+                }
+                else if (probe.PortHasListener)
+                {
+                    report.CdpError = "The official Codex process owns the loopback port but has not exposed a page target yet.";
+                }
+                else
+                {
+                    report.CdpError = "No Windows listener owns the configured loopback port.";
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch (Exception exception)
             {
                 report.CdpError = exception.Message;
-                report.Notes.Add("CDP is not reachable. This tool never restarts Codex; start/activate it with a loopback remote-debugging port, then retry.");
             }
         }
         else
         {
             report.CdpError = "Saved endpoint is not an HTTP loopback URL.";
+        }
+
+        var queued = AutoRestoreService.ResolveLastWallpaper(state);
+        report.WallpaperQueued = WallpaperQueue.HasQueued(state);
+        report.QueueSummary = WallpaperQueue.Describe(state, queued);
+        var classified = ConnectionRecovery.Classify(new ConnectionProbe(
+            report.CdpEndpointIsLoopback,
+            probe?.PortHasListener ?? false,
+            probe?.ListenerVerifiedAsCodex ?? false,
+            probe?.CodexPageAvailable ?? false,
+            probe?.OfficialCodexProcessCount ?? 0,
+            report.WallpaperQueued,
+            state.PendingLastFailure));
+        report.ConnectionState = ConnectionRecovery.Badge(classified);
+        report.Notes.Add(ConnectionRecovery.Guidance(classified));
+
+        var startup = StartupRegistration.GetState();
+        report.StartupRegistration = startup.Status.ToString();
+        report.StartupRegistrationExecutable = startup.Registered?.Executable;
+        if (startup.NeedsRepair)
+        {
+            report.Notes.Add(StartupRegistration.Describe(startup));
         }
 
         var candidates = await AppActivation.FindCodexCandidatesAsync(cancellationToken);
@@ -52,6 +97,10 @@ public static class DiagnosticsService
         if (state.Settings.Blur > 0)
         {
             report.Notes.Add("Blur is enabled. Set it to 0 for the lowest GPU cost.");
+        }
+        if (!string.IsNullOrWhiteSpace(captureMetrics))
+        {
+            report.Notes.Add("Native capture: " + captureMetrics);
         }
         return report;
     }
