@@ -10,7 +10,7 @@ From lowest to highest typical cost:
 
 1. Static PNG/JPEG/WebP: one decode plus one composited texture. A decoded RGBA surface is approximately 7.9 MiB at 1080p, 14.1 MiB at 1440p, and 31.6 MiB at 4K before compositor overhead.
 2. MP4/WebM: continuous decode and composition. Hardware decode depends on the codec, driver, and machine; muted 1080p at 24/30 FPS is a recommendation.
-3. Wallpaper Engine Scene/Web capture: Wallpaper Engine renders, the bridge captures/encodes, and Chromium decodes again. Cost varies by wallpaper; this release instead uses an available static preview for those project types.
+3. Wallpaper Engine Scene capture: Wallpaper Engine renders, Windows Graphics Capture/D3D11 reads the private window (or the guarded compatibility path is used), the bridge encodes, and Chromium decodes again. Cost varies by wallpaper and capture scale.
 4. Large real-time `backdrop-filter: blur(...)`: often more expensive than a neutral alpha veil. Zero blur is recommended.
 
 Do not advertise zero overhead. Static media should normally be close to unnoticeable, while dynamic results remain machine- and wallpaper-dependent.

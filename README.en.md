@@ -50,7 +50,7 @@ After the first successful Apply, the controller remembers that wallpaper. Windo
 
 ## Performance and security
 
-Static images have the lowest overhead. Video decodes in Codex. High-fidelity Scenes use Wallpaper Engine rendering, Windows window capture, JPEG encoding, and loopback transfer, capped safely at 15 FPS and controlled by the 50%–100% render scale. Keep blur at `0`, choose the 15 FPS target, lower Scene scale, and enable pause-when-hidden for a lighter setup.
+Static images have the lowest overhead. Video decodes in Codex. High-fidelity Scenes use Wallpaper Engine rendering, Windows Graphics Capture/D3D11 (with compatibility capture fallback), JPEG encoding, and loopback transfer, capped safely at 15 FPS and controlled by the 50%–100% render scale. Keep blur at `0`, choose the 15 FPS target, lower Scene scale, and enable pause-when-hidden for a lighter setup.
 
 Frames travel only through loopback CDP into Codex renderer memory and are never uploaded by this app. High-fidelity Scenes execute inside the user's installed Wallpaper Engine and follow its security/performance settings; this app does not interpret SceneScript itself. Web wallpaper code and Application wallpapers are never run. Other processes under the same Windows user can still reach an unauthenticated CDP port, so use it only in a trusted session and fully exit the CDP-enabled Codex process to close the port.
 
@@ -62,14 +62,16 @@ Building requires the .NET 8 SDK; the full runtime test suite also needs Node.js
 
 ```powershell
 pwsh -NoProfile -File .\scripts\build-companion.ps1
-dotnet .\companion\bin\Debug\net8.0-windows\win-x64\CodexWallpaperSkin.dll --self-test
+dotnet .\companion\bin\Debug\net8.0-windows10.0.19041.0\win-x64\CodexWallpaperSkin.dll --self-test
 node .\scripts\runtime-smoke-test.mjs
+dotnet .\companion\bin\Debug\net8.0-windows10.0.19041.0\win-x64\CodexWallpaperSkin.dll --wgc-smoke-test
 ```
 
 On a development machine with Wallpaper Engine scenes installed:
 
 ```powershell
 node .\scripts\scene-render-smoke-test.mjs
+dotnet .\companion\bin\Debug\net8.0-windows10.0.19041.0\win-x64\CodexWallpaperSkin.dll --we-capture-smoke-test "D:\...\project.json"
 ```
 
 Create the self-contained executable, portable ZIP, and SHA-256 file with:

@@ -29,6 +29,6 @@ Get-FileHash ..\CodexWallpaperSkin-win-x64.zip -Algorithm SHA256
 
 将最后一条结果与 Release 页面旁的 `.sha256` 文件比较。不要全局关闭 PowerShell 执行策略或 Windows 安全功能。
 
-动态视频和 Scene 会增加解码、窗口抓取、GPU、CPU 与电池消耗；高保真 Scene 传输上限为 15 FPS。静态图、`0` 模糊、较低 Scene 比例和隐藏时暂停最省资源。画面只经 `127.0.0.1` 传入 Codex 渲染器内存，不会由本软件发往互联网；但同一 Windows 用户下的其他进程也可能访问未认证的 CDP 端口，请只在可信环境中使用。
+动态视频和 Scene 会增加解码、Windows Graphics Capture/D3D11 抓取、GPU、CPU 与电池消耗；高保真 Scene 传输上限为 15 FPS，WGC 不可用时会明确回退兼容抓取。静态图、`0` 模糊、较低 Scene 比例和隐藏时暂停最省资源。画面只经 `127.0.0.1` 传入 Codex 渲染器内存，不会由本软件发往互联网；但同一 Windows 用户下的其他进程也可能访问未认证的 CDP 端口，请只在可信环境中使用。
 
 本项目不附带 Wallpaper Engine 素材。你必须拥有 Wallpaper Engine，并遵守壁纸作者的许可。安全问题请按随包 `SECURITY.md` 的私密报告流程处理。

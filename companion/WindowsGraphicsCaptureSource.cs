@@ -1,0 +1,391 @@
+using System.Runtime.InteropServices;
+using System.Threading.Channels;
+using System.Windows;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using Windows.Graphics;
+using Windows.Graphics.Capture;
+using Windows.Graphics.DirectX;
+using Windows.Graphics.DirectX.Direct3D11;
+using WinRT;
+
+namespace CodexWallpaperSkin;
+
+/// <summary>
+/// Captures an HWND through Windows Graphics Capture and copies the newest
+/// D3D11 surface into a CPU-readable bitmap. The frame channel has capacity one
+/// so a slow consumer never builds latency by replaying obsolete animation.
+/// </summary>
+internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
+{
+    private const uint D3D11SdkVersion = 7;
+    private const uint D3D11CreateDeviceBgraSupport = 0x20;
+    private const uint D3D11CpuAccessRead = 0x20000;
+    private const int D3DDriverTypeHardware = 1;
+    private const int D3DDriverTypeWarp = 5;
+    private const int D3D11UsageStaging = 3;
+    private const int D3D11MapRead = 1;
+    private static readonly Guid GraphicsCaptureItemGuid = new("79C3F95B-31F7-4EC2-A464-632EF5D30760");
+    private static readonly Guid GraphicsCaptureItemInteropGuid = new("3628E81B-3CAC-4C60-B7F4-23CE0E0C3356");
+    private static readonly Guid DxgiDeviceGuid = new("54EC77FA-1377-44E6-8C32-88FD5F44C84C");
+    private static readonly Guid D3D11Texture2DGuid = new("6F15AAF2-D208-4E89-9AB4-489535D34F9C");
+
+    private readonly object _gate = new();
+    private readonly Channel<BitmapSource> _frames = Channel.CreateBounded<BitmapSource>(
+        new BoundedChannelOptions(1)
+        {
+            FullMode = BoundedChannelFullMode.DropOldest,
+            SingleReader = true,
+            SingleWriter = true
+        });
+    private readonly GraphicsCaptureItem _item;
+    private readonly IDirect3DDevice _winRtDevice;
+    private readonly Direct3D11CaptureFramePool _framePool;
+    private readonly GraphicsCaptureSession _captureSession;
+    private IntPtr _d3dDevice;
+    private IntPtr _d3dContext;
+    private IntPtr _stagingTexture;
+    private D3D11Texture2DDesc _stagingDescription;
+    private bool _disposed;
+
+    private WindowsGraphicsCaptureSource(
+        GraphicsCaptureItem item,
+        IDirect3DDevice winRtDevice,
+        IntPtr d3dDevice,
+        IntPtr d3dContext)
+    {
+        _item = item;
+        _winRtDevice = winRtDevice;
+        _d3dDevice = d3dDevice;
+        _d3dContext = d3dContext;
+        _framePool = Direct3D11CaptureFramePool.CreateFreeThreaded(
+            _winRtDevice,
+            DirectXPixelFormat.B8G8R8A8UIntNormalized,
+            2,
+            _item.Size);
+        _captureSession = _framePool.CreateCaptureSession(_item);
+        try { _captureSession.IsCursorCaptureEnabled = false; } catch { }
+        _framePool.FrameArrived += FramePool_FrameArrived;
+        _item.Closed += Item_Closed;
+        _captureSession.StartCapture();
+    }
+
+    public static WindowsGraphicsCaptureSource? TryStart(IntPtr window)
+    {
+        if (window == IntPtr.Zero || !GraphicsCaptureSession.IsSupported()) return null;
+        IntPtr d3dDevice = IntPtr.Zero, d3dContext = IntPtr.Zero;
+        try
+        {
+            var item = CreateItemForWindow(window);
+            if (item.Size.Width < 64 || item.Size.Height < 64) return null;
+            CreateD3DDevice(out d3dDevice, out d3dContext, out var winRtDevice);
+            return new WindowsGraphicsCaptureSource(item, winRtDevice, d3dDevice, d3dContext);
+        }
+        catch
+        {
+            if (d3dContext != IntPtr.Zero) Marshal.Release(d3dContext);
+            if (d3dDevice != IntPtr.Zero) Marshal.Release(d3dDevice);
+            return null;
+        }
+    }
+
+    public ValueTask<BitmapSource> ReadFrameAsync(CancellationToken cancellationToken) =>
+        _frames.Reader.ReadAsync(cancellationToken);
+
+    private void FramePool_FrameArrived(Direct3D11CaptureFramePool sender, object args)
+    {
+        lock (_gate)
+        {
+            if (_disposed) return;
+            try
+            {
+                using var frame = sender.TryGetNextFrame();
+                if (frame is null) return;
+                var bitmap = CopySurface(frame.Surface);
+                _frames.Writer.TryWrite(bitmap);
+            }
+            catch (Exception exception)
+            {
+                _frames.Writer.TryComplete(exception);
+            }
+        }
+    }
+
+    private void Item_Closed(GraphicsCaptureItem sender, object args) =>
+        _frames.Writer.TryComplete(new IOException("The Wallpaper Engine capture window was closed."));
+
+    private BitmapSource CopySurface(IDirect3DSurface surface)
+    {
+        var access = surface.As<IDirect3DDxgiInterfaceAccess>();
+        var textureGuid = D3D11Texture2DGuid;
+        ThrowIfFailed(access.GetInterface(ref textureGuid, out var sourceTexture));
+        try
+        {
+            var getDescription = GetComMethod<GetTexture2DDescriptionDelegate>(sourceTexture, 10);
+            getDescription(sourceTexture, out var description);
+            if (description.Width < 64 || description.Height < 64
+                || description.Width > 4096 || description.Height > 4096
+                || (long)description.Width * description.Height > 10_000_000)
+            {
+                throw new InvalidDataException("Windows Graphics Capture returned an unsafe frame size.");
+            }
+            EnsureStagingTexture(description);
+            var copyResource = GetComMethod<CopyResourceDelegate>(_d3dContext, 47);
+            copyResource(_d3dContext, _stagingTexture, sourceTexture);
+
+            var map = GetComMethod<MapDelegate>(_d3dContext, 14);
+            ThrowIfFailed(map(_d3dContext, _stagingTexture, 0, D3D11MapRead, 0, out var mapped));
+            try
+            {
+                var width = checked((int)description.Width);
+                var height = checked((int)description.Height);
+                var stride = checked(width * 4);
+                if (mapped.Data == IntPtr.Zero || mapped.RowPitch < stride)
+                {
+                    throw new InvalidDataException("Windows Graphics Capture returned an invalid mapped surface.");
+                }
+                var pixels = new byte[checked(stride * height)];
+                for (var row = 0; row < height; row++)
+                {
+                    Marshal.Copy(IntPtr.Add(mapped.Data, checked((int)(row * mapped.RowPitch))), pixels, row * stride, stride);
+                }
+                var bitmap = BitmapSource.Create(
+                    width, height, 96, 96, PixelFormats.Bgra32, null, pixels, stride);
+                bitmap.Freeze();
+                return bitmap;
+            }
+            finally
+            {
+                var unmap = GetComMethod<UnmapDelegate>(_d3dContext, 15);
+                unmap(_d3dContext, _stagingTexture, 0);
+            }
+        }
+        finally
+        {
+            Marshal.Release(sourceTexture);
+        }
+    }
+
+    private void EnsureStagingTexture(D3D11Texture2DDesc source)
+    {
+        if (_stagingTexture != IntPtr.Zero
+            && _stagingDescription.Width == source.Width
+            && _stagingDescription.Height == source.Height
+            && _stagingDescription.Format == source.Format)
+        {
+            return;
+        }
+        if (_stagingTexture != IntPtr.Zero)
+        {
+            Marshal.Release(_stagingTexture);
+            _stagingTexture = IntPtr.Zero;
+        }
+        var staging = source;
+        staging.MipLevels = 1;
+        staging.ArraySize = 1;
+        staging.SampleDescription = new DxgiSampleDescription { Count = 1, Quality = 0 };
+        staging.Usage = D3D11UsageStaging;
+        staging.BindFlags = 0;
+        staging.CpuAccessFlags = D3D11CpuAccessRead;
+        staging.MiscFlags = 0;
+        var createTexture = GetComMethod<CreateTexture2DDelegate>(_d3dDevice, 5);
+        ThrowIfFailed(createTexture(_d3dDevice, ref staging, IntPtr.Zero, out _stagingTexture));
+        _stagingDescription = staging;
+    }
+
+    private static GraphicsCaptureItem CreateItemForWindow(IntPtr window)
+    {
+        IntPtr className = IntPtr.Zero, factoryPointer = IntPtr.Zero, itemPointer = IntPtr.Zero;
+        object? factoryObject = null;
+        try
+        {
+            ThrowIfFailed(WindowsCreateString(
+                "Windows.Graphics.Capture.GraphicsCaptureItem",
+                "Windows.Graphics.Capture.GraphicsCaptureItem".Length,
+                out className));
+            var interopGuid = GraphicsCaptureItemInteropGuid;
+            ThrowIfFailed(RoGetActivationFactory(className, ref interopGuid, out factoryPointer));
+            factoryObject = Marshal.GetObjectForIUnknown(factoryPointer);
+            var interop = (IGraphicsCaptureItemInterop)factoryObject;
+            var itemGuid = GraphicsCaptureItemGuid;
+            ThrowIfFailed(interop.CreateForWindow(window, ref itemGuid, out itemPointer));
+            return GraphicsCaptureItem.FromAbi(itemPointer);
+        }
+        finally
+        {
+            if (itemPointer != IntPtr.Zero) Marshal.Release(itemPointer);
+            if (factoryObject is not null && Marshal.IsComObject(factoryObject)) Marshal.FinalReleaseComObject(factoryObject);
+            if (factoryPointer != IntPtr.Zero) Marshal.Release(factoryPointer);
+            if (className != IntPtr.Zero) WindowsDeleteString(className);
+        }
+    }
+
+    private static void CreateD3DDevice(
+        out IntPtr d3dDevice,
+        out IntPtr d3dContext,
+        out IDirect3DDevice winRtDevice)
+    {
+        var result = D3D11CreateDevice(
+            IntPtr.Zero, D3DDriverTypeHardware, IntPtr.Zero, D3D11CreateDeviceBgraSupport,
+            IntPtr.Zero, 0, D3D11SdkVersion, out d3dDevice, out _, out d3dContext);
+        if (result < 0)
+        {
+            result = D3D11CreateDevice(
+                IntPtr.Zero, D3DDriverTypeWarp, IntPtr.Zero, D3D11CreateDeviceBgraSupport,
+                IntPtr.Zero, 0, D3D11SdkVersion, out d3dDevice, out _, out d3dContext);
+        }
+        ThrowIfFailed(result);
+
+        IntPtr dxgiDevice = IntPtr.Zero, inspectable = IntPtr.Zero;
+        try
+        {
+            var dxgiGuid = DxgiDeviceGuid;
+            ThrowIfFailed(Marshal.QueryInterface(d3dDevice, ref dxgiGuid, out dxgiDevice));
+            ThrowIfFailed(CreateDirect3D11DeviceFromDXGIDevice(dxgiDevice, out inspectable));
+            winRtDevice = MarshalInterface<IDirect3DDevice>.FromAbi(inspectable);
+        }
+        catch
+        {
+            if (d3dContext != IntPtr.Zero) Marshal.Release(d3dContext);
+            if (d3dDevice != IntPtr.Zero) Marshal.Release(d3dDevice);
+            d3dContext = IntPtr.Zero;
+            d3dDevice = IntPtr.Zero;
+            throw;
+        }
+        finally
+        {
+            if (inspectable != IntPtr.Zero) Marshal.Release(inspectable);
+            if (dxgiDevice != IntPtr.Zero) Marshal.Release(dxgiDevice);
+        }
+    }
+
+    private static T GetComMethod<T>(IntPtr instance, int index) where T : Delegate
+    {
+        if (instance == IntPtr.Zero) throw new ObjectDisposedException(nameof(WindowsGraphicsCaptureSource));
+        var vtable = Marshal.ReadIntPtr(instance);
+        var function = Marshal.ReadIntPtr(vtable, checked(index * IntPtr.Size));
+        return Marshal.GetDelegateForFunctionPointer<T>(function);
+    }
+
+    private static void ThrowIfFailed(int result)
+    {
+        if (result < 0) Marshal.ThrowExceptionForHR(result);
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        lock (_gate)
+        {
+            if (_disposed) return ValueTask.CompletedTask;
+            _disposed = true;
+            _frames.Writer.TryComplete();
+            try { _framePool.FrameArrived -= FramePool_FrameArrived; } catch { }
+            try { _item.Closed -= Item_Closed; } catch { }
+            try { _captureSession.Dispose(); } catch { }
+            try { _framePool.Dispose(); } catch { }
+            if (_stagingTexture != IntPtr.Zero) Marshal.Release(_stagingTexture);
+            if (_d3dContext != IntPtr.Zero) Marshal.Release(_d3dContext);
+            if (_d3dDevice != IntPtr.Zero) Marshal.Release(_d3dDevice);
+            _stagingTexture = IntPtr.Zero;
+            _d3dContext = IntPtr.Zero;
+            _d3dDevice = IntPtr.Zero;
+        }
+        return ValueTask.CompletedTask;
+    }
+
+    [ComImport]
+    [Guid("3628E81B-3CAC-4C60-B7F4-23CE0E0C3356")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IGraphicsCaptureItemInterop
+    {
+        [PreserveSig]
+        int CreateForWindow(IntPtr window, ref Guid iid, out IntPtr result);
+
+        [PreserveSig]
+        int CreateForMonitor(IntPtr monitor, ref Guid iid, out IntPtr result);
+    }
+
+    [ComImport]
+    [Guid("A9B3D012-3DF2-4EE3-B8D1-8695F457D3C1")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IDirect3DDxgiInterfaceAccess
+    {
+        [PreserveSig]
+        int GetInterface(ref Guid iid, out IntPtr result);
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DxgiSampleDescription
+    {
+        public uint Count;
+        public uint Quality;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct D3D11Texture2DDesc
+    {
+        public uint Width;
+        public uint Height;
+        public uint MipLevels;
+        public uint ArraySize;
+        public int Format;
+        public DxgiSampleDescription SampleDescription;
+        public int Usage;
+        public uint BindFlags;
+        public uint CpuAccessFlags;
+        public uint MiscFlags;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct D3D11MappedSubresource
+    {
+        public IntPtr Data;
+        public uint RowPitch;
+        public uint DepthPitch;
+    }
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int CreateTexture2DDelegate(
+        IntPtr self, ref D3D11Texture2DDesc description, IntPtr initialData, out IntPtr texture);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate void GetTexture2DDescriptionDelegate(IntPtr self, out D3D11Texture2DDesc description);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int MapDelegate(
+        IntPtr self, IntPtr resource, uint subresource, int mapType, uint mapFlags,
+        out D3D11MappedSubresource mappedResource);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate void UnmapDelegate(IntPtr self, IntPtr resource, uint subresource);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate void CopyResourceDelegate(IntPtr self, IntPtr destination, IntPtr source);
+
+    [DllImport("combase.dll", CharSet = CharSet.Unicode)]
+    private static extern int WindowsCreateString(string source, int length, out IntPtr value);
+
+    [DllImport("combase.dll")]
+    private static extern int WindowsDeleteString(IntPtr value);
+
+    [DllImport("combase.dll")]
+    private static extern int RoGetActivationFactory(IntPtr className, ref Guid iid, out IntPtr factory);
+
+    [DllImport("d3d11.dll")]
+    private static extern int D3D11CreateDevice(
+        IntPtr adapter,
+        int driverType,
+        IntPtr software,
+        uint flags,
+        IntPtr featureLevels,
+        uint featureLevelCount,
+        uint sdkVersion,
+        out IntPtr device,
+        out uint featureLevel,
+        out IntPtr immediateContext);
+
+    [DllImport("d3d11.dll")]
+    private static extern int CreateDirect3D11DeviceFromDXGIDevice(
+        IntPtr dxgiDevice,
+        out IntPtr graphicsDevice);
+}

@@ -27,6 +27,6 @@ Get-FileHash ..\CodexWallpaperSkin-win-x64.zip -Algorithm SHA256
 
 Compare the last result with the `.sha256` file beside the release archive. Do not disable PowerShell execution policy or Windows security controls system-wide.
 
-Video and Scene backgrounds add decode, capture, GPU/CPU, and battery cost; high-fidelity Scene transfer is capped at 15 FPS. A static image, zero blur, lower Scene scale, and pause-when-hidden are the lightest choices. Frames travel only over `127.0.0.1` into Codex renderer memory and are not uploaded by this app. CDP is unauthenticated to other processes running as the same Windows user, so enable it only in a trusted session.
+Video and Scene backgrounds add decode, Windows Graphics Capture/D3D11, GPU/CPU, and battery cost; high-fidelity Scene transfer is capped at 15 FPS and explicitly falls back to compatibility capture if WGC is unavailable. A static image, zero blur, lower Scene scale, and pause-when-hidden are the lightest choices. Frames travel only over `127.0.0.1` into Codex renderer memory and are not uploaded by this app. CDP is unauthenticated to other processes running as the same Windows user, so enable it only in a trusted session.
 
 No Wallpaper Engine media is bundled. You must own Wallpaper Engine and follow each wallpaper author's license. Report security issues privately using the bundled `SECURITY.md` process.

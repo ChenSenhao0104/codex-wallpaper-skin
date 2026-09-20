@@ -67,6 +67,68 @@ public static class Program
                 return result.Success ? 0 : 1;
             }
 
+            if (args.Contains("--wgc-smoke-test", StringComparer.OrdinalIgnoreCase))
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+                Console.WriteLine(await WgcSmokeTest.RunAsync(timeout.Token));
+                return 0;
+            }
+
+            var wallpaperEngineTestIndex = Array.FindIndex(args,
+                value => value.Equals("--we-capture-smoke-test", StringComparison.OrdinalIgnoreCase));
+            if (wallpaperEngineTestIndex >= 0)
+            {
+                if (wallpaperEngineTestIndex + 1 >= args.Length)
+                {
+                    throw new ArgumentException("--we-capture-smoke-test requires a project.json path.");
+                }
+                var wallpaper = WallpaperCatalog.ParseProject(args[wallpaperEngineTestIndex + 1]);
+                if (!wallpaper.IsWallpaperEngineScene)
+                {
+                    throw new InvalidDataException("The capture smoke test accepts Wallpaper Engine Scene projects only.");
+                }
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(35));
+                await using var session = await WallpaperEngineCaptureSession.StartAsync(
+                    wallpaper,
+                    new WallpaperSettings { Muted = true, SceneFrameRate = 10, SceneResolutionScale = .75 },
+                    1600,
+                    1000,
+                    timeout.Token);
+                var streamedFrames = 0;
+                var pointerSamples = 0;
+                session.StartStreaming(
+                    (frame, _) =>
+                    {
+                        if (frame.Length > 0) Interlocked.Increment(ref streamedFrames);
+                        return Task.CompletedTask;
+                    },
+                    _ =>
+                    {
+                        var sample = Interlocked.Increment(ref pointerSamples);
+                        var phase = (sample % 90) / 89d;
+                        var x = .1 + (.8 * phase);
+                        var y = .5 + (.25 * Math.Sin(phase * Math.PI * 2));
+                        var buttons = sample % 90 is >= 30 and <= 34 ? 1 : 0;
+                        var wheel = sample % 90 == 45 ? 120 : 0;
+                        return Task.FromResult<CapturedPointer?>(
+                            new CapturedPointer(x, y, buttons, wheel, Hidden: false, Inside: true));
+                    });
+                var streamDeadline = DateTimeOffset.UtcNow.AddSeconds(5);
+                while ((Volatile.Read(ref streamedFrames) < 3 || Volatile.Read(ref pointerSamples) < 50)
+                    && DateTimeOffset.UtcNow < streamDeadline)
+                {
+                    await Task.Delay(100, timeout.Token);
+                }
+                if (Volatile.Read(ref streamedFrames) < 3 || Volatile.Read(ref pointerSamples) < 50)
+                {
+                    throw new TimeoutException(
+                        "Wallpaper Engine capture/input did not stream three usable frames and fifty pointer samples within 5 seconds.");
+                }
+                Console.WriteLine(
+                    $"PASS Wallpaper Engine capture/input ({(session.UsesWindowsGraphicsCapture ? "WGC/D3D11" : "compatibility")}, {session.InitialFrame.Length} initial bytes, {streamedFrames} streamed frames, {pointerSamples} pointer samples)");
+                return 0;
+            }
+
             if (args.Contains("--doctor", StringComparer.OrdinalIgnoreCase))
             {
                 var state = StateStore.Load();
@@ -115,7 +177,7 @@ public static class Program
                 return await DeferredRestoreLauncher.RunAsync();
             }
 
-            Console.Error.WriteLine("Usage: CodexWallpaperSkin [--doctor [--json] | --restore | --auto-restore | --wait-and-restore | --self-test]");
+            Console.Error.WriteLine("Usage: CodexWallpaperSkin [--doctor [--json] | --restore | --auto-restore | --wait-and-restore | --self-test | --wgc-smoke-test | --we-capture-smoke-test <project.json>]");
             return 64;
         }
         catch (Exception exception)

@@ -43,7 +43,7 @@ For injection-engine or Codex-compatibility changes, run all of the following; t
 
 ```powershell
 pwsh -NoProfile -File .\scripts\build-companion.ps1
-dotnet .\companion\bin\Debug\net8.0-windows\win-x64\CodexWallpaperSkin.dll --self-test
+dotnet .\companion\bin\Debug\net8.0-windows10.0.19041.0\win-x64\CodexWallpaperSkin.dll --self-test
 node .\scripts\runtime-smoke-test.mjs
 ```
 

@@ -19,7 +19,7 @@ Read this file when diagnosing a machine or explaining why a source is using a f
 | Animated GIF | Not accepted | Ask the user to convert it to MP4/WebM for lower and controllable load. |
 | Wallpaper Engine Image | Supported when its referenced image is readable | Codex loads the installed local file independently of desktop playback. |
 | Wallpaper Engine Video | Supported for MP4/WebM | Codex loads the installed local file independently; prefer a 1080p source. |
-| Wallpaper Engine Scene | Static fallback | Use the installed preview image. Live rendering requires Wallpaper Engine plus a future bounded capture adapter. |
+| Wallpaper Engine Scene | Supported with Wallpaper Engine | Render in a bounded private `playInWindow` surface; prefer Windows Graphics Capture/D3D11 and fall back to the guarded compatibility capture path. The built-in Scene renderer or preview remains an explicitly labeled final fallback. |
 | Wallpaper Engine Web | Static fallback | Use the installed preview image. Never execute third-party wallpaper JavaScript in the Codex renderer. |
 | Wallpaper Engine Application | Rejected | Never launch an arbitrary wallpaper executable. |
 

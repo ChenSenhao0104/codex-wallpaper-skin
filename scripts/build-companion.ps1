@@ -8,6 +8,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $skillRoot = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $skillRoot 'companion\CodexWallpaperSkin.Companion.csproj'
+$targetFramework = 'net8.0-windows10.0.19041.0'
 if (-not (Test-Path -LiteralPath $project -PathType Leaf)) {
   throw "Companion project not found: $project"
 }
@@ -156,7 +157,7 @@ if ($LASTEXITCODE -ne 0) { throw 'dotnet build failed.' }
 
 if ($Publish) {
   try {
-  $releaseAssembly = Join-Path $skillRoot 'companion\bin\Release\net8.0-windows\win-x64\CodexWallpaperSkin.dll'
+  $releaseAssembly = Join-Path $skillRoot "companion\bin\Release\$targetFramework\win-x64\CodexWallpaperSkin.dll"
   & $dotnet.Source $releaseAssembly --self-test
   if ($LASTEXITCODE -ne 0) { throw 'Release companion self-test failed.' }
   & $node.Source (Join-Path $PSScriptRoot 'runtime-smoke-test.mjs')
@@ -171,7 +172,7 @@ if ($Publish) {
   # The self-contained payload comes from NuGet runtime packs, which can differ
   # from the installed SDK. Copy the notices from the exact versions resolved
   # into this build rather than from the dotnet installation root.
-  $releaseDependencyPath = Join-Path $skillRoot 'companion\bin\Release\net8.0-windows\win-x64\CodexWallpaperSkin.deps.json'
+  $releaseDependencyPath = Join-Path $skillRoot "companion\bin\Release\$targetFramework\win-x64\CodexWallpaperSkin.deps.json"
   $projectAssetsPath = Join-Path $skillRoot 'companion\obj\project.assets.json'
   $releaseDependencies = Get-Content -LiteralPath $releaseDependencyPath -Raw | ConvertFrom-Json
   $projectAssets = Get-Content -LiteralPath $projectAssetsPath -Raw | ConvertFrom-Json

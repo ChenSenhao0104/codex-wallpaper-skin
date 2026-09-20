@@ -45,6 +45,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private readonly string _windowName;
     private readonly IntPtr _windowHandle;
     private readonly CancellationTokenSource _lifetime = new();
+    private WindowsGraphicsCaptureSource? _graphicsCapture;
     private Task? _streamTask;
     private int _frameRate;
     private bool _pauseWhenHidden;
@@ -58,6 +59,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         string engineExecutable,
         string windowName,
         IntPtr windowHandle,
+        WindowsGraphicsCaptureSource? graphicsCapture,
         byte[] initialFrame,
         int frameRate,
         bool pauseWhenHidden,
@@ -67,6 +69,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         _engineExecutable = engineExecutable;
         _windowName = windowName;
         _windowHandle = windowHandle;
+        _graphicsCapture = graphicsCapture;
         InitialFrame = initialFrame;
         _frameRate = NormalizeFrameRate(frameRate);
         _pauseWhenHidden = pauseWhenHidden;
@@ -75,6 +78,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     }
 
     public byte[] InitialFrame { get; }
+    public bool UsesWindowsGraphicsCapture => _graphicsCapture is not null;
     public bool IsRunning => !_disposed && _streamTask is { IsCompleted: false };
     public Task Completion => _streamTask ?? Task.CompletedTask;
 
@@ -133,9 +137,32 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                 await RunPropertyControlWithRetryAsync(controlExecutable, json, windowName, cancellationToken);
             }
 
-            var initialFrame = await CaptureFirstGoodFrameAsync(handle, cancellationToken);
+            var graphicsCapture = WindowsGraphicsCaptureSource.TryStart(handle);
+            byte[] initialFrame;
+            if (graphicsCapture is not null)
+            {
+                try
+                {
+                    initialFrame = await CaptureFirstGoodFrameAsync(graphicsCapture, cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    await graphicsCapture.DisposeAsync();
+                    throw;
+                }
+                catch
+                {
+                    await graphicsCapture.DisposeAsync();
+                    graphicsCapture = null;
+                    initialFrame = await CaptureFirstGoodFrameAsync(handle, cancellationToken);
+                }
+            }
+            else
+            {
+                initialFrame = await CaptureFirstGoodFrameAsync(handle, cancellationToken);
+            }
             return new WallpaperEngineCaptureSession(
-                controlExecutable, windowName, handle, initialFrame, settings.SceneFrameRate,
+                controlExecutable, windowName, handle, graphicsCapture, initialFrame, settings.SceneFrameRate,
                 settings.PauseWhenHidden, baseRate, baseVolume);
         }
         catch
@@ -189,7 +216,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                 var started = Stopwatch.GetTimestamp();
                 try
                 {
-                    var frame = CaptureJpeg(_windowHandle);
+                    var frame = await CaptureNextFrameAsync(cancellationToken);
                     await publishFrame(frame, cancellationToken);
                     consecutiveFailures = 0;
                 }
@@ -213,6 +240,32 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+        }
+    }
+
+    private async Task<byte[]> CaptureNextFrameAsync(CancellationToken cancellationToken)
+    {
+        var graphicsCapture = _graphicsCapture;
+        if (graphicsCapture is null) return CaptureJpeg(_windowHandle);
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(3));
+            return EncodeCapturedFrame(await graphicsCapture.ReadFrameAsync(timeout.Token));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            if (ReferenceEquals(
+                Interlocked.CompareExchange(ref _graphicsCapture, null, graphicsCapture),
+                graphicsCapture))
+            {
+                await graphicsCapture.DisposeAsync();
+            }
+            return CaptureJpeg(_windowHandle);
         }
     }
 
@@ -367,6 +420,30 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         throw new InvalidDataException("Wallpaper Engine did not produce a complete, usable frame within 8 seconds.", lastFailure);
     }
 
+    private static async Task<byte[]> CaptureFirstGoodFrameAsync(
+        WindowsGraphicsCaptureSource source,
+        CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(5));
+        Exception? lastFailure = null;
+        while (!timeout.IsCancellationRequested)
+        {
+            try
+            {
+                return EncodeCapturedFrame(await source.ReadFrameAsync(timeout.Token));
+            }
+            catch (InvalidDataException exception)
+            {
+                lastFailure = exception;
+            }
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        throw new InvalidDataException(
+            "Windows Graphics Capture did not produce a complete, usable frame within 5 seconds.",
+            lastFailure);
+    }
+
     private static byte[] CaptureJpeg(IntPtr handle)
     {
         if (!IsWindow(handle) || !GetClientRect(handle, out var rect))
@@ -401,17 +478,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
             var source = Imaging.CreateBitmapSourceFromHBitmap(
                 bitmapHandle, IntPtr.Zero, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
             source.Freeze();
-            if (!CapturedFrameQuality.IsAcceptable(source))
-            {
-                throw new InvalidDataException("Wallpaper Engine returned an empty or uniform transient frame.");
-            }
-            var encoded = EncodeJpeg(source, 85);
-            if (encoded.Length > MaximumFrameBytes) encoded = EncodeJpeg(source, 65);
-            if (encoded.Length is <= 0 or > MaximumFrameBytes)
-            {
-                throw new InvalidDataException("The captured Wallpaper Engine frame exceeded the streaming budget.");
-            }
-            return encoded;
+            return EncodeCapturedFrame(source);
         }
         finally
         {
@@ -420,6 +487,21 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
             DeleteDC(memoryDc);
             ReleaseDC(handle, windowDc);
         }
+    }
+
+    private static byte[] EncodeCapturedFrame(BitmapSource source)
+    {
+        if (!CapturedFrameQuality.IsAcceptable(source))
+        {
+            throw new InvalidDataException("Wallpaper Engine returned an empty or uniform transient frame.");
+        }
+        var encoded = EncodeJpeg(source, 85);
+        if (encoded.Length > MaximumFrameBytes) encoded = EncodeJpeg(source, 65);
+        if (encoded.Length is <= 0 or > MaximumFrameBytes)
+        {
+            throw new InvalidDataException("The captured Wallpaper Engine frame exceeded the streaming budget.");
+        }
+        return encoded;
     }
 
     private static byte[] EncodeJpeg(BitmapSource bitmap, int quality)
@@ -693,6 +775,8 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         {
             try { await _streamTask.WaitAsync(TimeSpan.FromSeconds(3)); } catch { }
         }
+        var graphicsCapture = Interlocked.Exchange(ref _graphicsCapture, null);
+        if (graphicsCapture is not null) await graphicsCapture.DisposeAsync();
         await TryCloseWindowAsync(_engineExecutable, _windowName);
         _lifetime.Dispose();
     }

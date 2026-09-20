@@ -131,8 +131,11 @@ public sealed class CdpInjectionService : IAsyncDisposable
                         return initial with
                         {
                             Mode = "wallpaper-engine-capture",
-                            Warning = "Rendered by Wallpaper Engine for full Scene fidelity and pointer interaction. "
-                                + "Keep this controller running while the animated wallpaper is active."
+                            Warning = session.UsesWindowsGraphicsCapture
+                                ? "Rendered by Wallpaper Engine and streamed through Windows Graphics Capture/D3D11. "
+                                    + "Keep this controller running while the animated wallpaper is active."
+                                : "Rendered by Wallpaper Engine with the compatibility capture path because Windows Graphics Capture was unavailable. "
+                                    + "Keep this controller running while the animated wallpaper is active."
                         };
                     }
                     catch (OperationCanceledException)

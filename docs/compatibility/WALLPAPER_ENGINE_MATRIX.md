@@ -50,6 +50,14 @@ Record `pass`, `fail`, `fallback` or `not applicable`, plus the active backend a
 
 Fill this table during product convergence; it evaluates behavior, not authors or models.
 
+Automated/local backend evidence for the Codex candidate (not a substitute for the 60-second Codex UI protocol):
+
+- Synthetic off-screen HWND: WGC/D3D11 readback passed at 622×351 BGRA32.
+- Nine installed Scene projects (`2914257158`, `2935530316`, `3798584436`, `3801532994`, `3800850100`, `3799703549`, `3803167460`, `3799253558`, `3796846129`) each passed WGC/D3D11 initialization plus three consecutive encoded frames.
+- The real-Scene smoke route also exercises 30 Hz pointer movement, left-button transitions and a wheel event; visual interaction still requires the 60-second Codex UI protocol above.
+- Pastel (`3494484288`) and the Web project (`3756621387`) were not installed at the time of this run, so no new result is claimed for them.
+- No Workshop media or captured frame was retained in the repository or test artifact.
+
 | Workshop ID / control | Codex candidate | DeepSeek candidate | Converged product | Notes/evidence |
 | --- | --- | --- | --- | --- |
 | 2935530316 |  |  |  |  |

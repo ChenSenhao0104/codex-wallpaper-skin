@@ -8,8 +8,8 @@ $ErrorActionPreference = 'Stop'
 $skillRoot = Split-Path -Parent $PSScriptRoot
 $candidates = @(
   (Join-Path $skillRoot 'dist\win-x64\CodexWallpaperSkin.exe'),
-  (Join-Path $skillRoot 'companion\bin\Release\net8.0-windows\win-x64\CodexWallpaperSkin.exe'),
-  (Join-Path $skillRoot 'companion\bin\Debug\net8.0-windows\win-x64\CodexWallpaperSkin.exe')
+  (Join-Path $skillRoot 'companion\bin\Release\net8.0-windows10.0.19041.0\win-x64\CodexWallpaperSkin.exe'),
+  (Join-Path $skillRoot 'companion\bin\Debug\net8.0-windows10.0.19041.0\win-x64\CodexWallpaperSkin.exe')
 )
 $latestSource = Get-ChildItem -LiteralPath (Join-Path $skillRoot 'companion') -File -Recurse |
   Where-Object {

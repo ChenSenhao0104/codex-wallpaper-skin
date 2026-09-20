@@ -11,6 +11,14 @@ The application bundles modified JavaScript source from **we-scene**, pinned to 
 
 Local changes add bounded package/texture/shader handling, browser lifecycle cleanup, WebGL resource limits, additional built-in material metadata, and HLSL-to-GLSL compatibility fixes. The portable release includes the license as `WE-SCENE-LICENSE.txt`.
 
+## Windows SDK .NET projections
+
+The Windows build uses Microsoft's Windows SDK .NET targeting pack and C#/WinRT runtime projection to access Windows Graphics Capture and Direct3D 11. Published packages may include `Microsoft.Windows.SDK.NET.dll` and `WinRT.Runtime.dll` from that Microsoft-provided framework pack.
+
+- Package: `Microsoft.Windows.SDK.NET.Ref`
+- Publisher: Microsoft Corporation
+- License terms: <https://aka.ms/WinSDKLicenseURL>
+
 ## Technical references
 
 The following open-source projects were consulted as primary technical references for the independently implemented loopback-CDP architecture:
