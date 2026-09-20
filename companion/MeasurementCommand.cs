@@ -29,7 +29,22 @@ internal static class MeasurementCommand
             return 64;
         }
         var seconds = ReadSeconds(args);
-        return await MeasureAsync(state, identifier, seconds, cancellationToken);
+        return await MeasureAsync(state, identifier, seconds, ReadSaveFramePath(args), cancellationToken);
+    }
+
+    /// <summary>
+    /// Reads --save-frame's path. The dump is written outside the repository by
+    /// the caller and is only ever inspected locally.
+    /// </summary>
+    private static string? ReadSaveFramePath(string[] args)
+    {
+        var index = Array.FindIndex(args, argument => argument.Equals("--save-frame", StringComparison.OrdinalIgnoreCase));
+        if (index < 0 || index + 1 >= args.Length)
+        {
+            return null;
+        }
+        var path = args[index + 1];
+        return string.IsNullOrWhiteSpace(path) ? null : Path.GetFullPath(path);
     }
 
     private static int ReadSeconds(string[] args)
@@ -78,6 +93,7 @@ internal static class MeasurementCommand
         AppState state,
         string identifier,
         int seconds,
+        string? savedFramePathParameter,
         CancellationToken cancellationToken)
     {
         var roots = WallpaperCatalog.DiscoverWorkshopRoots().ToList();
@@ -170,6 +186,21 @@ internal static class MeasurementCommand
             transport = injection.TransportMetrics;
             // Gate 8 needs the window identity before Restore clears the session.
             ownedWindowName = injection.OwnedCaptureWindowName;
+            var savedFramePath = savedFramePathParameter;
+            if (savedFramePath is not null)
+            {
+                var frame = injection.LatestCaptureFrame;
+                if (frame is null || frame.Length == 0)
+                {
+                    Console.WriteLine("Frame dump: no accepted frame was captured, so nothing was written.");
+                }
+                else
+                {
+                    await File.WriteAllBytesAsync(savedFramePath, frame, cancellationToken);
+                    Console.WriteLine($"Frame dump: wrote {frame.Length} B to {savedFramePath} for local inspection "
+                        + "(never committed).");
+                }
+            }
             PrintSummary(wallpaper, metrics, latencies, companion, resources, transport);
         }
         catch (Exception exception)

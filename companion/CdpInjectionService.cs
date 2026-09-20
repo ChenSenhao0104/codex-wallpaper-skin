@@ -57,6 +57,9 @@ public sealed class CdpInjectionService : IAsyncDisposable
     /// <summary>What the transported frames cost, or null when no stream is active.</summary>
     public CaptureTransportMetrics? TransportMetrics => _captureSession?.TransportMetrics;
 
+    /// <summary>The most recently presented native frame, for local inspection.</summary>
+    public byte[]? LatestCaptureFrame => _captureSession?.LastAcceptedFrame;
+
     /// <summary>
     /// Gate 8 check: after Restore, the private render window this session owned
     /// must be gone. Null when no session was ever started.

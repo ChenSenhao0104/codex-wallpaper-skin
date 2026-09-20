@@ -73,6 +73,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private int _windowReleased; // 0 unknown, 1 released, 2 leaked
     private string? _windowLeakReason;
     private int? _ownedEngineProcessId;
+    private byte[]? _lastAcceptedFrame;
 
     private WallpaperEngineCaptureSession(
         string engineExecutable,
@@ -133,6 +134,9 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                 milliseconds);
         }
     }
+
+    /// <summary>The most recent frame that was accepted and presented.</summary>
+    public byte[]? LastAcceptedFrame => Volatile.Read(ref _lastAcceptedFrame);
 
     /// <summary>The private render window's title, for ownership checks.</summary>
     public string WindowName => _windowName;
@@ -351,6 +355,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                             // plus the full transport round trip.
                             var publishStarted = Stopwatch.GetTimestamp();
                             await publishFrame(outcome.Frame, cancellationToken);
+                            Volatile.Write(ref _lastAcceptedFrame, outcome.Frame);
                             RecordTransport(outcome.Frame.Length, Stopwatch.GetElapsedTime(publishStarted));
                             Interlocked.Increment(ref _publishedFrames);
                             RecordPublishedFrame();
