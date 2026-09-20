@@ -7,6 +7,8 @@ public sealed class CdpInjectionService : IAsyncDisposable
     private const int UploadChunkSize = 64 * 1024;
     private const int MaximumCleanupPages = 16;
     private static readonly TimeSpan MaximumApplyDuration = TimeSpan.FromMinutes(5);
+    /// <summary>How often the supervisor re-evaluates a running capture stream.</summary>
+    private static readonly TimeSpan HealthPollInterval = TimeSpan.FromMilliseconds(1_500);
     private static readonly JsonSerializerOptions PaletteJsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -15,10 +17,39 @@ public sealed class CdpInjectionService : IAsyncDisposable
     private CdpClient? _client;
     private WallpaperEngineCaptureSession? _captureSession;
     private string? _captureToken;
+    private CancellationTokenSource? _captureRecoveryLifetime;
+    private Task? _captureRecoverySupervisor;
 
     public bool IsConnected => _client?.IsConnected == true;
     public bool HasActiveCapture => _captureSession?.IsRunning == true;
     public Task ActiveCaptureCompletion => _captureSession?.Completion ?? Task.CompletedTask;
+
+    /// <summary>Current product-facing backend state (specification section 5).</summary>
+    public WallpaperBackendStatus BackendStatus { get; private set; } = WallpaperBackendStatus.None;
+
+    /// <summary>One concise sentence explaining the current backend state.</summary>
+    public string BackendStatusDetail { get; private set; } = string.Empty;
+
+    /// <summary>Raised whenever the backend state or its explanation changes.</summary>
+    public event EventHandler? BackendStatusChanged;
+
+    private void SetBackendStatus(WallpaperBackendStatus status, string detail)
+    {
+        if (BackendStatus == status && BackendStatusDetail == detail)
+        {
+            return;
+        }
+        BackendStatus = status;
+        BackendStatusDetail = detail;
+        try
+        {
+            BackendStatusChanged?.Invoke(this, EventArgs.Empty);
+        }
+        catch
+        {
+            // A status listener must never break rendering or recovery.
+        }
+    }
 
     /// <summary>Human-readable capture health for Doctor and local measurements.</summary>
     public string? CaptureMetricsSummary => _captureSession?.MetricsSummary;
@@ -111,27 +142,14 @@ public sealed class CdpInjectionService : IAsyncDisposable
             {
                 if (WallpaperEngineCaptureSession.CanUse(wallpaper))
                 {
-                    WallpaperEngineCaptureSession? session = null;
                     try
                     {
-                        var viewport = await GetViewportAsync(client, operationToken);
-                        session = await WallpaperEngineCaptureSession.StartAsync(
-                            wallpaper, settings, viewport.Width, viewport.Height, operationToken);
-                        await using var initialFrame = new MemoryStream(session.InitialFrame, writable: false);
-                        var initial = await UploadAsync(
-                            client, initialFrame, "wallpaper-engine-capture.jpg", "image", settings, null,
-                            progress, operationToken);
-                        _captureToken = Guid.NewGuid().ToString("N");
-                        var captureStarted = await client.EvaluateAsync(
-                            $"window.__codexWallpaperSkinBeginCapturedStream({Js(_captureToken)})",
-                            operationToken);
-                        if (!ReadBoolean(captureStarted))
-                        {
-                            throw new InvalidOperationException("Codex rejected the native capture stream lease.");
-                        }
-                        _captureSession = session;
-                        session.StartStreaming(PublishCapturedFrameAsync, ReadCapturePointerAsync);
-                        return initial with
+                        var native = await StartNativeCaptureAsync(
+                            client, wallpaper, settings, progress, operationToken);
+                        SetBackendStatus(
+                            WallpaperBackendStatus.NativeDynamic,
+                            "Wallpaper Engine is rendering this scene at full fidelity.");
+                        return native with
                         {
                             Mode = "wallpaper-engine-capture",
                             Warning = "Rendered by Wallpaper Engine for full Scene fidelity and pointer interaction. "
@@ -140,79 +158,45 @@ public sealed class CdpInjectionService : IAsyncDisposable
                     }
                     catch (OperationCanceledException)
                     {
-                        if (session is not null) await session.DisposeAsync();
                         throw;
                     }
                     catch (Exception exception)
                     {
-                        if (session is not null) await session.DisposeAsync();
                         nativeCaptureFailure = exception;
                     }
                 }
 
-                // The built-in safe renderer is an explicitly limited compatibility
-                // fallback: it can only read packages inside its version and size
-                // limits, and it is never a silent substitute for native quality.
-                var scenePackagePath = WallpaperCatalog.ResolveScenePackagePath(wallpaper);
-                Exception sceneFailure;
-                if (scenePackagePath is not null && ScenePackageValidator.TryValidate(scenePackagePath, out _))
+                // The built-in safe renderer and the Workshop preview are explicitly
+                // limited compatibility fallbacks, never a silent substitute for
+                // native quality.
+                var fallback = await ApplySceneFallbackAsync(
+                    client, wallpaper, settings, progress, operationToken, nativeCaptureFailure);
+                if (fallback.Result is not null)
                 {
-                    try
-                    {
-                        await using var sceneStream = ScenePackageValidator.OpenValidated(scenePackagePath);
-                        var sceneOptions = SceneRuntimeAssets.Load(wallpaper);
-                        var limited = await UploadAsync(
-                            client, sceneStream, scenePackagePath, "scene", settings, sceneOptions,
-                            progress, operationToken);
-                        return nativeCaptureFailure is null ? limited : limited with
-                        {
-                            Warning = "Wallpaper Engine high-fidelity rendering was unavailable; the limited built-in Scene renderer was used. "
-                                + LimitMessage(nativeCaptureFailure.Message)
-                        };
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        throw;
-                    }
-                    catch (Exception exception)
-                    {
-                        sceneFailure = exception;
-                    }
-                }
-                else
-                {
-                    sceneFailure = new InvalidDataException(scenePackagePath is null
-                        ? "This Scene project keeps its content outside scene.pkg, which the built-in safe renderer cannot read."
-                        : "This scene.pkg is outside the built-in safe renderer's version or size limits.");
+                    SetBackendStatus(
+                        BackendStatuses.FromApplyMode(fallback.Result.Mode),
+                        nativeCaptureFailure is null
+                            ? "Wallpaper Engine rendering was not requested for this scene."
+                            : "Native capture was unavailable, so a labeled fallback is active. "
+                                + LimitMessage(nativeCaptureFailure.Message));
+                    return fallback.Result;
                 }
 
-                if (!string.IsNullOrWhiteSpace(wallpaper.PreviewPath))
-                {
-                    progress?.Report(0);
-                    await using var previewStream = WallpaperCatalog.OpenValidatedPreviewFile(wallpaper);
-                    var fallback = await UploadAsync(
-                        client, previewStream, wallpaper.PreviewPath!, "image", settings, null,
-                        progress, operationToken);
-                    var fallbackMode = Path.GetExtension(wallpaper.PreviewPath).Equals(".gif", StringComparison.OrdinalIgnoreCase)
-                        ? "animated-preview"
-                        : "static-preview";
-                    return fallback with
-                    {
-                        Mode = fallbackMode,
-                        Warning = "The live Scene backends were unavailable, so a validated Workshop preview is shown. "
-                            + LimitMessage(nativeCaptureFailure?.Message ?? sceneFailure.Message)
-                    };
-                }
-
+                SetBackendStatus(
+                    WallpaperBackendStatus.Unsupported,
+                    "No live Scene backend and no preview fallback is available for this project.");
                 throw new InvalidOperationException(
                     "No live Scene backend is available for this project and it has no validated preview fallback. "
-                    + LimitMessage(nativeCaptureFailure?.Message ?? sceneFailure.Message));
+                    + LimitMessage(nativeCaptureFailure?.Message ?? fallback.Failure.Message));
             }
 
             await using var stream = WallpaperCatalog.OpenValidatedMediaFile(wallpaper);
-            return await UploadAsync(
+            var direct = await UploadAsync(
                 client, stream, path, wallpaper.MediaMode, settings, null,
                 progress, operationToken);
+            SetBackendStatus(WallpaperBackendStatus.DirectMedia,
+                wallpaper.MediaMode == "video" ? "Direct video playback." : "Direct image playback.");
+            return direct;
         }
         catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
         {
@@ -305,6 +289,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
     {
         await StopCaptureAsync();
         _ = await CleanupClientAsync(RequireClient(), cancellationToken);
+        SetBackendStatus(WallpaperBackendStatus.None, string.Empty);
     }
 
     public async Task<int> CleanupAllAsync(string endpoint, CancellationToken cancellationToken = default)
@@ -362,6 +347,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
             throw new InvalidOperationException(
                 $"Restored {cleaned} of {pages.Length} Codex pages; {failures.Count} failed: {string.Join(" | ", failures)}");
         }
+        SetBackendStatus(WallpaperBackendStatus.None, string.Empty);
         return cleaned;
     }
 
@@ -392,6 +378,265 @@ public sealed class CdpInjectionService : IAsyncDisposable
         _client is { IsConnected: true }
             ? _client
             : throw new InvalidOperationException("Connect to the Codex CDP endpoint first.");
+
+    private sealed record SceneFallbackAttempt(WallpaperApplyResult? Result, Exception? Failure);
+
+    /// <summary>
+    /// Starts native Wallpaper Engine capture and its recovery supervisor.
+    /// Throws when the native path cannot start, so the caller can fall back to
+    /// an explicitly labeled renderer.
+    /// </summary>
+    private async Task<WallpaperApplyResult> StartNativeCaptureAsync(
+        CdpClient client,
+        WallpaperEntry wallpaper,
+        WallpaperSettings settings,
+        IProgress<double>? progress,
+        CancellationToken cancellationToken)
+    {
+        var viewport = await GetViewportAsync(client, cancellationToken);
+        var session = await WallpaperEngineCaptureSession.StartAsync(
+            wallpaper, settings, viewport.Width, viewport.Height, cancellationToken);
+        try
+        {
+            await using var initialFrame = new MemoryStream(session.InitialFrame, writable: false);
+            var initial = await UploadAsync(
+                client, initialFrame, "wallpaper-engine-capture.jpg", "image", settings, null,
+                progress, cancellationToken);
+            var token = Guid.NewGuid().ToString("N");
+            var captureStarted = await client.EvaluateAsync(
+                $"window.__codexWallpaperSkinBeginCapturedStream({Js(token)})", cancellationToken);
+            if (!ReadBoolean(captureStarted))
+            {
+                throw new InvalidOperationException("Codex rejected the native capture stream lease.");
+            }
+            _captureToken = token;
+            Interlocked.Exchange(ref _captureSession, session);
+            session.StartStreaming(PublishCapturedFrameAsync, ReadCapturePointerAsync);
+            StartCaptureSupervisor(wallpaper, settings);
+            return initial;
+        }
+        catch
+        {
+            await session.DisposeAsync();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Applies the labeled fallbacks in order: the safe renderer when the package
+    /// is inside its documented limits, then the validated Workshop preview.
+    /// Returns a null result plus the reason when neither is possible.
+    /// </summary>
+    private static async Task<SceneFallbackAttempt> ApplySceneFallbackAsync(
+        CdpClient client,
+        WallpaperEntry wallpaper,
+        WallpaperSettings settings,
+        IProgress<double>? progress,
+        CancellationToken cancellationToken,
+        Exception? nativeFailure)
+    {
+        var scenePackagePath = WallpaperCatalog.ResolveScenePackagePath(wallpaper);
+        Exception? sceneFailure;
+        if (scenePackagePath is not null && ScenePackageValidator.TryValidate(scenePackagePath, out _))
+        {
+            try
+            {
+                await using var sceneStream = ScenePackageValidator.OpenValidated(scenePackagePath);
+                var sceneOptions = SceneRuntimeAssets.Load(wallpaper);
+                var limited = await UploadAsync(
+                    client, sceneStream, scenePackagePath, "scene", settings, sceneOptions,
+                    progress, cancellationToken);
+                return new SceneFallbackAttempt(nativeFailure is null ? limited : limited with
+                {
+                    Warning = "Wallpaper Engine high-fidelity rendering was unavailable; the limited built-in Scene renderer was used. "
+                        + LimitMessage(nativeFailure.Message)
+                }, null);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                sceneFailure = exception;
+            }
+        }
+        else
+        {
+            sceneFailure = new InvalidDataException(scenePackagePath is null
+                ? "This Scene project keeps its content outside scene.pkg, which the built-in safe renderer cannot read."
+                : "This scene.pkg is outside the built-in safe renderer's version or size limits.");
+        }
+
+        if (string.IsNullOrWhiteSpace(wallpaper.PreviewPath))
+        {
+            return new SceneFallbackAttempt(null, sceneFailure);
+        }
+        try
+        {
+            progress?.Report(0);
+            await using var previewStream = WallpaperCatalog.OpenValidatedPreviewFile(wallpaper);
+            var fallback = await UploadAsync(
+                client, previewStream, wallpaper.PreviewPath!, "image", settings, null,
+                progress, cancellationToken);
+            var fallbackMode = Path.GetExtension(wallpaper.PreviewPath).Equals(".gif", StringComparison.OrdinalIgnoreCase)
+                ? "animated-preview"
+                : "static-preview";
+            return new SceneFallbackAttempt(fallback with
+            {
+                Mode = fallbackMode,
+                Warning = "The live Scene backends were unavailable, so a validated Workshop preview is shown. "
+                    + LimitMessage(nativeFailure?.Message ?? sceneFailure.Message)
+            }, sceneFailure);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            return new SceneFallbackAttempt(null, exception);
+        }
+    }
+
+    /// <summary>
+    /// Watches the active capture stream. A degraded stream is reported as
+    /// "native dynamic, reduced frame rate"; a stopped stream is restarted with
+    /// bounded backoff, and if that keeps failing the last good frame is replaced
+    /// by a clearly labeled fallback instead of a stale hidden session.
+    /// </summary>
+    private void StartCaptureSupervisor(WallpaperEntry wallpaper, WallpaperSettings settings)
+    {
+        var previous = Interlocked.Exchange(ref _captureRecoveryLifetime, new CancellationTokenSource());
+        previous?.Cancel();
+        var lifetime = _captureRecoveryLifetime!;
+        var supervisor = Task.Run(() => SuperviseCaptureAsync(wallpaper, settings, lifetime.Token));
+        Interlocked.Exchange(ref _captureRecoverySupervisor, supervisor);
+    }
+
+    private async Task SuperviseCaptureAsync(
+        WallpaperEntry wallpaper,
+        WallpaperSettings settings,
+        CancellationToken lifetime)
+    {
+        var consecutiveFailures = 0;
+        var lastReason = "the capture stream stopped";
+        try
+        {
+            while (!lifetime.IsCancellationRequested)
+            {
+                var session = Volatile.Read(ref _captureSession);
+                if (session is null)
+                {
+                    return;
+                }
+
+                // Report live health while the stream runs, so a stream that cannot
+                // keep up is named instead of silently degrading.
+                while (!lifetime.IsCancellationRequested && session.IsRunning)
+                {
+                    var status = CaptureRecoveryPolicy.Classify(session.Snapshot());
+                    if (status != BackendStatus)
+                    {
+                        SetBackendStatus(status, status == WallpaperBackendStatus.NativeDynamicReducedFrameRate
+                            ? "Wallpaper Engine is rendering this scene below its target frame rate."
+                            : "Wallpaper Engine is rendering this scene at full fidelity.");
+                    }
+                    await Task.Delay(HealthPollInterval, lifetime);
+                }
+                if (lifetime.IsCancellationRequested)
+                {
+                    return;
+                }
+                if (!ReferenceEquals(Volatile.Read(ref _captureSession), session))
+                {
+                    // A newer apply owns the stream now.
+                    return;
+                }
+
+                var health = session.Snapshot();
+                if (!CaptureRecoveryPolicy.HasFailed(health))
+                {
+                    // A clean stop (Restore, another apply, controller shutdown)
+                    // deliberately leaves the last presented frame in place.
+                    return;
+                }
+                if (session.FailureReason.Length > 0)
+                {
+                    lastReason = session.FailureReason;
+                }
+                consecutiveFailures++;
+                if (!CaptureRecoveryPolicy.ShouldRetry(consecutiveFailures))
+                {
+                    break;
+                }
+
+                SetBackendStatus(
+                    WallpaperBackendStatus.NativeDynamicReducedFrameRate,
+                    $"Native capture stopped ({lastReason}). Retrying ({consecutiveFailures}/{CaptureRecoveryPolicy.MaximumRecoveryAttempts})…");
+                await Task.Delay(CaptureRecoveryPolicy.BackoffForAttempt(consecutiveFailures), lifetime);
+                if (lifetime.IsCancellationRequested)
+                {
+                    return;
+                }
+                try
+                {
+                    await StartNativeCaptureAsync(RequireClient(), wallpaper, settings, null, lifetime);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+                catch (Exception exception)
+                {
+                    lastReason = exception.Message;
+                }
+            }
+
+            await ApplyCaptureExhaustedAsync(wallpaper, settings, lastReason, lifetime);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch
+        {
+            // Recovery is best effort; the last presented frame remains visible.
+        }
+    }
+
+    private async Task ApplyCaptureExhaustedAsync(
+        WallpaperEntry wallpaper,
+        WallpaperSettings settings,
+        string reason,
+        CancellationToken lifetime)
+    {
+        // Close the private render window first: no stale hidden session is left
+        // behind after the native backend gives up.
+        await CloseCaptureWindowAsync();
+        var concise = LimitMessage(reason);
+        SetBackendStatus(
+            WallpaperBackendStatus.CaptureFailed,
+            $"Native capture failed after {CaptureRecoveryPolicy.MaximumRecoveryAttempts} attempts ({concise}). A labeled fallback was applied.");
+        try
+        {
+            var fallback = await ApplySceneFallbackAsync(
+                RequireClient(), wallpaper, settings, null, lifetime,
+                new TimeoutException("Native capture failed repeatedly: " + concise));
+            if (fallback.Result is not null)
+            {
+                SetBackendStatus(
+                    BackendStatuses.FromApplyMode(fallback.Result.Mode),
+                    $"Native capture failed ({concise}); {BackendStatuses.Describe(BackendStatuses.FromApplyMode(fallback.Result.Mode))} is active instead.");
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch
+        {
+            // The labeled fallback is best effort; the failure status stands.
+        }
+    }
 
     private static async Task<(int Width, int Height)> GetViewportAsync(
         CdpClient client,
@@ -533,7 +778,33 @@ public sealed class CdpInjectionService : IAsyncDisposable
             ? Math.Clamp(value.GetDouble(), 0, 1)
             : 0.5;
 
+    /// <summary>
+    /// Stops native capture completely: cancels the recovery supervisor, closes
+    /// the private render window and releases the stream lease. Used by Restore,
+    /// reconnect and controller shutdown so nothing stale is left running.
+    /// </summary>
     private async Task StopCaptureAsync()
+    {
+        var lifetime = Interlocked.Exchange(ref _captureRecoveryLifetime, null);
+        var supervisor = Interlocked.Exchange(ref _captureRecoverySupervisor, null);
+        lifetime?.Cancel();
+        await CloseCaptureWindowAsync();
+        if (supervisor is not null)
+        {
+            try
+            {
+                await supervisor.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch
+            {
+                // A supervisor that will not settle must not block restore.
+            }
+        }
+        lifetime?.Dispose();
+    }
+
+    /// <summary>Closes the private Wallpaper Engine window without touching the supervisor.</summary>
+    private async Task CloseCaptureWindowAsync()
     {
         var capture = Interlocked.Exchange(ref _captureSession, null);
         _captureToken = null;

@@ -78,13 +78,19 @@
                 <Grid Grid.Row="1" Margin="0,12,0,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
                     <Border x:Name="ConnectionStateBadge" Grid.Column="0" Background="#1F2A3D" BorderBrush="#31527F"
                             BorderThickness="1" CornerRadius="10" Padding="10,3" VerticalAlignment="Center">
                         <TextBlock x:Name="ConnectionStateText" Text="Codex closed" FontWeight="SemiBold" Foreground="#CFE0FF"/>
                     </Border>
-                    <TextBlock x:Name="RecoveryGuidanceText" Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center"
+                    <Border x:Name="BackendStateBadge" Grid.Column="1" Background="#1A1E25" BorderBrush="#303744"
+                            BorderThickness="1" CornerRadius="10" Padding="10,3" Margin="8,0,0,0" VerticalAlignment="Center"
+                            ToolTip="Current wallpaper backend, as defined by the Issue #1 product states.">
+                        <TextBlock x:Name="BackendStateText" Text="No wallpaper" FontWeight="SemiBold" Foreground="#A8B0BF"/>
+                    </Border>
+                    <TextBlock x:Name="RecoveryGuidanceText" Grid.Column="2" Margin="12,0,0,0" VerticalAlignment="Center"
                                Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap"
                                Text="Ready. Connect to a loopback CDP endpoint to apply a background."/>
                 </Grid>

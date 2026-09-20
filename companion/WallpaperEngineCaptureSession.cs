@@ -32,7 +32,6 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private const nuint MkRightButton = 0x0002;
     private const nuint MkMiddleButton = 0x0010;
     private const int MaximumFrameBytes = 2 * 1024 * 1024;
-    private const int MaximumConsecutiveRejections = 30;
     /// <summary>
     /// Input is polled faster than frames are published so pointer responsiveness
     /// does not inherit the 10/15 FPS capture rate.
@@ -56,7 +55,12 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private readonly HashSet<CapturedMouseButton> _heldButtons = [];
     private int _publishedFrames;
     private int _rejectedFrames;
+    private int _consecutiveRejections;
+    private long _rateWindowStartedAt = Stopwatch.GetTimestamp();
+    private int _rateWindowFrames;
+    private double _effectiveFrameRate;
     private string? _lastRejectionReason;
+    private string? _failureReason;
 
     private WallpaperEngineCaptureSession(
         string engineExecutable,
@@ -95,10 +99,26 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     public int RejectedFrameCount => Volatile.Read(ref _rejectedFrames);
     public string LastRejectionReason => Volatile.Read(ref _lastRejectionReason) ?? string.Empty;
 
+    /// <summary>Why streaming ended, or empty while it is still running.</summary>
+    public string FailureReason => Volatile.Read(ref _failureReason) ?? string.Empty;
+
+    /// <summary>Observed publish rate over a rolling window.</summary>
+    public double EffectiveFrameRate => Volatile.Read(ref _effectiveFrameRate);
+
+    /// <summary>Current health of this capture stream, for status reporting.</summary>
+    public CaptureHealth Snapshot() => new(
+        IsWindow(_windowHandle),
+        PublishedFrameCount,
+        RejectedFrameCount,
+        Volatile.Read(ref _consecutiveRejections),
+        EffectiveFrameRate,
+        _frameRate);
+
     public string MetricsSummary =>
-        $"capture {_windowWidth}x{_windowHeight} at {_frameRate} FPS, {PublishedFrameCount} published, "
-        + $"{RejectedFrameCount} rejected"
-        + (LastRejectionReason.Length == 0 ? string.Empty : $" (last: {LastRejectionReason})");
+        $"capture {_windowWidth}x{_windowHeight} at {_frameRate} FPS ({EffectiveFrameRate:0.0} measured), "
+        + $"{PublishedFrameCount} published, {RejectedFrameCount} rejected"
+        + (LastRejectionReason.Length == 0 ? string.Empty : $" (last: {LastRejectionReason})")
+        + (FailureReason.Length == 0 ? string.Empty : $" (stopped: {FailureReason})");
 
     /// <summary>
     /// Native eligibility: any Wallpaper Engine Scene project whose engine is
@@ -205,7 +225,6 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         var consecutiveFailures = 0;
-        var consecutiveRejections = 0;
         var nextFrameAt = Stopwatch.GetTimestamp();
         try
         {
@@ -253,8 +272,9 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                         {
                             await publishFrame(frame, cancellationToken);
                             Interlocked.Increment(ref _publishedFrames);
+                            RecordPublishedFrame();
                             Volatile.Write(ref _lastRejectionReason, null);
-                            consecutiveRejections = 0;
+                            Volatile.Write(ref _consecutiveRejections, 0);
                         }
                         else
                         {
@@ -262,9 +282,11 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                             // the last known-good frame stays visible in Codex.
                             Interlocked.Increment(ref _rejectedFrames);
                             Volatile.Write(ref _lastRejectionReason, analysis.Reason);
-                            consecutiveRejections++;
-                            if (consecutiveRejections >= MaximumConsecutiveRejections)
+                            var rejections = Interlocked.Increment(ref _consecutiveRejections);
+                            if (rejections >= CaptureRecoveryPolicy.MaximumConsecutiveRejections)
                             {
+                                Volatile.Write(ref _failureReason,
+                                    $"{rejections} consecutive unusable frames ({analysis.Reason})");
                                 break;
                             }
                         }
@@ -274,9 +296,10 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                     {
                         break;
                     }
-                    catch
+                    catch (Exception exception)
                     {
                         consecutiveFailures++;
+                        Volatile.Write(ref _failureReason, LimitReason(exception.Message));
                         if (consecutiveFailures >= 3) break;
                     }
                 }
@@ -718,6 +741,28 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         {
         }
     }
+
+    /// <summary>
+    /// Maintains a rolling publish rate so a stream that cannot keep up can be
+    /// reported as "native dynamic, reduced frame rate" instead of silently
+    /// degrading.
+    /// </summary>
+    private void RecordPublishedFrame()
+    {
+        Interlocked.Increment(ref _rateWindowFrames);
+        var started = Volatile.Read(ref _rateWindowStartedAt);
+        var elapsed = Stopwatch.GetElapsedTime(started);
+        if (elapsed.TotalSeconds < 2)
+        {
+            return;
+        }
+        Volatile.Write(ref _effectiveFrameRate, Volatile.Read(ref _rateWindowFrames) / elapsed.TotalSeconds);
+        Volatile.Write(ref _rateWindowFrames, 0);
+        Volatile.Write(ref _rateWindowStartedAt, Stopwatch.GetTimestamp());
+    }
+
+    private static string LimitReason(string reason) =>
+        reason.Length <= 200 ? reason : reason[..200];
 
     private static int NormalizeFrameRate(int requested) => requested <= 10 ? 10 : 15;
 

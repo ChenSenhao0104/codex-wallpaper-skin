@@ -5,7 +5,8 @@ public static class DiagnosticsService
     public static async Task<DiagnosticReport> RunAsync(
         AppState state,
         CancellationToken cancellationToken = default,
-        string? captureMetrics = null)
+        string? captureMetrics = null,
+        string? backendStatus = null)
     {
         var environment = new WindowsConnectionEnvironment();
         var report = new DiagnosticReport
@@ -101,6 +102,10 @@ public static class DiagnosticsService
         if (!string.IsNullOrWhiteSpace(captureMetrics))
         {
             report.Notes.Add("Native capture: " + captureMetrics);
+        }
+        if (!string.IsNullOrWhiteSpace(backendStatus))
+        {
+            report.Notes.Add("Backend: " + backendStatus);
         }
         return report;
     }

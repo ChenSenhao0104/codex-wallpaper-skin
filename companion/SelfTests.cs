@@ -887,6 +887,78 @@ public static class SelfTests
             True(!frameBody.Contains("drainCaptureInput", StringComparison.Ordinal));
             True(frameBody.Contains("return capturePointerState();", StringComparison.Ordinal));
         });
+        Check("backend status vocabulary matches the product states", () =>
+        {
+            Equal(WallpaperBackendStatus.NativeDynamic, BackendStatuses.FromApplyMode("wallpaper-engine-capture"));
+            Equal(WallpaperBackendStatus.SafeSceneRenderer, BackendStatuses.FromApplyMode("live-scene"));
+            Equal(WallpaperBackendStatus.SafeSceneRenderer, BackendStatuses.FromApplyMode("scene-partial"));
+            Equal(WallpaperBackendStatus.SafeSceneRenderer, BackendStatuses.FromApplyMode("scene-static"));
+            Equal(WallpaperBackendStatus.AnimatedPreview, BackendStatuses.FromApplyMode("animated-preview"));
+            Equal(WallpaperBackendStatus.StaticPreview, BackendStatuses.FromApplyMode("static-preview"));
+            Equal(WallpaperBackendStatus.DirectMedia, BackendStatuses.FromApplyMode("video"));
+            Equal(WallpaperBackendStatus.DirectMedia, BackendStatuses.FromApplyMode("image"));
+            Equal(WallpaperBackendStatus.Unsupported, BackendStatuses.FromApplyMode("something-new"));
+            Equal(WallpaperBackendStatus.Unsupported, BackendStatuses.FromApplyMode(null));
+
+            // The five product states from section 5 must be individually nameable.
+            True(BackendStatuses.Describe(WallpaperBackendStatus.NativeDynamic).Contains("Native dynamic", StringComparison.Ordinal));
+            True(BackendStatuses.Describe(WallpaperBackendStatus.NativeDynamicReducedFrameRate)
+                .Contains("reduced frame rate", StringComparison.Ordinal));
+            True(BackendStatuses.Describe(WallpaperBackendStatus.SafeSceneRenderer).Length > 0);
+            True(BackendStatuses.Describe(WallpaperBackendStatus.AnimatedPreview).Contains("preview", StringComparison.Ordinal));
+            True(BackendStatuses.Describe(WallpaperBackendStatus.StaticPreview).Contains("preview", StringComparison.Ordinal));
+            True(BackendStatuses.Describe(WallpaperBackendStatus.Unsupported).Length > 0);
+            foreach (var status in Enum.GetValues<WallpaperBackendStatus>())
+            {
+                True(BackendStatuses.Describe(status).Length is > 0 and <= 48);
+            }
+            True(BackendStatuses.IsNativeCapture(WallpaperBackendStatus.NativeDynamic));
+            True(BackendStatuses.IsNativeCapture(WallpaperBackendStatus.NativeDynamicReducedFrameRate));
+            True(!BackendStatuses.IsNativeCapture(WallpaperBackendStatus.SafeSceneRenderer));
+            True(BackendStatuses.IsLabeledFallback(WallpaperBackendStatus.StaticPreview));
+            True(!BackendStatuses.IsLabeledFallback(WallpaperBackendStatus.CaptureFailed));
+        });
+        Check("capture health classifies degraded and failed streams", () =>
+        {
+            // A healthy stream at its target rate.
+            Equal(WallpaperBackendStatus.NativeDynamic, CaptureRecoveryPolicy.Classify(
+                new CaptureHealth(true, 30, 0, 0, 15, 15)));
+            // Below 70% of the target the product must say so.
+            Equal(WallpaperBackendStatus.NativeDynamicReducedFrameRate, CaptureRecoveryPolicy.Classify(
+                new CaptureHealth(true, 30, 0, 0, 9, 15)));
+            Equal(WallpaperBackendStatus.NativeDynamicReducedFrameRate, CaptureRecoveryPolicy.Classify(
+                new CaptureHealth(true, 30, 0, 0, 0, 15)));
+            // A stream that just started has no meaningful rate yet: never degraded
+            // on the first samples, or every apply would report a false alarm.
+            Equal(WallpaperBackendStatus.NativeDynamic, CaptureRecoveryPolicy.Classify(
+                new CaptureHealth(true, 1, 0, 0, 0, 15)));
+            True(!CaptureRecoveryPolicy.IsDegraded(new CaptureHealth(true, 2, 1, 1, 0, 15)));
+            // The render window disappearing is a failure.
+            Equal(WallpaperBackendStatus.CaptureFailed, CaptureRecoveryPolicy.Classify(
+                new CaptureHealth(false, 500, 1, 0, 15, 15)));
+            // So is a run of unusable frames.
+            Equal(WallpaperBackendStatus.CaptureFailed, CaptureRecoveryPolicy.Classify(
+                new CaptureHealth(true, 5, 40, CaptureRecoveryPolicy.MaximumConsecutiveRejections, 15, 15)));
+            True(CaptureRecoveryPolicy.HasFailed(new CaptureHealth(
+                true, 0, 0, CaptureRecoveryPolicy.MaximumConsecutiveRejections, 0, 15)));
+            True(!CaptureRecoveryPolicy.HasFailed(new CaptureHealth(
+                true, 0, 0, CaptureRecoveryPolicy.MaximumConsecutiveRejections - 1, 0, 15)));
+        });
+        Check("capture recovery backoff is bounded and monotonic", () =>
+        {
+            True(CaptureRecoveryPolicy.ShouldRetry(1));
+            True(CaptureRecoveryPolicy.ShouldRetry(CaptureRecoveryPolicy.MaximumRecoveryAttempts - 1));
+            True(!CaptureRecoveryPolicy.ShouldRetry(CaptureRecoveryPolicy.MaximumRecoveryAttempts));
+            True(!CaptureRecoveryPolicy.ShouldRetry(CaptureRecoveryPolicy.MaximumRecoveryAttempts + 5));
+
+            var first = CaptureRecoveryPolicy.BackoffForAttempt(1);
+            var second = CaptureRecoveryPolicy.BackoffForAttempt(2);
+            var third = CaptureRecoveryPolicy.BackoffForAttempt(3);
+            var later = CaptureRecoveryPolicy.BackoffForAttempt(50);
+            True(first > TimeSpan.Zero && first <= second && second <= third && third <= later);
+            True(later <= TimeSpan.FromSeconds(5));
+            Equal(first, CaptureRecoveryPolicy.BackoffForAttempt(0));
+        });
         Check("native frames are presented atomically", () =>
         {
             var bootstrap = CdpInjectionService.BootstrapScript;

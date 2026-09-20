@@ -72,6 +72,52 @@ public partial class MainWindow : Window
         Closing += MainWindow_Closing;
         Closed += MainWindow_Closed;
         Loaded += MainWindow_Loaded;
+        _injection.BackendStatusChanged += BackendStatusChanged;
+        RefreshBackendBadge();
+    }
+
+    /// <summary>
+    /// Surfaces the live backend state. A stream that cannot keep up, or one that
+    /// gave up and fell back, must be visible rather than silently degrading.
+    /// </summary>
+    private void BackendStatusChanged(object? sender, EventArgs e)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            _ = Dispatcher.BeginInvoke(new Action(BackendStatusChangedCore));
+            return;
+        }
+        BackendStatusChangedCore();
+    }
+
+    private void BackendStatusChangedCore()
+    {
+        RefreshBackendBadge();
+        var status = _injection.BackendStatus;
+        if (status is WallpaperBackendStatus.NativeDynamicReducedFrameRate or WallpaperBackendStatus.CaptureFailed
+            && !string.IsNullOrWhiteSpace(_injection.BackendStatusDetail))
+        {
+            SetStatus(_injection.BackendStatusDetail);
+        }
+    }
+
+    private void RefreshBackendBadge()
+    {
+        var status = _injection.BackendStatus;
+        BackendStateText.Text = BackendStatuses.Describe(status);
+        var (background, border, foreground) = status switch
+        {
+            WallpaperBackendStatus.NativeDynamic => ("#12301F", "#2F7A4A", "#C9F2D8"),
+            WallpaperBackendStatus.NativeDynamicReducedFrameRate => ("#2A2213", "#6B5620", "#FFE1A8"),
+            WallpaperBackendStatus.CaptureFailed => ("#331A1E", "#7A3140", "#FFD2D9"),
+            WallpaperBackendStatus.SafeSceneRenderer => ("#1F2A3D", "#31527F", "#CFE0FF"),
+            WallpaperBackendStatus.Unsupported => ("#331A1E", "#7A3140", "#FFD2D9"),
+            WallpaperBackendStatus.None => ("#1A1E25", "#303744", "#A8B0BF"),
+            _ => ("#1F2A3D", "#31527F", "#CFE0FF")
+        };
+        BackendStateBadge.Background = Brush(background);
+        BackendStateBadge.BorderBrush = Brush(border);
+        BackendStateText.Foreground = Brush(foreground);
     }
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -268,7 +314,12 @@ public partial class MainWindow : Window
         await RunBusyAsync(async cancellationToken =>
         {
             SyncConnectionState();
-            var report = await DiagnosticsService.RunAsync(_state, cancellationToken, _injection.CaptureMetricsSummary);
+            var report = await DiagnosticsService.RunAsync(
+                _state,
+                cancellationToken,
+                _injection.CaptureMetricsSummary,
+                BackendStatuses.Describe(_injection.BackendStatus)
+                    + (string.IsNullOrWhiteSpace(_injection.BackendStatusDetail) ? string.Empty : " — " + _injection.BackendStatusDetail));
             var text = JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true });
             var dialog = new DiagnosticWindow(text) { Owner = this };
             dialog.ShowDialog();
