@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace CodexWallpaperSkin;
@@ -18,7 +19,12 @@ public enum WallpaperSupport
     StaticPreview,
     Rejected,
     AnimatedPreview,
-    LiveScene
+    LiveScene,
+    // Written by the DeepSeek preview branch for Wallpaper Engine scenes that
+    // are handed to Wallpaper Engine rather than parsed by the safe fallback.
+    // The Codex branch already selects its native backend from ProjectPath and
+    // Kind, so recognizing this value is sufficient to load the shared catalog.
+    NativeScene
 }
 
 public enum WallpaperFit
@@ -141,7 +147,7 @@ public sealed class PaletteResult
 
 public sealed class AppState
 {
-    public const int CurrentSchema = 5;
+    public const int CurrentSchema = 6;
     public int SchemaVersion { get; set; } = CurrentSchema;
     public string CdpBaseUrl { get; set; } = CdpEndpoint.CreateUnusedLoopbackUrl();
     public string? Aumid { get; set; }
@@ -153,6 +159,12 @@ public sealed class AppState
     public bool AutoRestoreOnLaunch { get; set; } = true;
     public List<WallpaperEntry> Wallpapers { get; set; } = [];
     public WallpaperSettings Settings { get; set; } = new();
+
+    // Preview branches may add schema-6 queue metadata independently. Preserve
+    // fields this branch does not interpret so alternating builds cannot erase
+    // one another's state when they save the shared user profile.
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? ExtensionData { get; set; }
 }
 
 public sealed record WallpaperApplyResult(PaletteResult? Palette, string Mode, string? Warning);

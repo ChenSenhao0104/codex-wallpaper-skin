@@ -158,6 +158,12 @@ public static class StateStore
             state.PendingActivation = false;
             state.SchemaVersion = 5;
         }
+        if (state.SchemaVersion < 6)
+        {
+            // Schema 6 is shared with the sibling preview branch. Its optional
+            // queue metadata is retained through AppState.JsonExtensionData.
+            state.SchemaVersion = 6;
+        }
     }
 
     private static string Limit(string? value, int maximumLength, string fallback)

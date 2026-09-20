@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace CodexWallpaperSkin;
 
@@ -99,6 +100,42 @@ public static class SelfTests
                     .ToList()
             };
             Throws<InvalidDataException>(() => StateStore.ValidateStateForSave(state));
+        });
+        Check("schema 6 sibling state round-trips without data loss", () =>
+        {
+            const string json = """
+                {
+                  "SchemaVersion": 6,
+                  "CdpBaseUrl": "http://127.0.0.1:60239",
+                  "PendingAttempts": 2,
+                  "PendingLastFailure": "CdpNotReady",
+                  "Wallpapers": [
+                    {
+                      "Id": "workshop:test",
+                      "Title": "Native scene",
+                      "Source": "Wallpaper Engine",
+                      "ProjectPath": "C:\\wallpaper\\project.json",
+                      "Kind": "Scene",
+                      "Support": "NativeScene",
+                      "Note": ""
+                    }
+                  ],
+                  "Settings": {}
+                }
+                """;
+            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            options.Converters.Add(new JsonStringEnumConverter());
+            var state = JsonSerializer.Deserialize<AppState>(json, options)
+                ?? throw new InvalidDataException("Schema 6 test state did not deserialize.");
+            Equal(6, state.SchemaVersion);
+            Equal(WallpaperSupport.NativeScene, state.Wallpapers.Single().Support);
+            True(state.Wallpapers.Single().IsWallpaperEngineScene);
+            True(state.ExtensionData?.ContainsKey("PendingAttempts") == true);
+            StateStore.ValidateStateForSave(state);
+
+            using var roundTrip = JsonDocument.Parse(JsonSerializer.Serialize(state, options));
+            Equal(2, roundTrip.RootElement.GetProperty("PendingAttempts").GetInt32());
+            Equal("CdpNotReady", roundTrip.RootElement.GetProperty("PendingLastFailure").GetString());
         });
         Check("last applied wallpaper resolves safely", () =>
         {
