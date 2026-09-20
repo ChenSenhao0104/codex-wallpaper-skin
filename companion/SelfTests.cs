@@ -959,6 +959,35 @@ public static class SelfTests
             True(later <= TimeSpan.FromSeconds(5));
             Equal(first, CaptureRecoveryPolicy.BackoffForAttempt(0));
         });
+        Check("unchanged surfaces are not re-transported", () =>
+        {
+            var first = new byte[256 * 4];
+            var second = new byte[256 * 4];
+            for (var offset = 0; offset < first.Length; offset += 4)
+            {
+                var value = (byte)(offset / 4 % 200);
+                first[offset] = value;
+                first[offset + 1] = value;
+                first[offset + 2] = (byte)(255 - value);
+                first[offset + 3] = 255;
+            }
+            Array.Copy(first, second, first.Length);
+
+            var firstSignature = FrameSignature.Compute(first);
+            Equal(firstSignature, FrameSignature.Compute(second));
+            // Nothing has been presented yet, so the first surface always ships.
+            True(FrameSignature.ShouldPublish(firstSignature, 0, hasPublished: false));
+            True(!FrameSignature.ShouldPublish(firstSignature, firstSignature, hasPublished: true));
+
+            // A single changed sample invalidates the fingerprint.
+            second[40] = (byte)(second[40] ^ 0xFF);
+            True(FrameSignature.Compute(second) != firstSignature);
+            True(FrameSignature.ShouldPublish(FrameSignature.Compute(second), firstSignature, hasPublished: true));
+
+            // A truncated surface cannot collide with its own prefix.
+            True(FrameSignature.Compute(first.AsSpan(0, first.Length - 4)) != firstSignature);
+            True(!FrameSignature.ShouldPublish(0, 0, hasPublished: true));
+        });
         Check("native frames are presented atomically", () =>
         {
             var bootstrap = CdpInjectionService.BootstrapScript;

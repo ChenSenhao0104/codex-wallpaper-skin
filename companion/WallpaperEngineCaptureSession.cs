@@ -55,6 +55,9 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private readonly HashSet<CapturedMouseButton> _heldButtons = [];
     private int _publishedFrames;
     private int _rejectedFrames;
+    private int _skippedUnchangedFrames;
+    private uint _lastPublishedSignature;
+    private bool _hasPublishedFrame;
     private int _consecutiveRejections;
     private long _rateWindowStartedAt = Stopwatch.GetTimestamp();
     private int _rateWindowFrames;
@@ -97,6 +100,9 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     /// <summary>Frames accepted, published and rejected since streaming started.</summary>
     public int PublishedFrameCount => Volatile.Read(ref _publishedFrames);
     public int RejectedFrameCount => Volatile.Read(ref _rejectedFrames);
+
+    /// <summary>Frames skipped because the surface had not changed.</summary>
+    public int SkippedUnchangedFrameCount => Volatile.Read(ref _skippedUnchangedFrames);
     public string LastRejectionReason => Volatile.Read(ref _lastRejectionReason) ?? string.Empty;
 
     /// <summary>Why streaming ended, or empty while it is still running.</summary>
@@ -116,7 +122,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
 
     public string MetricsSummary =>
         $"capture {_windowWidth}x{_windowHeight} at {_frameRate} FPS ({EffectiveFrameRate:0.0} measured), "
-        + $"{PublishedFrameCount} published, {RejectedFrameCount} rejected"
+        + $"{PublishedFrameCount} published, {RejectedFrameCount} rejected, {SkippedUnchangedFrameCount} unchanged"
         + (LastRejectionReason.Length == 0 ? string.Empty : $" (last: {LastRejectionReason})")
         + (FailureReason.Length == 0 ? string.Empty : $" (stopped: {FailureReason})");
 
@@ -267,12 +273,23 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                     nextFrameAt = Stopwatch.GetTimestamp();
                     try
                     {
-                        var analysis = CaptureFrame(_windowHandle, out var frame);
-                        if (frame is not null && analysis.Acceptable)
+                        var outcome = CaptureSurface(
+                            _windowHandle, Volatile.Read(ref _lastPublishedSignature), _hasPublishedFrame);
+                        if (outcome.Unchanged)
                         {
-                            await publishFrame(frame, cancellationToken);
+                            // The surface is identical to what is already on screen,
+                            // so it is not re-encoded and not re-sent. That is the
+                            // cheapest correct steady state for a mostly static scene.
+                            Interlocked.Increment(ref _skippedUnchangedFrames);
+                            Volatile.Write(ref _consecutiveRejections, 0);
+                        }
+                        else if (outcome.Frame is not null && outcome.Quality.Acceptable)
+                        {
+                            await publishFrame(outcome.Frame, cancellationToken);
                             Interlocked.Increment(ref _publishedFrames);
                             RecordPublishedFrame();
+                            Volatile.Write(ref _lastPublishedSignature, outcome.Signature);
+                            _hasPublishedFrame = true;
                             Volatile.Write(ref _lastRejectionReason, null);
                             Volatile.Write(ref _consecutiveRejections, 0);
                         }
@@ -281,12 +298,12 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                             // Empty, uniform and partial surfaces are never presented;
                             // the last known-good frame stays visible in Codex.
                             Interlocked.Increment(ref _rejectedFrames);
-                            Volatile.Write(ref _lastRejectionReason, analysis.Reason);
+                            Volatile.Write(ref _lastRejectionReason, outcome.Quality.Reason);
                             var rejections = Interlocked.Increment(ref _consecutiveRejections);
                             if (rejections >= CaptureRecoveryPolicy.MaximumConsecutiveRejections)
                             {
                                 Volatile.Write(ref _failureReason,
-                                    $"{rejections} consecutive unusable frames ({analysis.Reason})");
+                                    $"{rejections} consecutive unusable frames ({outcome.Quality.Reason})");
                                 break;
                             }
                         }
@@ -414,22 +431,29 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
 
     private static byte[] CaptureInitialFrame(IntPtr handle)
     {
-        var analysis = CaptureFrame(handle, out var frame);
-        if (frame is null)
+        var outcome = CaptureSurface(handle, lastPublishedSignature: 0, hasPublished: false);
+        if (outcome.Frame is null)
         {
             throw new InvalidDataException(
-                "Wallpaper Engine has not produced a usable first frame yet: " + analysis.Reason);
+                "Wallpaper Engine has not produced a usable first frame yet: " + outcome.Quality.Reason);
         }
-        return frame;
+        return outcome.Frame;
     }
 
+    private readonly record struct CaptureOutcome(
+        FrameQuality Quality,
+        byte[]? Frame,
+        bool Unchanged,
+        uint Signature);
+
     /// <summary>
-    /// Captures one surface and classifies it. <paramref name="frame"/> is null
-    /// when the surface must not be presented; the caller keeps the previous one.
+    /// Captures one surface, classifies it, and decides whether it is worth
+    /// transporting. <c>Frame</c> is null when the surface must not be presented
+    /// (rejected) or need not be (identical to what is already on screen).
     /// </summary>
-    private static FrameQuality CaptureFrame(IntPtr handle, out byte[]? frame)
+    private static CaptureOutcome CaptureSurface(
+        IntPtr handle, uint lastPublishedSignature, bool hasPublished)
     {
-        frame = null;
         if (!IsWindow(handle) || !GetClientRect(handle, out var rect))
         {
             throw new IOException("The Wallpaper Engine render window is no longer available.");
@@ -463,22 +487,31 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                 bitmapHandle, IntPtr.Zero, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
             source.Freeze();
 
-            // Reject empty, uniform and stale surfaces before they reach Codex.
+            // One sampled pass serves both the quality gate and the change check,
+            // so an unchanged surface costs no JPEG encoding at all.
             var samples = SampleSurface(source);
             var quality = FrameQualityEvaluator.Evaluate(samples);
+            var signature = FrameSignature.Compute(samples);
             if (!quality.Acceptable)
             {
-                return quality;
+                return new CaptureOutcome(quality, null, false, signature);
+            }
+            if (!FrameSignature.ShouldPublish(signature, lastPublishedSignature, hasPublished))
+            {
+                return new CaptureOutcome(quality, null, true, signature);
             }
 
             var encoded = EncodeJpeg(source, 85);
             if (encoded.Length > MaximumFrameBytes) encoded = EncodeJpeg(source, 65);
             if (encoded.Length is <= 0 or > MaximumFrameBytes)
             {
-                return quality with { Reason = "The captured frame exceeded the streaming budget." };
+                return new CaptureOutcome(
+                    quality with { Reason = "The captured frame exceeded the streaming budget." },
+                    null,
+                    false,
+                    signature);
             }
-            frame = encoded;
-            return quality;
+            return new CaptureOutcome(quality, encoded, false, signature);
         }
         finally
         {

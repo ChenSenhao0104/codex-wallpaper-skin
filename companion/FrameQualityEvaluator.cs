@@ -64,3 +64,32 @@ public static class FrameQualityEvaluator
         return new FrameQuality(samples, mean, spread, string.Empty);
     }
 }
+
+/// <summary>
+/// A cheap content fingerprint of a captured surface. Steady-state transport is
+/// the most expensive part of the native path, so an unchanged surface is not
+/// re-encoded and re-sent: the frame already on screen is identical.
+/// </summary>
+public static class FrameSignature
+{
+    private const uint FnvOffsetBasis = 2_166_136_261;
+    private const uint FnvPrime = 16_777_619;
+
+    public static uint Compute(ReadOnlySpan<byte> sampledBgra)
+    {
+        var hash = FnvOffsetBasis;
+        foreach (var value in sampledBgra)
+        {
+            hash = (hash ^ value) * FnvPrime;
+        }
+        // Fold the length in so a truncated surface cannot collide with its prefix.
+        return (hash ^ (uint)sampledBgra.Length) * FnvPrime;
+    }
+
+    /// <summary>
+    /// True when this surface must be transported: either nothing has been
+    /// presented yet, or the visible frame differs from the captured one.
+    /// </summary>
+    public static bool ShouldPublish(uint signature, uint lastPublishedSignature, bool hasPublished) =>
+        !hasPublished || signature != lastPublishedSignature;
+}

@@ -16,6 +16,8 @@ Three increments are recorded here.
 
 **Increment 4** covers section 5 (product states and recovery): the five required backend states are now first-class product states with a live GUI badge, a capture stream that cannot keep up is reported as *native dynamic, reduced frame rate* instead of silently degrading, and a stream that stops is restarted with bounded backoff before falling back to an explicitly labeled renderer — with the private render window closed so no stale hidden session is left behind.
 
+**Increment 5** covers the part of section 3 that can be implemented and verified without a live Wallpaper Engine session: steady-state transport cost. A captured surface that is identical to the frame already on screen is no longer re-encoded or re-sent, one sampled pass now serves both the quality gate and the change check, and the skip is visible in Doctor as an `unchanged` counter.
+
 ### Changed boundaries
 
 | Area | Before | After |
@@ -65,6 +67,17 @@ Codex is never terminated, and the coordinator never attaches to a listener that
 - Movement is state rather than an event, so a burst of moves costs one `WM_MOUSEMOVE`; button and wheel transitions keep their exact order. If the bounded queue ever overflows, the overflow is reported and every held button is released instead of silently reordering input.
 - `CapturePointerTransform` maps the normalized Codex position through device scale and the aspect-fitted content rect (Wallpaper Engine letterboxes when the surface aspect differs from the Codex viewport), and converts browser wheel deltas into `WM_MOUSEWHEEL` rotation in the documented units.
 
+### Section 3 status (capture and transport)
+
+| Section 3 requirement | Status | Notes |
+| --- | --- | --- |
+| Prefer Windows Graphics Capture backed by D3D11 | **not implemented** | The production path is still `PrintWindow` on a private `-playInWindow` surface. See the decision request in the hand-off notes: hand-rolled WGC/D3D11 COM interop cannot be validated in this environment, and the alternative (a `Vortice.Windows` package reference) would add the project's first external dependency. |
+| Documented fallback where WGC is unavailable | documented | The `PrintWindow` path is the fallback and is described here and in section 8; nothing is silent about which path is active. |
+| Avoid full-frame JPEG/Base64/CDP transfer in the steady state | **partly implemented** | An unchanged surface is no longer encoded or transported, and only genuinely changed frames are sent. Frames are still JPEG/Base64 over CDP when they do change. |
+| Preserve aspect ratio and composition at the actual viewport/DPI | implemented | The render window is created from the Codex viewport in device pixels; the pointer mapping reverses the resulting letterbox. Visual confirmation still needs the live session. |
+| Atomic presentation and last known-good frame | implemented | Off-screen decode plus `onload` swap; rejected and unchanged frames leave the visible frame untouched. |
+| Reject empty, uniform, stale, partial and low-resolution frames | **mostly implemented** | Empty, uniform/black/white, over/under-sized and over-budget frames are rejected before transport. A partially painted surface that is not uniform (for example half black) is not detected; detecting it reliably without rejecting legitimate flat regions needs live data. |
+
 ## 5. How section 5 is satisfied
 
 | Requirement | Implementation | Verified by |
@@ -90,7 +103,7 @@ dotnet ./companion/bin/Debug/net8.0-windows/win-x64/CodexWallpaperSkin.dll --sel
 node ./scripts/runtime-smoke-test.mjs
 ```
 
-`--self-test` covers 37 checks, including the 20 recovery, queue, invocation, eligibility, input, backend-state and frame-quality checks added by these increments. `scripts/runtime-smoke-test.mjs` additionally exercises the atomic native frame swap, the last-known-good retention on a failed decode, ordered input delivery (buttons, wheel, leave), movement coalescing, the existing image/video/scene/palette paths, hidden-document pause, cleanup and mismatch refusal.
+`--self-test` covers 38 checks, including the 21 recovery, queue, invocation, eligibility, input, backend-state and frame checks added by these increments. `scripts/runtime-smoke-test.mjs` additionally exercises the atomic native frame swap, the last-known-good retention on a failed decode, ordered input delivery (buttons, wheel, leave), movement coalescing, the existing image/video/scene/palette paths, hidden-document pause, cleanup and mismatch refusal.
 
 Synthetic fixtures only:
 
@@ -105,7 +118,8 @@ The local manual protocol in `docs/compatibility/WALLPAPER_ENGINE_MATRIX.md` req
 
 ## 8. Known limitations and fallbacks
 
-- The high-fidelity capture path still uses `PrintWindow` on a private `-playInWindow` surface. Windows Graphics Capture with D3D11 (section 3) is not implemented yet; the quality gate and atomic presentation mitigate the visible symptoms but not the transport cost.
+- The high-fidelity capture path still uses `PrintWindow` on a private `-playInWindow` surface. Windows Graphics Capture with D3D11 (section 3) is not implemented; the quality gate, unchanged-frame skip and atomic presentation mitigate the visible symptoms and the transport cost, but each changed frame is still a full-frame JPEG transfer.
+- An unchanged surface is detected from a sampled fingerprint, not from a full-frame comparison, so a change confined entirely to unsampled rows could be missed until the next change in a sampled row. The sample covers up to 48 evenly spaced rows.
 - `-playInWindow` capture is capped at 1920x1200 and 10/15 FPS by the existing scene-quality controls.
 - Input is delivered by `PostMessage` to the private render window, which is what interactive Scenes consume; a Scene that requires real OS pointer capture may still behave differently, and that cannot be judged without the live session.
 - `WM_MOUSEWHEEL` carries screen coordinates, so the client point is converted with `ClientToScreen`; if that call fails the wheel event is skipped rather than sent with wrong coordinates.
