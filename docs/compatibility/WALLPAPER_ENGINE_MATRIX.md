@@ -52,7 +52,7 @@ Fill this table during product convergence; it evaluates behavior, not authors o
 
 | Workshop ID / control | Codex candidate | DeepSeek candidate | Converged product | Notes/evidence |
 | --- | --- | --- | --- | --- |
-| 2935530316 |  | not run |  | Local manual protocol not executed in the automated increment; see `docs/tasks/ISSUE-1-DEEPSEEK-EVIDENCE.md`. |
+| 2935530316 |  | measured |  | Live session 2026-09-20, 60 s, native dynamic: 713 and 652 frames published, 0 rejected, 10.5–11.9 FPS against a 15 FPS target, input latency median 1.6–1.8 ms, restore verified. The framing/sharpness/flashing verdict still needs a human at the screen; see `docs/tasks/ISSUE-1-DEEPSEEK-EVIDENCE.md`. |
 | 3494484288 |  | not run |  | Local manual protocol not executed in the automated increment. |
 | 2914257158 |  | not run |  | Pointer movement, buttons and wheel are transported and covered by synthetic tests; whether the water actually follows the pointer still needs the local manual protocol. |
 | 3798584436 |  | not run |  | Native eligibility for PKGV0024 is verified automatically (`--self-test`); visual fidelity still needs the local manual protocol. |

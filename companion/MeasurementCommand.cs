@@ -112,7 +112,10 @@ internal static class MeasurementCommand
         try
         {
             await injection.ConnectAsync(state.CdpBaseUrl, cancellationToken);
-            var applyResult = await injection.ApplyAsync(wallpaper, state.Settings, cancellationToken: cancellationToken);
+            var settings = MeasurementSettings();
+            Console.WriteLine("Settings: fit=cover, opacity=1, overlay=0, blur=0, brightness/contrast/saturation=1, "
+                + "sceneFps=15, sceneScale=1, pauseWhenHidden=false");
+            var applyResult = await injection.ApplyAsync(wallpaper, settings, cancellationToken: cancellationToken);
             applied = true;
             Console.WriteLine($"Applied: mode={applyResult.Mode}");
             if (!string.IsNullOrWhiteSpace(applyResult.Warning))
@@ -126,10 +129,18 @@ internal static class MeasurementCommand
             var lastPublished = 0;
             var lastSampleAt = DateTimeOffset.UtcNow;
             var rates = new List<double>();
+            var resources = new List<ResourceSample>();
+            var tick = 0;
             while (DateTimeOffset.UtcNow < deadline)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+                // Resource sampling walks every Codex process, so it runs less
+                // often than the frame counter.
+                if (tick++ % 5 == 0)
+                {
+                    resources.Add(SampleResources(companion));
+                }
                 var health = injection.CaptureHealthSnapshot;
                 if (health is null)
                 {
@@ -152,6 +163,7 @@ internal static class MeasurementCommand
             {
                 latencies = (await injection.MeasureInputLatencyAsync(12, cancellationToken)).ToArray();
             }
+            PrintSummary(wallpaper, metrics, latencies, companion, resources);
         }
         catch (Exception exception)
         {
@@ -164,8 +176,10 @@ internal static class MeasurementCommand
             {
                 try
                 {
-                    await injection.CleanupAsync(CancellationToken.None);
-                    Console.WriteLine("Restore: the injected layer was removed and verified.");
+                    // Restore every Codex app page, not just the attached one: a
+                    // measurement must leave no artifacts anywhere.
+                    var cleaned = await injection.CleanupAllAsync(state.CdpBaseUrl, CancellationToken.None);
+                    Console.WriteLine($"Restore: removed the injected layer from {cleaned} page(s).");
                 }
                 catch (Exception exception)
                 {
@@ -174,15 +188,85 @@ internal static class MeasurementCommand
             }
         }
 
-        PrintSummary(wallpaper, metrics, latencies, companion);
         return 0;
+    }
+
+    /// <summary>Working set and CPU for the companion, Wallpaper Engine and Codex.</summary>
+    private sealed record ResourceSample(
+        double CompanionMiB,
+        double EngineMiB,
+        double EngineCpuSeconds,
+        double CodexMiB,
+        double CodexCpuSeconds);
+
+    private static ResourceSample SampleResources(Process companion)
+    {
+        companion.Refresh();
+        var (engineMiB, engineCpu) = SumProcesses(["wallpaper64", "wallpaper32"]);
+        var codexIds = CdpProcessIdentity.FindRunningOfficialCodexProcessIds();
+        var (codexMiB, codexCpu) = SumProcessesById(codexIds);
+        return new ResourceSample(
+            companion.WorkingSet64 / 1048576d,
+            engineMiB,
+            engineCpu,
+            codexMiB,
+            codexCpu);
+    }
+
+    private static (double WorkingSetMiB, double CpuSeconds) SumProcesses(IEnumerable<string> names)
+    {
+        double workingSet = 0;
+        double cpu = 0;
+        foreach (var name in names)
+        {
+            Process[] processes;
+            try { processes = Process.GetProcessesByName(name); }
+            catch { continue; }
+            foreach (var process in processes)
+            {
+                using (process)
+                {
+                    try
+                    {
+                        workingSet += process.WorkingSet64 / 1048576d;
+                        cpu += process.TotalProcessorTime.TotalSeconds;
+                    }
+                    catch
+                    {
+                        // A process can exit while it is inspected.
+                    }
+                }
+            }
+        }
+        return (workingSet, cpu);
+    }
+
+    private static (double WorkingSetMiB, double CpuSeconds) SumProcessesById(IEnumerable<int> processIds)
+    {
+        double workingSet = 0;
+        double cpu = 0;
+        foreach (var processId in processIds)
+        {
+            try
+            {
+                using var process = Process.GetProcessById(processId);
+                workingSet += process.WorkingSet64 / 1048576d;
+                cpu += process.TotalProcessorTime.TotalSeconds;
+            }
+            catch
+            {
+                // A process can exit while it is inspected.
+            }
+        }
+        return (workingSet, cpu);
     }
 
     private static void PrintSummary(
         WallpaperEntry wallpaper,
         IReadOnlyList<CaptureHealth> metrics,
         IReadOnlyList<double> latencies,
-        Process companion)
+        Process companion,
+        IReadOnlyList<ResourceSample> resources)
     {
         var last = metrics.Count > 0 ? metrics[^1] : null;
         var rates = new List<double>();
@@ -204,20 +288,71 @@ internal static class MeasurementCommand
             effectiveFrameRate = last is null ? 0 : Math.Round(last.EffectiveFrameRate, 2),
             publishedFrames = last?.PublishedFrames ?? 0,
             rejectedFrames = last?.RejectedFrames ?? 0,
+            skippedUnchangedFrames = last?.SkippedUnchangedFrames ?? 0,
             framesPublishedPerSecondAverage = rates.Count == 0 ? 0 : Math.Round(rates.Average(), 2),
             framesPublishedPerSecondMinimum = rates.Count == 0 ? 0 : rates.Min(),
             inputLatencySamples = latencies.Count,
             inputLatencyMedianMs = latencies.Count == 0 ? 0 : Math.Round(Median(latencies), 2),
             inputLatencyMinMs = latencies.Count == 0 ? 0 : Math.Round(latencies.Min(), 2),
             inputLatencyMaxMs = latencies.Count == 0 ? 0 : Math.Round(latencies.Max(), 2),
-            companionWorkingSetMiB = Math.Round(companion.WorkingSet64 / 1048576d, 1),
+            companionWorkingSetMiBMaB = Range(resources.Select(sample => sample.CompanionMiB)),
+            engineWorkingSetMiBMaB = Range(resources.Select(sample => sample.EngineMiB)),
+            engineCpuSeconds = CpuDelta(resources.Select(sample => sample.EngineCpuSeconds)),
+            codexWorkingSetMiBMaB = Range(resources.Select(sample => sample.CodexMiB)),
+            codexCpuSeconds = CpuDelta(resources.Select(sample => sample.CodexCpuSeconds)),
             note = "Input latency is injection-to-observation through the companion input channel. "
-                + "Rejected frames are frames the quality gate refused to present."
+                + "Rejected frames are frames the quality gate refused to present; unchanged frames were "
+                + "identical to the frame already on screen and were not re-transported. "
+                + "Working-set and CPU deltas are sampled every 5s across the run."
         };
         Console.WriteLine();
         Console.WriteLine("=== measurement summary (JSON) ===");
         Console.WriteLine(JsonSerializer.Serialize(summary, new JsonSerializerOptions { WriteIndented = true }));
     }
+
+    /// <summary>Maximum and average, or zeros when nothing was sampled.</summary>
+    private static object Range(IEnumerable<double> values)
+    {
+        var list = values.Where(value => value > 0).ToArray();
+        return list.Length == 0
+            ? new { max = 0d, average = 0d }
+            : new { max = Math.Round(list.Max(), 1), average = Math.Round(list.Average(), 1) };
+    }
+
+    /// <summary>CPU consumed across the run, from the first and last sample.</summary>
+    private static double CpuDelta(IEnumerable<double> values)
+    {
+        var list = values.ToArray();
+        return list.Length < 2 ? 0 : Math.Round(list[^1] - list[0], 2);
+    }
+
+    /// <summary>
+    /// Neutral, reproducible visual settings so a measurement reflects the
+    /// capture path rather than whatever the user last tuned. Hidden-page
+    /// throttling is off so a covered or minimised window cannot distort the
+    /// frame-rate number.
+    /// </summary>
+    private static WallpaperSettings MeasurementSettings() => new WallpaperSettings
+    {
+        Fit = WallpaperFit.Cover,
+        FocusX = 50,
+        FocusY = 50,
+        Opacity = 1,
+        BlackOverlay = 0,
+        AutoPalette = true,
+        PaletteStrength = 0.72,
+        PanelOpacity = 0.72,
+        TintInterfaceText = true,
+        Blur = 0,
+        Brightness = 1,
+        Contrast = 1,
+        Saturation = 1,
+        PlaybackRate = 1,
+        Muted = true,
+        PauseWhenHidden = false,
+        SceneFrameRate = 15,
+        SceneResolutionScale = 1
+    }.Normalize();
 
     private static double Median(IReadOnlyList<double> values)
     {

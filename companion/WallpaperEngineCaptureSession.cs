@@ -118,7 +118,10 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         RejectedFrameCount,
         Volatile.Read(ref _consecutiveRejections),
         EffectiveFrameRate,
-        _frameRate);
+        _frameRate)
+    {
+        SkippedUnchangedFrames = SkippedUnchangedFrameCount
+    };
 
     public string MetricsSummary =>
         $"capture {_windowWidth}x{_windowHeight} at {_frameRate} FPS ({EffectiveFrameRate:0.0} measured), "

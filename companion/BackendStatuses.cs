@@ -30,6 +30,9 @@ public sealed record CaptureHealth(
     int TargetFrameRate)
 {
     public int SampleCount => PublishedFrames + RejectedFrames;
+
+    /// <summary>Frames skipped because the captured surface had not changed.</summary>
+    public int SkippedUnchangedFrames { get; init; }
 }
 
 public static class BackendStatuses

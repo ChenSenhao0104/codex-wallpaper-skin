@@ -20,7 +20,9 @@ Three increments are recorded here.
 
 **Increment 6** completes section 3's *documented fallback* branch. `CaptureBackends` probes the machine with P/Invoke only (activating the `Windows.Graphics.Capture.GraphicsCaptureSession` runtime class on a dedicated MTA thread), records whether Windows Graphics Capture is actually usable and why, selects the implemented path explicitly, and reports it in Doctor and in the capture metrics — so the fallback is named at runtime rather than implied.
 
-**Increment 7** adds the measurement harness the Issue asks for under "Required evidence". `--measure --list` is read-only and prints every local Scene project with its backend decision, package version/size and engine availability; `--measure <workshop-id> [--seconds N]` applies one wallpaper, samples capture health for N seconds, measures input-channel latency, and always restores the original background.
+**Increment 7** adds the measurement harness the Issue asks for under "Required evidence". `--measure --list` is read-only and prints every local Scene project with its backend decision, package version/size and engine availability; `--measure <workshop-id> [--seconds N]` applies one wallpaper with neutral settings, samples capture health and process resources for N seconds, measures input-channel latency, and always restores every Codex page.
+
+**Increment 8** adds the loopback MJPEG frame server that the approved "Windows Graphics Capture + MJPEG" transport needs, and records the first live measurement. The server is verified end to end (loopback-only bind, per-session token, minimal path allowlist, correct multipart framing, latest-wins backpressure); the transport switch itself is not wired into the capture path yet, so the product still uses the JPEG-over-CDP path and nothing regresses.
 
 ### Changed boundaries
 
@@ -130,7 +132,44 @@ Synthetic fixtures only:
 
 ## 7. Manual matrix status
 
-The local manual protocol in `docs/compatibility/WALLPAPER_ENGINE_MATRIX.md` requires the installed Workshop projects, a fixed Codex viewport and 60-second observation. It has not been executed yet; the Workshop rows therefore remain `not run` for this candidate rather than being claimed as passing. Eligibility, recovery, queue, frame-quality, input-order and input-mapping behaviors are covered by the automated checks above; visual fidelity, interaction feel (for example whether the Saki water actually follows the pointer) and resource numbers still need the live session.
+### Measured live session (2026-09-20)
+
+Configuration: Windows build 26200; Windows Graphics Capture available but not implemented, so the documented `PrintWindow` fallback was active; Codex already running with its verified local CDP endpoint (nothing was launched or restarted); Workshop `2935530316` (Chainsaw Man Makima 2, `PKGV0021`, 16.18 MiB) selected by the maintainer; neutral settings (fit cover, opacity 1, overlay 0, blur 0, brightness/contrast/saturation 1, scene 15 FPS, render scale 1, hidden-page throttling off); 60 seconds per run; the injected layer was restored at the end of each run.
+
+| Measurement | Run 1 | Run 2 |
+| --- | --- | --- |
+| Backend / mode | Native dynamic (`wallpaper-engine-capture`) | Native dynamic (`wallpaper-engine-capture`) |
+| Samples | 60 | 59 |
+| Effective capture FPS (target 15) | 11.72 | 10.46 |
+| Frames published per second (average / minimum) | 11.92 / 10 | 11.03 / 7 |
+| Frames published | 713 | 652 |
+| Frames rejected by the quality gate | 0 | 0 |
+| Frames skipped as unchanged | not recorded | 70 |
+| Input channel latency (median / min / max) | 1.77 / 1.35 / 8.41 ms | 1.64 / 0.73 / 7.00 ms |
+| Companion working set | 84.8 MiB | max 104 MiB, average 89.8 MiB |
+| Wallpaper Engine working set | not recorded | max 251.3 MiB, average 218.8 MiB |
+| Wallpaper Engine CPU | not recorded | +1.88 s over the run |
+| Wallpaper Engine GPU | not recorded | max 75.9 %, average 1.9 % |
+| Codex working set (12 processes) | not recorded | max 2243.4 MiB, average 2132 MiB |
+| Codex CPU | not recorded | +18.47 s over the run |
+| Codex GPU (compositing renderer) | max 14.8 % | max 14.6 %, average 0.1 % |
+| Restore | harness verified its page; a follow-up full Restore still found artifacts on one page | full Restore cleaned one page; an immediate follow-up Restore reported zero pages |
+
+What this establishes:
+
+- **Hard gate 6**: across 1,365 published frames in two runs the quality gate rejected **zero** frames, so no empty, uniform or transient surface was presented. It also shows the gate is not rejecting legitimate content on a confirmed case.
+- **Hard gate 8** (partial): the restore is verified, and the harness now ends with a multi-page Restore; a follow-up Restore reports nothing left.
+- **Hard gate 2** (partial): the input channel delivers synthetic pointer movement in 0.7–8.4 ms (median ~1.7 ms). Whether the scene's water *visibly* follows the pointer is still a human judgement.
+- **The section 3 transport saving is real**: 70 of 722 captured surfaces were identical to the frame already on screen and were therefore neither encoded nor transported.
+- **New measured limitation**: the `PrintWindow` path sustains roughly 10.5–11.9 FPS against a 15 FPS target, and the engine's GPU use spikes to 76 % while Codex spends 18.5 s of CPU per minute compositing transferred frames. Capture and transport, not headroom, are the bottleneck — the concrete justification for the approved Windows Graphics Capture plus MJPEG work.
+
+### Browser safe-renderer harness run by the maintainer
+
+`node scripts/scene-render-smoke-test.mjs` on the local installation: **12 passed, 5 failed**. All five failures are `PKGV0024` projects — four are refused by the embedded safe renderer's own version/size boundary (`scene.pkg header exceeds the renderer safety boundary`) and one by the harness's own 128 MiB in-page limit. Those same five projects are classified `NativeScene` by this implementation and reach Wallpaper Engine directly, which is exactly the section 1 behavior: the safe renderer's limits stay bounded and documented, and they never silently stand in for native quality.
+
+### Remaining manual protocol
+
+The rest of the local manual protocol in `docs/compatibility/WALLPAPER_ENGINE_MATRIX.md` — framing, sharpness, colour, flashing across the full observation, scene-level interaction feel, resize/minimise/restore, and switching between two wallpapers — still needs a human at the screen. This increment adds the numbers, not the visual verdict.
 
 ## 8. Known limitations and fallbacks
 

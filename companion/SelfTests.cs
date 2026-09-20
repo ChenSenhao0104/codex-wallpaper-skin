@@ -1,3 +1,6 @@
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
 using System.Text.Json;
 
 namespace CodexWallpaperSkin;
@@ -1035,6 +1038,82 @@ public static class SelfTests
             }
             True(!detected.WindowsGraphicsCaptureSupported || detected.OsBuild >= CaptureBackends.MinimumGraphicsCaptureBuild);
         });
+        Check("frame stream serves authorised loopback MJPEG only", () =>
+        {
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            var server = new FrameStreamServer();
+            try
+            {
+                server.Start();
+                True(server.Port > 0);
+                True(server.IsLoopbackOnly);
+                True(server.StreamUrl.StartsWith("http://127.0.0.1:", StringComparison.Ordinal));
+                True(server.StreamUrl.Contains(server.Token, StringComparison.Ordinal));
+
+                // The probe image must be a real 1x1 GIF, or the page-side
+                // reachability probe would fail for the wrong reason.
+                var probeBytes = ReadHttpBody(server.ProbeUrl, cancellation.Token);
+                True(probeBytes.Length > 20);
+                Equal("GIF89a", Encoding.ASCII.GetString(probeBytes, 0, 6));
+
+                // An unauthenticated or wrong-path request must not reveal the stream.
+                Equal(401, ReadHttpStatus($"http://127.0.0.1:{server.Port}/stream", cancellation.Token));
+                Equal(401, ReadHttpStatus($"http://127.0.0.1:{server.Port}/stream?t=wrong", cancellation.Token));
+                Equal(404, ReadHttpStatus($"http://127.0.0.1:{server.Port}/other?t={server.Token}", cancellation.Token));
+
+                // A real reader must receive the published frames with correct
+                // multipart framing, one frame per publish.
+                var (client, networkStream) = ConnectForTest(server.StreamUrl);
+                using (client)
+                using (networkStream)
+                {
+                    using var reader = new StreamReader(networkStream, Encoding.ASCII, false, 4096, leaveOpen: true);
+                    var statusLine = reader.ReadLine();
+                    True(statusLine is not null && statusLine.Contains("200 OK", StringComparison.Ordinal));
+                    var contentType = string.Empty;
+                    string? headerLine;
+                    while (!string.IsNullOrEmpty(headerLine = reader.ReadLine()))
+                    {
+                        if (headerLine.StartsWith("Content-Type:", StringComparison.OrdinalIgnoreCase))
+                        {
+                            contentType = headerLine;
+                        }
+                    }
+                    True(contentType.Contains("multipart/x-mixed-replace", StringComparison.Ordinal));
+                    True(contentType.Contains(server.Boundary, StringComparison.Ordinal));
+
+                    // Publish then read, one at a time, so the assertion cannot race
+                    // the pump loop.
+                    server.Publish(Encoding.ASCII.GetBytes("frame-one-payload"));
+                    var firstPart = ReadMultipartPart(reader, server.Boundary, cancellation.Token);
+                    True(firstPart is not null);
+                    Equal("frame-one-payload", Encoding.ASCII.GetString(firstPart!));
+
+                    server.Publish(Encoding.ASCII.GetBytes("frame-two-payload-longer"));
+                    var secondPart = ReadMultipartPart(reader, server.Boundary, cancellation.Token);
+                    True(secondPart is not null);
+                    Equal("frame-two-payload-longer", Encoding.ASCII.GetString(secondPart!));
+                    Equal(2, server.CaptureFrames);
+                    True(server.StreamedFrames >= 2);
+                    True(server.ConnectedClients >= 1);
+
+                    // Latest-wins: publishing faster than the reader keeps the newest
+                    // frame and never grows a backlog.
+                    for (var index = 0; index < 50; index++)
+                    {
+                        server.Publish(Encoding.ASCII.GetBytes("burst-" + index));
+                    }
+                    var afterBurst = ReadMultipartPart(reader, server.Boundary, cancellation.Token);
+                    True(afterBurst is not null);
+                    True(Encoding.ASCII.GetString(afterBurst!).StartsWith("burst-", StringComparison.Ordinal));
+                    Equal(52, server.CaptureFrames);
+                }
+            }
+            finally
+            {
+                server.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            }
+        });
         Check("native frames are presented atomically", () =>
         {
             var bootstrap = CdpInjectionService.BootstrapScript;
@@ -1212,6 +1291,103 @@ public static class SelfTests
             }
             return Task.FromResult(new WallpaperApplyResult(null, "video", null));
         }
+    }
+
+    /// <summary>Reads one multipart part body, or null when the stream stalls.</summary>
+    private static byte[]? ReadMultipartPart(StreamReader reader, string boundary, CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        var contentLength = -1;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var line = reader.ReadLine();
+            if (line is null)
+            {
+                return null;
+            }
+            if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+            {
+                _ = int.TryParse(line["Content-Length:".Length..].Trim(), out contentLength);
+                continue;
+            }
+            if (line.Length == 0 && contentLength >= 0)
+            {
+                var body = new char[contentLength];
+                var offset = 0;
+                while (offset < contentLength)
+                {
+                    var read = reader.Read(body, offset, contentLength - offset);
+                    if (read <= 0)
+                    {
+                        return null;
+                    }
+                    offset += read;
+                }
+                _ = reader.ReadLine();
+                return Encoding.ASCII.GetBytes(new string(body));
+            }
+        }
+        return null;
+    }
+
+    private static int ReadHttpStatus(string url, CancellationToken cancellationToken)
+    {
+        var (client, stream) = ConnectForTest(url);
+        using (client)
+        using (stream)
+        {
+            using var reader = new StreamReader(stream, Encoding.ASCII, false, 1024, leaveOpen: true);
+            var statusLine = reader.ReadLine() ?? string.Empty;
+            var parts = statusLine.Split(' ');
+            return parts.Length >= 2 && int.TryParse(parts[1], out var status) ? status : 0;
+        }
+    }
+
+    private static byte[] ReadHttpBody(string url, CancellationToken cancellationToken)
+    {
+        var (client, stream) = ConnectForTest(url);
+        using (client)
+        using (stream)
+        {
+            using var reader = new StreamReader(stream, Encoding.ASCII, false, 1024, leaveOpen: true);
+            var contentLength = 0;
+            string? line;
+            while (!string.IsNullOrEmpty(line = reader.ReadLine()))
+            {
+                if (line!.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                {
+                    _ = int.TryParse(line["Content-Length:".Length..].Trim(), out contentLength);
+                }
+            }
+            var body = new char[contentLength];
+            var offset = 0;
+            while (offset < contentLength)
+            {
+                var read = reader.Read(body, offset, contentLength - offset);
+                if (read <= 0)
+                {
+                    break;
+                }
+                offset += read;
+            }
+            return Encoding.ASCII.GetBytes(new string(body, 0, offset));
+        }
+    }
+
+    /// <summary>Opens a loopback connection with receive timeouts so a stalled stream fails fast.</summary>
+    private static (TcpClient Client, NetworkStream Stream) ConnectForTest(string url)
+    {
+        var uri = new Uri(url);
+        var client = new TcpClient { ReceiveTimeout = 5000, SendTimeout = 5000 };
+        client.Connect(IPAddress.Loopback, uri.Port);
+        var stream = client.GetStream();
+        stream.ReadTimeout = 5000;
+        stream.WriteTimeout = 5000;
+        var request = Encoding.ASCII.GetBytes($"GET {uri.PathAndQuery} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        stream.Write(request, 0, request.Length);
+        stream.Flush();
+        return (client, stream);
     }
 
     private static void True(bool value)
