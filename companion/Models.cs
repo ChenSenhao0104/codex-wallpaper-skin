@@ -18,7 +18,13 @@ public enum WallpaperSupport
     StaticPreview,
     Rejected,
     AnimatedPreview,
-    LiveScene
+    LiveScene,
+    /// <summary>
+    /// A Wallpaper Engine Scene that Wallpaper Engine itself renders. Eligibility
+    /// does not depend on our safe scene.pkg parser, so new, larger or otherwise
+    /// unsupported packages still reach the native backend.
+    /// </summary>
+    NativeScene
 }
 
 public enum WallpaperFit
@@ -48,18 +54,32 @@ public sealed class WallpaperEntry
     public bool CanApply => Support != WallpaperSupport.Rejected && !string.IsNullOrWhiteSpace(EffectivePath);
 
     [JsonIgnore]
-    public string? EffectivePath => Support is WallpaperSupport.Direct or WallpaperSupport.LiveScene
-        ? MediaPath
-        : PreviewPath;
+    public string? EffectivePath => Support switch
+    {
+        // The native backend hands the whole project to Wallpaper Engine; it never
+        // reads scene.pkg itself.
+        WallpaperSupport.NativeScene => ProjectPath,
+        WallpaperSupport.Direct or WallpaperSupport.LiveScene => MediaPath,
+        _ => PreviewPath
+    };
 
     [JsonIgnore]
     public bool IsVideo => Support == WallpaperSupport.Direct && Kind == WallpaperKind.Video;
 
+    /// <summary>Rendered by Wallpaper Engine itself at full fidelity.</summary>
     [JsonIgnore]
-    public bool IsScene => Support == WallpaperSupport.LiveScene && Kind == WallpaperKind.Scene;
+    public bool IsNativeScene => Support == WallpaperSupport.NativeScene && Kind == WallpaperKind.Scene;
+
+    /// <summary>Rendered by the built-in safe 2D renderer from a parsed scene.pkg.</summary>
+    [JsonIgnore]
+    public bool IsBrowserScene => Support == WallpaperSupport.LiveScene && Kind == WallpaperKind.Scene;
+
+    /// <summary>A live Scene of any backend, as opposed to a static preview.</summary>
+    [JsonIgnore]
+    public bool IsScene => IsNativeScene || IsBrowserScene;
 
     [JsonIgnore]
-    public string MediaMode => IsScene ? "scene" : IsVideo ? "video" : "image";
+    public string MediaMode => IsBrowserScene ? "scene" : IsVideo ? "video" : "image";
 
     [JsonIgnore]
     public string DisplayLabel
@@ -69,7 +89,8 @@ public sealed class WallpaperEntry
             var badge = Support switch
             {
                 WallpaperSupport.Direct => Kind == WallpaperKind.Video ? "VIDEO" : "IMAGE",
-                WallpaperSupport.LiveScene => "WE LIVE SCENE",
+                WallpaperSupport.NativeScene => "WE NATIVE SCENE",
+                WallpaperSupport.LiveScene => "WE SAFE SCENE",
                 WallpaperSupport.AnimatedPreview => "ANIMATED PREVIEW",
                 WallpaperSupport.StaticPreview => "STATIC FALLBACK",
                 _ => "REJECTED"

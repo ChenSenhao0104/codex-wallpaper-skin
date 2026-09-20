@@ -83,10 +83,15 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         + $"{RejectedFrameCount} rejected"
         + (LastRejectionReason.Length == 0 ? string.Empty : $" (last: {LastRejectionReason})");
 
+    /// <summary>
+    /// Native eligibility: any Wallpaper Engine Scene project whose engine is
+    /// present. It deliberately does not consult our safe scene.pkg parser, so a
+    /// new, larger or unsupported package still renders in Wallpaper Engine.
+    /// </summary>
     public static bool CanUse(WallpaperEntry wallpaper) =>
-        wallpaper.IsScene
+        wallpaper.Kind == WallpaperKind.Scene
         && !string.IsNullOrWhiteSpace(wallpaper.ProjectPath)
-        && TryResolveEngine(wallpaper.ProjectPath, out _, out _);
+        && WallpaperEngineLocator.IsEngineAvailable(wallpaper.ProjectPath);
 
     public static async Task<WallpaperEngineCaptureSession> StartAsync(
         WallpaperEntry wallpaper,
@@ -97,11 +102,11 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(wallpaper);
         ArgumentNullException.ThrowIfNull(settings);
-        if (!wallpaper.IsScene || string.IsNullOrWhiteSpace(wallpaper.ProjectPath))
+        if (wallpaper.Kind != WallpaperKind.Scene || string.IsNullOrWhiteSpace(wallpaper.ProjectPath))
         {
-            throw new InvalidDataException("Wallpaper Engine capture requires a validated Scene project.");
+            throw new InvalidDataException("Wallpaper Engine capture requires a Scene project.");
         }
-        if (!TryResolveEngine(wallpaper.ProjectPath, out var engineRoot, out var executable))
+        if (!WallpaperEngineLocator.TryResolveEngine(wallpaper.ProjectPath, out var engineRoot, out var executable))
         {
             throw new FileNotFoundException("Wallpaper Engine wallpaper64.exe was not found beside this Workshop project.");
         }
@@ -432,35 +437,6 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         {
             return false;
         }
-    }
-
-    private static bool TryResolveEngine(string projectPath, out string engineRoot, out string executable)
-    {
-        engineRoot = string.Empty;
-        executable = string.Empty;
-        try
-        {
-            var current = new FileInfo(Path.GetFullPath(projectPath)).Directory;
-            for (var depth = 0; depth < 10 && current is not null; depth++, current = current.Parent)
-            {
-                if (!current.Name.Equals("steamapps", StringComparison.OrdinalIgnoreCase)) continue;
-                var root = Path.Combine(current.FullName, "common", "wallpaper_engine");
-                foreach (var name in new[] { "wallpaper64.exe", "wallpaper32.exe" })
-                {
-                    var candidate = Path.Combine(root, name);
-                    if (File.Exists(candidate))
-                    {
-                        engineRoot = Path.GetFullPath(root);
-                        executable = Path.GetFullPath(candidate);
-                        return true;
-                    }
-                }
-            }
-        }
-        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
-        {
-        }
-        return false;
     }
 
     private static async Task RunControlAsync(

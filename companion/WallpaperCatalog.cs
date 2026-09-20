@@ -308,7 +308,20 @@ public static class WallpaperCatalog
                 break;
             case WallpaperKind.Scene:
                 var scenePackagePath = ResolveContainedFile(projectDirectory, "scene.pkg");
-                if (ScenePackageValidator.TryValidate(scenePackagePath, out var packageInfo))
+                var engineAvailable = WallpaperEngineLocator.IsEngineAvailable(projectPath);
+                var packageSupported = ScenePackageValidator.TryValidate(scenePackagePath, out var packageInfo);
+                if (engineAvailable && (scenePackagePath is not null || mediaPath is not null))
+                {
+                    // Native eligibility is decided by discovery only: a contained
+                    // project.json plus a resolvable Wallpaper Engine install.
+                    // Our safe parser is a fallback, not a gate.
+                    support = WallpaperSupport.NativeScene;
+                    mediaPath = null;
+                    note = packageSupported
+                        ? $"Native Wallpaper Engine rendering ({packageInfo!.Version}, {packageInfo.EntryCount:N0} assets); the built-in safe Scene renderer remains available as a fallback."
+                        : "Native Wallpaper Engine rendering. This scene.pkg is outside the built-in safe renderer's version or size limits, so Wallpaper Engine renders it directly instead of a preview.";
+                }
+                else if (packageSupported)
                 {
                     mediaPath = scenePackagePath;
                     support = WallpaperSupport.LiveScene;
@@ -319,9 +332,15 @@ public static class WallpaperCatalog
                     support = PreviewSupportFor(previewPath);
                     note = support switch
                     {
-                        WallpaperSupport.AnimatedPreview => "scene.pkg was unavailable or invalid; using the low-resolution animated Workshop preview.",
-                        WallpaperSupport.StaticPreview => "scene.pkg was unavailable or invalid; using the static Workshop preview.",
-                        _ => "Scene project rejected because neither a valid scene.pkg nor a safe preview was found."
+                        WallpaperSupport.AnimatedPreview when engineAvailable is false =>
+                            "Wallpaper Engine was not found beside this project and scene.pkg is outside the built-in safe renderer's limits; using the low-resolution animated Workshop preview.",
+                        WallpaperSupport.StaticPreview when engineAvailable is false =>
+                            "Wallpaper Engine was not found beside this project and scene.pkg is outside the built-in safe renderer's limits; using the static Workshop preview.",
+                        WallpaperSupport.AnimatedPreview =>
+                            "scene.pkg was unavailable or invalid; using the low-resolution animated Workshop preview.",
+                        WallpaperSupport.StaticPreview =>
+                            "scene.pkg was unavailable or invalid; using the static Workshop preview.",
+                        _ => "Scene project rejected because neither a usable scene source nor a safe preview was found."
                     };
                 }
                 break;
@@ -394,6 +413,11 @@ public static class WallpaperCatalog
     public static FileStream OpenValidatedMediaFile(WallpaperEntry wallpaper)
     {
         ArgumentNullException.ThrowIfNull(wallpaper);
+        if (wallpaper.IsNativeScene)
+        {
+            throw new InvalidOperationException(
+                "Native Scene entries are rendered by Wallpaper Engine from the project itself; they have no browser media stream.");
+        }
         var path = wallpaper.EffectivePath;
         if (!wallpaper.CanApply || string.IsNullOrWhiteSpace(path))
         {
@@ -403,9 +427,38 @@ public static class WallpaperCatalog
         {
             EnsureWallpaperEngineMediaStillContained(wallpaper.ProjectPath, path);
         }
-        return wallpaper.IsScene
+        return wallpaper.IsBrowserScene
             ? ScenePackageValidator.OpenValidated(path)
             : OpenValidatedMediaFile(path, wallpaper.IsVideo);
+    }
+
+    /// <summary>
+    /// The contained scene.pkg of a Scene project, or null when the project keeps
+    /// its scene loose on disk. This only locates the file; it never parses it,
+    /// because the native Wallpaper Engine backend does not need our parser.
+    /// </summary>
+    public static string? ResolveScenePackagePath(WallpaperEntry wallpaper)
+    {
+        ArgumentNullException.ThrowIfNull(wallpaper);
+        if (wallpaper.Kind != WallpaperKind.Scene || string.IsNullOrWhiteSpace(wallpaper.ProjectPath))
+        {
+            return null;
+        }
+        try
+        {
+            var directory = new FileInfo(Path.GetFullPath(wallpaper.ProjectPath)).Directory;
+            var resolved = directory is null ? null : ResolveContainedFile(directory.FullName, "scene.pkg");
+            if (resolved is not null
+                && wallpaper.Source.Equals("Wallpaper Engine", StringComparison.OrdinalIgnoreCase))
+            {
+                EnsureWallpaperEngineMediaStillContained(wallpaper.ProjectPath, resolved);
+            }
+            return resolved;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     public static FileStream OpenValidatedPreviewFile(WallpaperEntry wallpaper)

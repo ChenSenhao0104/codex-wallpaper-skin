@@ -55,17 +55,18 @@ Fill this table during product convergence; it evaluates behavior, not authors o
 | 2935530316 |  | not run |  | Local manual protocol not executed in the automated increment; see `docs/tasks/ISSUE-1-DEEPSEEK-EVIDENCE.md`. |
 | 3494484288 |  | not run |  | Local manual protocol not executed in the automated increment. |
 | 2914257158 |  | not run |  | Local manual protocol not executed in the automated increment. |
-| 3798584436 |  | not run |  | Local manual protocol not executed in the automated increment. |
-| 3801532994 |  | not run |  | Local manual protocol not executed in the automated increment. |
-| 3800850100 |  | not run |  | Local manual protocol not executed in the automated increment. |
-| 3799703549 |  | not run |  | Local manual protocol not executed in the automated increment. |
-| 3803167460 |  | not run |  | Local manual protocol not executed in the automated increment. |
-| 3799253558 |  | not run |  | Local manual protocol not executed in the automated increment. |
-| 3796846129 |  | not run |  | Local manual protocol not executed in the automated increment. |
+| 3798584436 |  | not run |  | Native eligibility for PKGV0024 is verified automatically (`--self-test`); visual fidelity still needs the local manual protocol. |
+| 3801532994 |  | not run |  | Native eligibility for PKGV0024 and above the 128 MiB fallback parser limit is verified automatically; visual fidelity still needs the local manual protocol. |
+| 3800850100 |  | not run |  | Native eligibility for PKGV0024 is verified automatically; visual fidelity still needs the local manual protocol. |
+| 3799703549 |  | not run |  | Native eligibility for PKGV0024 is verified automatically; the labeled static fallback is unchanged when no engine is present. |
+| 3803167460 |  | not run |  | Native eligibility for PKGV0024 is verified automatically; visual fidelity still needs the local manual protocol. |
+| 3799253558 |  | not run |  | Native eligibility for PKGV0024 is verified automatically; letterbox/crop behavior still needs the local manual protocol. |
+| 3796846129 |  | not run |  | Native eligibility for PKGV0024 is verified automatically; visual fidelity still needs the local manual protocol. |
 | 3756621387 |  | not run |  | Local manual protocol not executed in the automated increment. |
 | Static image control |  | pass (auto) |  | `scripts/runtime-smoke-test.mjs` image path unchanged. |
 | Ordinary video control |  | pass (auto) |  | `scripts/runtime-smoke-test.mjs` video path unchanged. |
-| Application rejection control |  | pass (auto) |  | `--self-test`: application projects stay rejected. |
+| Application rejection control |  | pass (auto) |  | `--self-test`: application projects stay rejected even with Wallpaper Engine installed. |
+| PKGV0024 / over-limit / loose Scene eligibility |  | pass (auto) |  | `--self-test`: `NativeScene` classification, `CanApply` and `CanUse` for PKGV0024, for a package above `MaximumPackageBytes`, and for a loose `scene.json` project. |
 | Controller opened before Codex after Windows restart |  | pass (auto) |  | `--self-test`: coordinator activates the verified CDP flow, waits for readiness, then applies the queued wallpaper. |
 | Codex already open without CDP |  | pass (auto) |  | `--self-test`: no activation, no attach, wallpaper retained as queued, `LastAppliedWallpaperId` untouched. |
 | Empty/gray/transient frame |  | pass (auto) |  | `--self-test` frame-quality gate plus the Node smoke test's failed-decode last-known-good check. |

@@ -25,9 +25,9 @@ public static class SceneRuntimeAssets
     public static SceneBrowserOptions Load(WallpaperEntry wallpaper)
     {
         ArgumentNullException.ThrowIfNull(wallpaper);
-        if (!wallpaper.IsScene || string.IsNullOrWhiteSpace(wallpaper.ProjectPath))
+        if (wallpaper.Kind != WallpaperKind.Scene || string.IsNullOrWhiteSpace(wallpaper.ProjectPath))
         {
-            throw new InvalidDataException("The selected entry is not a validated Wallpaper Engine scene.");
+            throw new InvalidDataException("The selected entry is not a Wallpaper Engine Scene project.");
         }
 
         JsonElement? project = null;

@@ -107,7 +107,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
         Exception? nativeCaptureFailure = null;
         try
         {
-            if (wallpaper.IsScene)
+            if (wallpaper.Kind == WallpaperKind.Scene)
             {
                 if (WallpaperEngineCaptureSession.CanUse(wallpaper))
                 {
@@ -149,24 +149,44 @@ public sealed class CdpInjectionService : IAsyncDisposable
                         nativeCaptureFailure = exception;
                     }
                 }
-                try
+
+                // The built-in safe renderer is an explicitly limited compatibility
+                // fallback: it can only read packages inside its version and size
+                // limits, and it is never a silent substitute for native quality.
+                var scenePackagePath = WallpaperCatalog.ResolveScenePackagePath(wallpaper);
+                Exception sceneFailure;
+                if (scenePackagePath is not null && ScenePackageValidator.TryValidate(scenePackagePath, out _))
                 {
-                    await using var sceneStream = WallpaperCatalog.OpenValidatedMediaFile(wallpaper);
-                    var sceneOptions = SceneRuntimeAssets.Load(wallpaper);
-                    var limited = await UploadAsync(
-                        client, sceneStream, path, wallpaper.MediaMode, settings, sceneOptions,
-                        progress, operationToken);
-                    return nativeCaptureFailure is null ? limited : limited with
+                    try
                     {
-                        Warning = "Wallpaper Engine high-fidelity rendering was unavailable; the limited built-in Scene renderer was used. "
-                            + LimitMessage(nativeCaptureFailure.Message)
-                    };
+                        await using var sceneStream = ScenePackageValidator.OpenValidated(scenePackagePath);
+                        var sceneOptions = SceneRuntimeAssets.Load(wallpaper);
+                        var limited = await UploadAsync(
+                            client, sceneStream, scenePackagePath, "scene", settings, sceneOptions,
+                            progress, operationToken);
+                        return nativeCaptureFailure is null ? limited : limited with
+                        {
+                            Warning = "Wallpaper Engine high-fidelity rendering was unavailable; the limited built-in Scene renderer was used. "
+                                + LimitMessage(nativeCaptureFailure.Message)
+                        };
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception exception)
+                    {
+                        sceneFailure = exception;
+                    }
                 }
-                catch (OperationCanceledException)
+                else
                 {
-                    throw;
+                    sceneFailure = new InvalidDataException(scenePackagePath is null
+                        ? "This Scene project keeps its content outside scene.pkg, which the built-in safe renderer cannot read."
+                        : "This scene.pkg is outside the built-in safe renderer's version or size limits.");
                 }
-                catch (Exception sceneError) when (!string.IsNullOrWhiteSpace(wallpaper.PreviewPath))
+
+                if (!string.IsNullOrWhiteSpace(wallpaper.PreviewPath))
                 {
                     progress?.Report(0);
                     await using var previewStream = WallpaperCatalog.OpenValidatedPreviewFile(wallpaper);
@@ -179,10 +199,14 @@ public sealed class CdpInjectionService : IAsyncDisposable
                     return fallback with
                     {
                         Mode = fallbackMode,
-                        Warning = "Live scene rendering was unavailable; a validated Workshop preview was used. "
-                            + LimitMessage(nativeCaptureFailure?.Message ?? sceneError.Message)
+                        Warning = "The live Scene backends were unavailable, so a validated Workshop preview is shown. "
+                            + LimitMessage(nativeCaptureFailure?.Message ?? sceneFailure.Message)
                     };
                 }
+
+                throw new InvalidOperationException(
+                    "No live Scene backend is available for this project and it has no validated preview fallback. "
+                    + LimitMessage(nativeCaptureFailure?.Message ?? sceneFailure.Message));
             }
 
             await using var stream = WallpaperCatalog.OpenValidatedMediaFile(wallpaper);

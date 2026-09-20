@@ -715,6 +715,108 @@ public static class SelfTests
             }
             True(FrameQualityEvaluator.Evaluate(darkScene).Acceptable);
         });
+        Check("native Scene eligibility ignores the safe package parser", () =>
+        {
+            var root = Path.Combine(Path.GetTempPath(), "codex-wallpaper-skin-native-tests", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                // A PKGV0024 package is outside PKGV0012-PKGV0023, so the safe
+                // parser rejects it. Native eligibility must not care.
+                var v24 = CreateScenePackage("scene.json", "{\"objects\":[]}"u8.ToArray(), "PKGV0024");
+                var project24 = CreateWorkshopProject(
+                    root, "3798584436", "{\"type\":\"scene\",\"title\":\"Lofi Girl\",\"file\":\"scene.json\",\"preview\":\"preview.gif\"}",
+                    withEngine: true, v24, CreateGif(192, 108));
+                True(!ScenePackageValidator.TryValidate(Path.Combine(Path.GetDirectoryName(project24)!, "scene.pkg"), out _));
+                var entry = WallpaperCatalog.ParseProject(project24);
+                Equal(WallpaperSupport.NativeScene, entry.Support);
+                True(entry.IsNativeScene);
+                True(entry.IsScene);
+                True(!entry.IsBrowserScene);
+                True(entry.CanApply);
+                True(entry.MediaPath is null);
+                True(entry.EffectivePath!.EndsWith("project.json", StringComparison.OrdinalIgnoreCase));
+                True(entry.Note.Contains("PKGV", StringComparison.OrdinalIgnoreCase) == false);
+                True(entry.Note.Contains("outside the built-in safe renderer", StringComparison.OrdinalIgnoreCase));
+                Equal("WE NATIVE SCENE", entry.DisplayLabel.Split('[')[1].TrimEnd(']'));
+                True(WallpaperEngineCaptureSession.CanUse(entry));
+
+                // A package above the fallback size ceiling must also stay native.
+                var oversized = CreateScenePackage("scene.json", "{\"objects\":[]}"u8.ToArray());
+                var oversizedProject = CreateWorkshopProject(
+                    root, "3801532994", "{\"type\":\"scene\",\"title\":\"Big scene\",\"file\":\"scene.json\",\"preview\":\"preview.gif\"}",
+                    withEngine: true, oversized, CreateGif(192, 108));
+                var oversizedPath = Path.Combine(Path.GetDirectoryName(oversizedProject)!, "scene.pkg");
+                using (var stream = new FileStream(oversizedPath, FileMode.Open, FileAccess.Write))
+                {
+                    stream.SetLength(ScenePackageValidator.MaximumPackageBytes + 1);
+                }
+                True(!ScenePackageValidator.TryValidate(oversizedPath, out _));
+                var oversizedEntry = WallpaperCatalog.ParseProject(oversizedProject);
+                Equal(WallpaperSupport.NativeScene, oversizedEntry.Support);
+                True(oversizedEntry.CanApply);
+                File.Delete(oversizedPath);
+
+                // A Scene that keeps its content loose on disk is still native.
+                var looseProject = CreateWorkshopProject(
+                    root, "3800850100", "{\"type\":\"scene\",\"title\":\"Loose scene\",\"file\":\"scene.json\",\"preview\":\"preview.gif\"}",
+                    withEngine: true, scenePackage: null, CreateGif(192, 108));
+                File.WriteAllText(Path.Combine(Path.GetDirectoryName(looseProject)!, "scene.json"), "{\"objects\":[]}");
+                var looseEntry = WallpaperCatalog.ParseProject(looseProject);
+                Equal(WallpaperSupport.NativeScene, looseEntry.Support);
+                True(looseEntry.CanApply);
+
+                // Native entries have no browser media stream, and the module that
+                // reads scene.pkg must be told so instead of reading project.json.
+                Throws<InvalidOperationException>(() =>
+                {
+                    using var stream = WallpaperCatalog.OpenValidatedMediaFile(looseEntry);
+                });
+
+                // A supported package still prefers the native backend when the
+                // engine is present, and keeps the safe renderer only as fallback.
+                var v22 = CreateScenePackage("scene.json", "{\"objects\":[]}"u8.ToArray());
+                var engineProject = CreateWorkshopProject(
+                    root, "2935530316", "{\"type\":\"scene\",\"title\":\"Makima\",\"file\":\"scene.json\",\"preview\":\"preview.gif\"}",
+                    withEngine: true, v22, CreateGif(192, 108));
+                Equal(WallpaperSupport.NativeScene, WallpaperCatalog.ParseProject(engineProject).Support);
+
+                // Without Wallpaper Engine beside the project the safe renderer
+                // still works for a supported package.
+                Directory.Delete(Path.Combine(root, "steamapps", "common", "wallpaper_engine"), recursive: true);
+                var noEngineProject = CreateWorkshopProject(
+                    root, "3494484288", "{\"type\":\"scene\",\"title\":\"Pastel\",\"file\":\"scene.json\",\"preview\":\"preview.gif\"}",
+                    withEngine: false, v22, CreateGif(192, 108));
+                var browserEntry = WallpaperCatalog.ParseProject(noEngineProject);
+                Equal(WallpaperSupport.LiveScene, browserEntry.Support);
+                True(browserEntry.IsBrowserScene);
+                True(!browserEntry.IsNativeScene);
+                True(browserEntry.EffectivePath!.EndsWith("scene.pkg", StringComparison.OrdinalIgnoreCase));
+                True(!WallpaperEngineCaptureSession.CanUse(browserEntry));
+
+                // Without the engine an unsupported package cannot silently claim
+                // native rendering; it falls back to a clearly labeled preview and
+                // says why.
+                var unsupportedNoEngine = CreateWorkshopProject(
+                    root, "3803167460", "{\"type\":\"scene\",\"title\":\"Geralt\",\"file\":\"scene.json\",\"preview\":\"preview.gif\"}",
+                    withEngine: false, v24, CreateGif(192, 108));
+                var previewEntry = WallpaperCatalog.ParseProject(unsupportedNoEngine);
+                Equal(WallpaperSupport.AnimatedPreview, previewEntry.Support);
+                True(!previewEntry.IsScene);
+                True(previewEntry.CanApply);
+                True(previewEntry.Note.Contains("Wallpaper Engine was not found", StringComparison.OrdinalIgnoreCase));
+
+                // Application projects stay rejected even with an engine present.
+                var applicationProject = CreateWorkshopProject(
+                    root, "9999999999", "{\"type\":\"application\",\"title\":\"Unsafe\",\"file\":\"run.exe\"}",
+                    withEngine: true, scenePackage: null, preview: null);
+                Equal(WallpaperSupport.Rejected, WallpaperCatalog.ParseProject(applicationProject).Support);
+            }
+            finally
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        });
         Check("native frames are presented atomically", () =>
         {
             var bootstrap = CdpInjectionService.BootstrapScript;
@@ -747,6 +849,39 @@ public static class SelfTests
                 messages.Add("FAIL " + name + ": " + exception.Message);
             }
         }
+    }
+
+    /// <summary>
+    /// Builds a minimal Steam-style Workshop layout so eligibility can be tested
+    /// without any real Wallpaper Engine installation.
+    /// </summary>
+    private static string CreateWorkshopProject(
+        string root,
+        string workshopId,
+        string projectJson,
+        bool withEngine,
+        byte[]? scenePackage,
+        byte[]? preview)
+    {
+        var projectDirectory = Path.Combine(root, "steamapps", "workshop", "content", "431960", workshopId);
+        Directory.CreateDirectory(projectDirectory);
+        var projectPath = Path.Combine(projectDirectory, "project.json");
+        File.WriteAllText(projectPath, projectJson);
+        if (scenePackage is not null)
+        {
+            File.WriteAllBytes(Path.Combine(projectDirectory, "scene.pkg"), scenePackage);
+        }
+        if (preview is not null)
+        {
+            File.WriteAllBytes(Path.Combine(projectDirectory, "preview.gif"), preview);
+        }
+        if (withEngine)
+        {
+            var engineRoot = Path.Combine(root, "steamapps", "common", "wallpaper_engine");
+            Directory.CreateDirectory(engineRoot);
+            File.WriteAllText(Path.Combine(engineRoot, "wallpaper64.exe"), "engine stub");
+        }
+        return projectPath;
     }
 
     private static AppState QueuedState(string wallpaperId, QueueFailureReason reason)
@@ -919,13 +1054,13 @@ public static class SelfTests
         return stream.ToArray();
     }
 
-    private static byte[] CreateScenePackage(string entryName, byte[] payload)
+    private static byte[] CreateScenePackage(string entryName, byte[] payload, string version = "PKGV0022")
     {
         var name = System.Text.Encoding.UTF8.GetBytes(entryName);
         using var stream = new MemoryStream();
         using var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true);
         writer.Write(8u);
-        writer.Write("PKGV0022"u8);
+        writer.Write(System.Text.Encoding.ASCII.GetBytes(version));
         writer.Write(1u);
         writer.Write((uint)name.Length);
         writer.Write(name);

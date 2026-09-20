@@ -425,11 +425,12 @@ public partial class MainWindow : Window
             }
             SaveState();
             var direct = found.Count(item => item.Support == WallpaperSupport.Direct);
-            var liveScene = found.Count(item => item.Support == WallpaperSupport.LiveScene);
+            var nativeScene = found.Count(item => item.Support == WallpaperSupport.NativeScene);
+            var browserScene = found.Count(item => item.Support == WallpaperSupport.LiveScene);
             var animatedPreview = found.Count(item => item.Support == WallpaperSupport.AnimatedPreview);
             var fallback = found.Count(item => item.Support == WallpaperSupport.StaticPreview);
             var rejected = found.Count(item => item.Support == WallpaperSupport.Rejected);
-            SetStatus($"Wallpaper Engine scan: {direct} direct, {liveScene} live 2D scene, {animatedPreview} animated preview, {fallback} static preview, {rejected} rejected.");
+            SetStatus($"Wallpaper Engine scan: {direct} direct, {nativeScene} native scene, {browserScene} safe-renderer scene, {animatedPreview} animated preview, {fallback} static preview, {rejected} rejected.");
         });
     }
 
@@ -465,7 +466,9 @@ public partial class MainWindow : Window
                 PreviewPlaceholder.Visibility = Visibility.Collapsed;
                 if (selected.IsScene)
                 {
-                    WallpaperDetails.Text += " Controller preview: Workshop thumbnail only; Apply uses scene.pkg and its original textures.";
+                    WallpaperDetails.Text += selected.IsNativeScene
+                        ? " Controller preview: Workshop thumbnail only; Apply hands the project to Wallpaper Engine for full-fidelity rendering."
+                        : " Controller preview: Workshop thumbnail only; Apply uses scene.pkg and its original textures.";
                 }
             }
             catch
@@ -475,8 +478,10 @@ public partial class MainWindow : Window
         }
         else
         {
-            PreviewPlaceholder.Text = selected.IsScene
-                ? "Live 2D scene selected. The full-resolution scene is rendered inside Codex after Apply."
+            PreviewPlaceholder.Text = selected.IsNativeScene
+                ? "Native scene selected. Wallpaper Engine renders the full project inside Codex after Apply."
+                : selected.IsBrowserScene
+                ? "Safe-renderer scene selected. The scene is rendered by the built-in 2D renderer after Apply; Wallpaper Engine was not found beside this project."
                 : selected.IsVideo
                 ? "Video selected. It will loop in Codex after Apply."
                 : selected.Support == WallpaperSupport.Rejected
