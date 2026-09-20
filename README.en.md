@@ -19,6 +19,8 @@ The application uses a loopback-only Chrome DevTools Protocol (CDP) session to a
 - One-time 32×32 palette sampling for translucent surfaces, accents, and inherited interface text while code, terminal, warning, and status colors remain intact.
 - Fit, focal point, opacity, readability veil, brightness, contrast, saturation, palette strength, panel opacity, inherited-text coordination, blur, animation speed, Scene FPS, and Scene render-scale controls. Click a displayed numeric value for exact entry.
 - Remembers the last successfully applied wallpaper and restores it on reconnect or Windows sign-in. If Codex is already running normally, restoration is queued until the user closes it naturally, without interrupting the active task.
+- Personal collections, technical-type filters, instant search, and app-only renaming. Rescanning preserves the organization and never renames Workshop or local files.
+- When Codex was started normally first, **Restart Codex normally and apply now** requests an orderly close and completes the controlled restart after explicit confirmation. It never force-terminates Codex; on timeout the queued wallpaper remains safe.
 - Decode-before-swap, preservation of the old background on failure, pause when hidden, bounded cleanup, and **Restore Codex background**.
 
 Complex and interactive Scenes are rendered by Wallpaper Engine itself. Codex pointer movement and button state are mapped to the private render window, so water feedback, parallax, and similar interactions remain the wallpaper's own implementation. Wallpaper Engine must be installed and remain available in the background; closing the visible controller hands playback to a hidden restore worker. The built-in renderer remains only as an explicitly labeled fallback.
@@ -28,7 +30,7 @@ Complex and interactive Scenes are rendered by Wallpaper Engine itself. Codex po
 Download `CodexWallpaperSkin-win-x64.zip` and its `.sha256` file from Releases, verify the hash, extract the complete archive, and run `CodexWallpaperSkin.exe`. The portable application is self-contained and needs no Python, PyYAML, Node.js, or .NET installation.
 
 1. Run the application and choose **Detect app**, then **Activate with CDP**.
-2. If Codex is already running normally, select a wallpaper and choose **Apply selected**. It is queued without closing Codex and restores after the next natural exit. To apply immediately, save your work and exit Codex yourself first.
+2. If Codex is already running normally, select a wallpaper and choose **Apply selected**. It is queued without closing Codex. For immediate use, save active work and choose **Restart Codex normally and apply now**; otherwise keep working and let the queue handle the next natural exit.
 3. After Codex reopens, choose **Connect**.
 4. Choose **Scan Wallpaper Engine**, select a wallpaper, and review the controls.
 5. Choose **Apply selected**. Use **Restore Codex background** when finished.

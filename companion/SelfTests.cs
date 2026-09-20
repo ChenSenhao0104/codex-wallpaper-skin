@@ -223,6 +223,8 @@ public static class SelfTests
             True(exception.Message.Contains("not interrupted", StringComparison.OrdinalIgnoreCase));
             True(!exception.Message.Contains("listener process", StringComparison.OrdinalIgnoreCase));
             Equal(42, exception.ProcessIds.Single());
+            Throws<ArgumentOutOfRangeException>(() => CodexRestartService
+                .RequestNormalCloseAsync(TimeSpan.Zero).GetAwaiter().GetResult());
         });
         Check("fit mapping", () =>
         {

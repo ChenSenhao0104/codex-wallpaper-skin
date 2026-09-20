@@ -527,33 +527,118 @@ public partial class MainWindow : Window
                 applyResult = await _injection.ApplyAsync(selected, settings, progress, cancellationToken);
             }
             UploadProgress.Visibility = Visibility.Collapsed;
-            _state.LastAppliedWallpaperId = selected.Id;
-            _state.PendingWallpaperId = null;
-            _state.PendingActivation = false;
+            CompleteSuccessfulApply(selected, settings, applyResult, "Applied");
+        });
+    }
+
+    private async void RestartCodexAndApply_Click(object sender, RoutedEventArgs e)
+    {
+        var selected = _state.PendingActivation
+            ? AutoRestoreService.ResolveLastWallpaper(_state)
+            : WallpaperList.SelectedItem as WallpaperEntry ?? AutoRestoreService.ResolveLastWallpaper(_state);
+        if (selected?.CanApply != true)
+        {
+            ShowError("Select an applicable wallpaper first.");
+            return;
+        }
+
+        var choice = MessageBox.Show(
+            this,
+            "Codex is already open without its wallpaper channel.\n\n"
+            + "This will request a normal Codex shutdown, wait for it to finish, then reopen Codex and apply the queued wallpaper. "
+            + "The process is never force-terminated. Save or pause any active work before continuing.\n\n"
+            + "Restart Codex now?",
+            "Restart Codex and apply wallpaper",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
+        if (choice != MessageBoxResult.Yes) return;
+
+        await RunBusyAsync(async cancellationToken =>
+        {
+            _settingsTimer.Stop();
+            var settings = ReadSettings();
+            _state.Settings = settings;
+            _state.Wallpapers = _wallpapers.ToList();
+            _state.SelectedWallpaperId = selected.Id;
+            _state.PendingWallpaperId = selected.Id;
+            _state.PendingActivation = true;
             SaveState();
-            var paletteStatus = settings.AutoPalette
-                ? applyResult.Palette is null
-                    ? " Palette sampling was unavailable, so the neutral fallback remains active."
-                    : $" Palette: surface {applyResult.Palette.Surface}, accent {applyResult.Palette.Accent}, text contrast {applyResult.Palette.TextContrast:0.0}:1."
-                : " Automatic palette is off.";
-            var modeStatus = applyResult.Mode switch
+
+            UploadProgress.Value = 0;
+            UploadProgress.Visibility = Visibility.Visible;
+            var progress = new Progress<double>(value => UploadProgress.Value = value * 100);
+            try
             {
-                "live-scene" => " Live 2D scene rendering is active.",
-                "scene-partial" => " Live 2D scene rendering is active with unsupported layers omitted.",
-                "scene-static" => " The renderer used the full-resolution scene texture fallback.",
-                "wallpaper-engine-capture" => " Wallpaper Engine native rendering and pointer forwarding are active through a reduced-frame-rate capture stream.",
-                "animated-preview" => " The low-resolution animated Workshop preview is active.",
-                "static-preview" => " The static Workshop preview fallback is active.",
-                "video" => " Direct video playback is active.",
-                _ => " Direct image playback is active."
-            };
-            var warningStatus = string.IsNullOrWhiteSpace(applyResult.Warning) ? string.Empty : " Note: " + applyResult.Warning;
-            SetStatus($"Applied {selected.DisplayTitle}.{modeStatus}{paletteStatus}{warningStatus} No Codex file was changed; Restore removes the whole layer.");
-            if (applyResult.Mode == "wallpaper-engine-capture")
+                SetStatus("Stopping the background waiter before the controlled restart…");
+                var workerStopped = await Task.Run(
+                    () => DeferredRestoreLauncher.RequestStopAndWait(TimeSpan.FromSeconds(8)),
+                    cancellationToken);
+                if (!workerStopped)
+                {
+                    throw new InvalidOperationException(
+                        "The background wallpaper waiter did not stop, so Codex was left untouched. Close the older controller build and retry.");
+                }
+
+                SetStatus("Requesting a normal Codex shutdown. No process will be force-terminated…");
+                await CodexRestartService.RequestNormalCloseAsync(TimeSpan.FromSeconds(45), cancellationToken);
+                SetStatus("Codex closed normally. Reopening it with the verified local wallpaper channel…");
+                var restored = await AutoRestoreService.RestoreAsync(
+                    _state, _injection, activateIfNeeded: true, progress, cancellationToken);
+                EndpointTextBox.Text = _state.CdpBaseUrl;
+                AumidTextBox.Text = _state.Aumid ?? string.Empty;
+                ConnectButton.Content = "Reconnect";
+                CompleteSuccessfulApply(selected, settings, restored.ApplyResult, "Restarted Codex normally and applied");
+            }
+            catch
             {
-                _ = MonitorCaptureAsync(selected.Id, selected.DisplayTitle, _injection.ActiveCaptureCompletion);
+                // The selected wallpaper remains queued. If Codex stayed open or
+                // the controlled restart could not finish, the waiter resumes and
+                // applies it after the user's next natural exit.
+                try { DeferredRestoreLauncher.EnsureRunning(); } catch { }
+                SetQueuedStatus();
+                throw;
+            }
+            finally
+            {
+                UploadProgress.Visibility = Visibility.Collapsed;
             }
         });
+    }
+
+    private void CompleteSuccessfulApply(
+        WallpaperEntry selected,
+        WallpaperSettings settings,
+        WallpaperApplyResult applyResult,
+        string action)
+    {
+        _state.LastAppliedWallpaperId = selected.Id;
+        _state.PendingWallpaperId = null;
+        _state.PendingActivation = false;
+        SaveState();
+        var paletteStatus = settings.AutoPalette
+            ? applyResult.Palette is null
+                ? " Palette sampling was unavailable, so the neutral fallback remains active."
+                : $" Palette: surface {applyResult.Palette.Surface}, accent {applyResult.Palette.Accent}, text contrast {applyResult.Palette.TextContrast:0.0}:1."
+            : " Automatic palette is off.";
+        var modeStatus = applyResult.Mode switch
+        {
+            "live-scene" => " Live 2D scene rendering is active.",
+            "scene-partial" => " Live 2D scene rendering is active with unsupported layers omitted.",
+            "scene-static" => " The renderer used the full-resolution scene texture fallback.",
+            "wallpaper-engine-capture" => " Wallpaper Engine native rendering and pointer forwarding are active through a reduced-frame-rate capture stream.",
+            "animated-preview" => " The low-resolution animated Workshop preview is active.",
+            "static-preview" => " The static Workshop preview fallback is active.",
+            "video" => " Direct video playback is active.",
+            _ => " Direct image playback is active."
+        };
+        var warningStatus = string.IsNullOrWhiteSpace(applyResult.Warning) ? string.Empty : " Note: " + applyResult.Warning;
+        RestartApplyButton.Visibility = Visibility.Collapsed;
+        SetStatus($"{action} {selected.DisplayTitle}.{modeStatus}{paletteStatus}{warningStatus} No Codex file was changed; Restore removes the whole layer.");
+        if (applyResult.Mode == "wallpaper-engine-capture")
+        {
+            _ = MonitorCaptureAsync(selected.Id, selected.DisplayTitle, _injection.ActiveCaptureCompletion);
+        }
     }
 
     private async Task MonitorCaptureAsync(string wallpaperId, string title, Task completion)
@@ -594,6 +679,8 @@ public partial class MainWindow : Window
                 _state.PendingWallpaperId = null;
                 _state.PendingActivation = false;
                 SaveState();
+                DeferredRestoreLauncher.RequestStop();
+                RestartApplyButton.Visibility = Visibility.Collapsed;
                 SetStatus("Cancelled the queued wallpaper restore. No running Codex process was changed.");
                 return;
             }
@@ -602,6 +689,8 @@ public partial class MainWindow : Window
             _state.PendingWallpaperId = null;
             _state.PendingActivation = false;
             SaveState();
+            DeferredRestoreLauncher.RequestStop();
+            RestartApplyButton.Visibility = Visibility.Collapsed;
             SetStatus($"Restored the original Codex background on {cleanedPages} app page(s). Temporary layers, style changes and Blob URLs were removed.");
         });
     }
@@ -876,7 +965,8 @@ public partial class MainWindow : Window
 
     private void SetQueuedStatus()
     {
-        SetStatus("Queued — the wallpaper is not applied yet. Codex is currently running without its startup-only wallpaper channel, so the current task was left untouched. The controller will retry after Codex closes normally; click Restore Codex background to cancel the queue.");
+        RestartApplyButton.Visibility = Visibility.Visible;
+        SetStatus("Queued — Codex is open without its startup-only wallpaper channel, so the current task was left untouched. Choose 'Restart Codex normally and apply now' for immediate use, or keep working: the background waiter will apply it after your next natural Codex exit. Enable Windows sign-in restore to prevent this on future restarts.");
     }
 
     private void WallpaperSearch_TextChanged(object sender, TextChangedEventArgs e)

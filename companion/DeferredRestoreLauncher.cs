@@ -18,6 +18,12 @@ public static class DeferredRestoreLauncher
         stopEvent.Set();
     }
 
+    public static bool RequestStopAndWait(TimeSpan timeout)
+    {
+        RequestStop();
+        return WaitForWorkerExit(timeout);
+    }
+
     public static void EnsureRunning()
     {
         // A previous GUI session may have handed capture to a worker. Revoke it

@@ -8,11 +8,11 @@
 
 1. 在 Wallpaper Engine 中订阅或选择壁纸，等待素材下载完成。
 2. 运行 `CodexWallpaperSkin.exe`，依次点击 **Detect app**、**Activate with CDP**，等待 Codex 打开后点击 **Connect**。
-3. 若 Codex 已经普通启动，直接选择壁纸并点击 **Apply selected**：软件会排队等待你日后自然关闭 Codex，不会强制结束当前任务。若希望立即生效，请先保存内容并自行正常退出 Codex。
+3. 若 Codex 已经普通启动，直接选择壁纸并点击 **Apply selected**：软件会安全排队。需要立即生效时，先保存或暂停工作，再点击 **Restart Codex normally and apply now**；软件只请求正常关闭并自动重开，绝不会强制结束进程。
 4. 点击 **Scan Wallpaper Engine**，选择列表中的同名项目，确认自动配色、模糊、静音等参数，然后点击 **Apply selected**。
 5. 点击 **Restore Codex background** 可移除本项目的页面层。恢复不会关闭 CDP 端口；完全退出该 Codex 进程才会关闭端口。
 
-成功 Apply 后会记住最后一张壁纸；以后打开调节器或重新 Connect 会自动恢复。右侧可选择“Windows 登录时恢复”。点击参数右侧数字可输入精确值。**Restore Codex background** 会清除已记住的壁纸与等待队列。若 Codex 已在没有 CDP 参数的情况下运行，软件会立即识别并延迟应用，不再等待 30 秒报错。
+成功 Apply 后会记住最后一张壁纸；以后打开调节器或重新 Connect 会自动恢复。建议启用 **Restore at Windows sign-in**，让后台组件在登录后先准备壁纸通道并按需启动 Codex，减少“先开 Codex”造成的重启需求。点击参数右侧数字可输入精确值。**Restore Codex background** 会清除已记住的壁纸与等待队列。
 
 列表上方的 **Search**、类型和收藏夹筛选可快速缩小结果。选择壁纸后，**Rename** 只修改本软件中的显示名称，**Set collection** 可建立“治愈”“动漫”“风景”等个人收藏夹；重新扫描不会丢失这些整理信息，也不会改动 Steam 或本地素材。
 

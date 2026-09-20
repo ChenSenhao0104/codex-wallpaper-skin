@@ -19,6 +19,8 @@
 - 一次性 32×32 取色可协调半透明面板、强调色和继承文字；代码、终端、警告和状态色保持原样。
 - 可调填充、焦点、不透明度、黑色遮罩、亮度、对比度、饱和度、取色强度、面板透明度、文字协调、模糊、动画速度、Scene FPS 和渲染比例；点击参数右侧数字可精确输入。
 - 记住最后一次成功应用的壁纸；调节器下次打开、重新 Connect 或 Windows 登录时可自动恢复。若 Codex 已普通启动，软件会排队等待用户自然关闭，不中断当前任务。点击 **Restore Codex background** 会同时清除记忆与等待队列。
+- 提供个人收藏夹、技术类型筛选、即时搜索和仅限本软件的重命名；重新扫描不会清除整理结果，也不会改动工坊文件。
+- 如果用户先普通启动了 Codex，可在保存工作后使用 **Restart Codex normally and apply now** 一次完成正常关闭、带控制通道重开和壁纸应用；超时绝不强制结束进程，原等待队列继续保留。
 - 媒体解码成功后原子切换；失败保留旧背景；支持隐藏暂停、异常清理和 **Restore Codex background** 一键恢复。
 
 复杂或可交互的 Scene 不再由本项目猜测其私有格式，而由 Wallpaper Engine 自身渲染。Codex 中的鼠标移动与按压会映射到私有渲染窗口，因此水波、视差等交互仍由原壁纸实现。此模式要求 Wallpaper Engine 已安装并在播放期间保持后台运行；调节器关闭时会把会话交给隐藏恢复进程。内置 2D 渲染器只作为明确标注的兼容后备。
@@ -28,7 +30,7 @@
 详细步骤见 [具体操作流程](usage-process.md)。普通用户从 Release 下载 `CodexWallpaperSkin-win-x64.zip` 和对应 `.sha256`，校验后完整解压并运行 `CodexWallpaperSkin.exe`。便携版是自包含程序，不需要安装 Python、PyYAML、Node.js 或 .NET。
 
 1. 运行软件，依次点击 **Detect app** 和 **Activate with CDP**。
-2. 如果 Codex 已普通启动，选择壁纸并点击 **Apply selected**；软件会安全排队，等你日后自然关闭 Codex 后自动恢复，不会强制结束当前任务。若希望立即生效，请先自行保存内容并正常退出 Codex。
+2. 如果 Codex 已普通启动，选择壁纸并点击 **Apply selected**；软件会安全排队。需要立即生效时，保存工作后点击 **Restart Codex normally and apply now**，否则保持队列并继续当前任务。
 3. Codex 重新打开后点击 **Connect**。
 4. 点击 **Scan Wallpaper Engine**，选择壁纸并检查右侧参数。
 5. 点击 **Apply selected**；不再使用时点击 **Restore Codex background**。

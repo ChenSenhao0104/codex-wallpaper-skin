@@ -212,9 +212,15 @@
                                   Checked="StartupRestoreChanged" Unchecked="StartupRestoreChanged"
                                   ToolTip="Adds or removes a per-user Windows startup entry. No administrator permission is required."/>
 
-                        <StackPanel Orientation="Horizontal">
-                            <Button x:Name="ApplyButton" Content="Apply selected" Click="Apply_Click" IsEnabled="False"/>
-                            <Button Content="Restore Codex background" Click="Restore_Click" Background="#9A3944" Margin="0"/>
+                        <StackPanel>
+                            <StackPanel Orientation="Horizontal">
+                                <Button x:Name="ApplyButton" Content="Apply selected" Click="Apply_Click" IsEnabled="False"/>
+                                <Button Content="Restore Codex background" Click="Restore_Click" Background="#9A3944" Margin="0"/>
+                            </StackPanel>
+                            <Button x:Name="RestartApplyButton" Content="Restart Codex normally and apply now"
+                                    Click="RestartCodexAndApply_Click" Background="#8A5B18" Margin="0,8,0,0"
+                                    Visibility="Collapsed"
+                                    ToolTip="Requests a normal Codex close; never force-terminates it. Your queued wallpaper remains safe if Codex does not exit."/>
                         </StackPanel>
                         <ProgressBar x:Name="UploadProgress" Height="4" Minimum="0" Maximum="100" Margin="0,12,0,0" Visibility="Collapsed"/>
                     </StackPanel>

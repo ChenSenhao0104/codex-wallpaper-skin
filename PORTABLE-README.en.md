@@ -6,11 +6,11 @@ This is a self-contained Windows 11 x64 companion. It needs no Python, PyYAML, o
 
 1. Subscribe to or select a wallpaper in Wallpaper Engine and let its local files finish downloading.
 2. Run `CodexWallpaperSkin.exe`; choose **Detect app**, then **Activate with CDP**, wait for Codex to open, and choose **Connect**.
-3. If Codex is already running normally, select a wallpaper and choose **Apply selected**. The app queues it without terminating the active task and restores it after your next natural Codex exit. Exit Codex yourself first only when you need immediate application.
+3. If Codex is already running normally, select a wallpaper and choose **Apply selected**. The app queues it without terminating the active task. For immediate use, save or pause active work and choose **Restart Codex normally and apply now**; the app requests a normal shutdown and never force-terminates Codex.
 4. Choose **Scan Wallpaper Engine**, select the matching project, review automatic palette, blur, mute, and other controls, then choose **Apply selected**.
 5. Use **Restore Codex background** to remove this project's page layer. Restore does not close the CDP port; fully exit that Codex process to close it.
 
-The last successful Apply is remembered and restored the next time the controller opens or reconnects. Background settings also offers an opt-in Windows sign-in restore. Click any displayed setting value for exact numeric entry. **Restore Codex background** clears both remembered and queued state. A normally started Codex instance is detected immediately and deferred safely instead of failing after 30 seconds.
+The last successful Apply is remembered and restored the next time the controller opens or reconnects. Enable **Restore at Windows sign-in** to prepare the wallpaper channel at sign-in and start Codex when needed, reducing startup-order problems. Click any displayed setting value for exact numeric entry. **Restore Codex background** clears both remembered and queued state. A normally started Codex instance is detected immediately and can either be restarted normally with confirmation or deferred safely.
 
 Use **Search**, the type filter, and the collection filter above the list to narrow a large library. After selecting a wallpaper, **Rename** changes only its display name in this app and **Set collection** creates personal groups such as Relaxing, Anime, Landscape, or Work. Rescanning preserves this organization and never renames Steam Workshop projects or local files.
 
