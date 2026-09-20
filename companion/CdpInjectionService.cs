@@ -54,6 +54,21 @@ public sealed class CdpInjectionService : IAsyncDisposable
     /// <summary>Human-readable capture health for Doctor and local measurements.</summary>
     public string? CaptureMetricsSummary => _captureSession?.MetricsSummary;
 
+    /// <summary>What the transported frames cost, or null when no stream is active.</summary>
+    public CaptureTransportMetrics? TransportMetrics => _captureSession?.TransportMetrics;
+
+    /// <summary>
+    /// Gate 8 check: after Restore, the private render window this session owned
+    /// must be gone. Null when no session was ever started.
+    /// </summary>
+    public bool? OwnedCaptureWindowAlive => _captureSession?.IsWindowAlive;
+
+    /// <summary>
+    /// The private render window's title, read before Restore so the window can be
+    /// checked afterwards. Null when no native session ran.
+    /// </summary>
+    public string? OwnedCaptureWindowName => _captureSession?.WindowName;
+
     /// <summary>Structured capture health, or null when no native stream is active.</summary>
     public CaptureHealth? CaptureHealthSnapshot => _captureSession?.Snapshot();
 

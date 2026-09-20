@@ -20,11 +20,11 @@ Three increments are recorded here.
 
 **Increment 6** completes section 3's *documented fallback* branch. `CaptureBackends` probes the machine with P/Invoke only (activating the `Windows.Graphics.Capture.GraphicsCaptureSession` runtime class on a dedicated MTA thread), records whether Windows Graphics Capture is actually usable and why, selects the implemented path explicitly, and reports it in Doctor and in the capture metrics — so the fallback is named at runtime rather than implied.
 
-**Increment 7** adds the measurement harness the Issue asks for under "Required evidence". `--measure --list` is read-only and prints every local Scene project with its backend decision, package version/size and engine availability; `--measure <workshop-id> [--seconds N]` applies one wallpaper with neutral settings, samples capture health and process resources for N seconds, measures input-channel latency, and always restores every Codex page.
+**Increment 7** adds the measurement harness the Issue asks for under "Required evidence". `--measure --list` is read-only and prints every local Scene project with its backend decision, package version/size and engine availability; `--measure <workshop-id> [--seconds N]` applies one wallpaper with neutral settings, samples capture health and process resources for N seconds, measures input-channel latency, and always restores every Codex page. It also records the first live measurement.
 
-**Increment 8** adds the measurement harness the Issue asks for under "Required evidence". `--measure --list` is read-only and prints every local Scene project with its backend decision, package version/size and engine availability; `--measure <workshop-id> [--seconds N]` applies one wallpaper with neutral settings, samples capture health and process resources for seconds, measures input-channel latency, and always restores every Codex page. It also records the first live measurement.
+**Increment 8** tested the direct transport against the live page. The result is negative and is recorded in `docs/ARCHITECTURE_DECISIONS.md` as ADR-007: a Codex `app://` page refuses **both** an `<img>` load and a `fetch` to `http://127.0.0.1:<port>` (`cdp:probe-refused/fetch-refused`), so an HTTP frame stream cannot be reached from the injected layer on this platform. The probe and the fallback both behaved exactly as designed — the wallpaper rendered over CDP with the direct transport declined — but the MJPEG server and its wiring were then removed rather than shipped as unreachable network code. The transport axis therefore still needs a CSP-compatible answer.
 
-**Increment 9** tested the direct transport against the live page. The result is negative and is recorded in `docs/ARCHITECTURE_DECISIONS.md` as ADR-007: a Codex `app://` page refuses **both** an `<img>` load and a `fetch` to `http://127.0.0.1:<port>` (`cdp:probe-refused/fetch-refused`), so an HTTP frame stream cannot be reached from the injected layer on this platform. The probe and the fallback both behaved exactly as designed — the wallpaper rendered over CDP with the direct transport declined — but the MJPEG server and its wiring were then removed rather than shipped as unreachable network code. The transport axis therefore still needs a CSP-compatible answer.
+**Increment 9** measures where a frame's cost actually goes, closes gates 7 and 8, and fixes the first real gate-8 defect it found. The capture session now accounts for every transported frame (encoded bytes and the full transfer duration), so the next transport decision is data-driven rather than a guess. A Wallpaper Engine video project is asserted to stay direct video, and Restore is now verified against the desktop: the private render window must be gone, the engine process is only terminated when this session started it, and windows left behind by an earlier run are released before a new capture starts.
 
 ### Changed boundaries
 
@@ -172,6 +172,22 @@ What this establishes:
 ### Remaining manual protocol
 
 The rest of the local manual protocol in `docs/compatibility/WALLPAPER_ENGINE_MATRIX.md` — framing, sharpness, colour, flashing across the full observation, scene-level interaction feel, resize/minimise/restore, and switching between two wallpapers — still needs a human at the screen. This increment adds the numbers, not the visual verdict.
+
+### Per-frame cost, measured (2026-09-20)
+
+Same configuration as the table above. One run with a stale render window left open by an earlier build is also shown, because it is the run that exposed the gate-8 defect.
+
+| Measurement | Clean run | Run before the window fix |
+| --- | --- | --- |
+| Effective capture FPS (target 15) | 12.0 | 7.5 |
+| Frames published / skipped-unchanged | 253 / 4 | 41 / 23 |
+| Average encoded frame | 337,877 B (~330 KiB) | 330,916 B (~323 KiB) |
+| Frames rejected by the quality gate | 0 | 0 |
+| Full frame transfer (CDP round trip included) | 10.76 ms | 13.42 ms |
+| Input channel latency (median) | 1.74 ms | not measurable (stream stalled) |
+| Open private render windows after restore | 0 | 1 (left by an earlier run) |
+
+Where the time goes: a 15 FPS target allows 66.7 ms per frame, and the transport takes ~10.8 ms of it, so **the CDP transfer is roughly a sixth of the budget**. The remaining ~55 ms is `PrintWindow` capture plus JPEG encoding of a 1920x1200 surface. That is the measured answer to "which transport change is worth making": shrinking the payload (roughly 4.2 MB/s of JPEG today) is a secondary win, while removing the `PrintWindow` readback — the Windows Graphics Capture work — addresses the dominant cost. The stale-window run is a reminder that a leftover render window roughly trebles per-frame cost, which is why the gate-8 fix also restores throughput.
 
 ## 8. Known limitations and fallbacks
 

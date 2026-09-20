@@ -107,6 +107,10 @@ internal static class MeasurementCommand
         await using var injection = new CdpInjectionService();
         var companion = Process.GetCurrentProcess();
         var metrics = new List<CaptureHealth>();
+        CaptureTransportMetrics? transport = null;
+        string? ownedWindowName = null;
+        var openOwnedWindowsAfterRestore = 0;
+        var ownedWindowPresentBeforeRestore = false;
         double[] latencies = [];
         var applied = false;
         try
@@ -163,7 +167,10 @@ internal static class MeasurementCommand
             {
                 latencies = (await injection.MeasureInputLatencyAsync(12, cancellationToken)).ToArray();
             }
-            PrintSummary(wallpaper, metrics, latencies, companion, resources);
+            transport = injection.TransportMetrics;
+            // Gate 8 needs the window identity before Restore clears the session.
+            ownedWindowName = injection.OwnedCaptureWindowName;
+            PrintSummary(wallpaper, metrics, latencies, companion, resources, transport);
         }
         catch (Exception exception)
         {
@@ -186,9 +193,40 @@ internal static class MeasurementCommand
                     Console.Error.WriteLine("Restore failed: " + exception.Message);
                 }
             }
+
+            // Gate 8: the render window this run owned must no longer exist on the
+            // desktop, checked against the desktop rather than the session object.
+            ownedWindowPresentBeforeRestore = RenderWindowProbe.IsWindowPresent(ownedWindowName ?? string.Empty);
+            openOwnedWindowsAfterRestore = RenderWindowProbe.CountOpenWindows(RenderWindowProbe.WindowTitlePrefix);
+            Console.WriteLine(ownedWindowName is null
+                ? "Gate 8: no owned render window was created by this run."
+                : $"Gate 8: this run's window present after restore: {ownedWindowPresentBeforeRestore}; "
+                    + $"open private render windows now: {openOwnedWindowsAfterRestore}.");
+            if (openOwnedWindowsAfterRestore > 0)
+            {
+                Console.WriteLine("Gate 8: FAIL — a private render window survived restore.");
+            }
         }
 
+        PrintRestoreVerdict(ownedWindowName, ownedWindowPresentBeforeRestore, openOwnedWindowsAfterRestore);
         return 0;
+    }
+
+    private static void PrintRestoreVerdict(
+        string? ownedWindowName,
+        bool presentBeforeRestore,
+        int openAfterRestore)
+    {
+        if (ownedWindowName is null)
+        {
+            Console.WriteLine("Owned capture window released: not applicable (no native capture session ran).");
+            return;
+        }
+        Console.WriteLine(openAfterRestore == 0 && !presentBeforeRestore
+            ? "Owned capture window released: yes (the owned window was already gone before the check)."
+            : openAfterRestore == 0
+                ? "Owned capture window released: yes."
+                : $"Owned capture window released: NO ({openAfterRestore} window(s) still open).");
     }
 
     /// <summary>Working set and CPU for the companion, Wallpaper Engine and Codex.</summary>
@@ -266,7 +304,8 @@ internal static class MeasurementCommand
         IReadOnlyList<CaptureHealth> metrics,
         IReadOnlyList<double> latencies,
         Process companion,
-        IReadOnlyList<ResourceSample> resources)
+        IReadOnlyList<ResourceSample> resources,
+        CaptureTransportMetrics? transport)
     {
         var last = metrics.Count > 0 ? metrics[^1] : null;
         var rates = new List<double>();
@@ -291,6 +330,13 @@ internal static class MeasurementCommand
             skippedUnchangedFrames = last?.SkippedUnchangedFrames ?? 0,
             framesPublishedPerSecondAverage = rates.Count == 0 ? 0 : Math.Round(rates.Average(), 2),
             framesPublishedPerSecondMinimum = rates.Count == 0 ? 0 : rates.Min(),
+            averageFrameBytes = transport is null ? 0 : Math.Round(transport.AverageFrameBytes, 1),
+            maximumFrameBytes = transport?.MaximumFrameBytes ?? 0,
+            transportedBytes = transport?.PublishedBytes ?? 0,
+            bytesPerSecond = transport is null || metrics.Count == 0
+                ? 0
+                : Math.Round(transport.PublishedBytes / Math.Max(1d, metrics.Count), 1),
+            averageFrameTransferMs = transport is null ? 0 : Math.Round(transport.AveragePublishMilliseconds, 2),
             inputLatencySamples = latencies.Count,
             inputLatencyMedianMs = latencies.Count == 0 ? 0 : Math.Round(Median(latencies), 2),
             inputLatencyMinMs = latencies.Count == 0 ? 0 : Math.Round(latencies.Min(), 2),

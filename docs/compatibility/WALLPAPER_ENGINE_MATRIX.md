@@ -65,6 +65,8 @@ Fill this table during product convergence; it evaluates behavior, not authors o
 | 3756621387 |  | not run |  | Local manual protocol not executed in the automated increment. |
 | Static image control |  | pass (auto) |  | `scripts/runtime-smoke-test.mjs` image path unchanged. |
 | Ordinary video control |  | pass (auto) |  | `scripts/runtime-smoke-test.mjs` video path unchanged. |
+| Wallpaper Engine video project |  | pass (auto) |  | `--self-test`: a `type: video` project stays `Direct`/`video` even with Wallpaper Engine installed, native capture refuses it, and a broken signature falls back to the labeled preview. |
+| Restore releases owned capture resources |  | pass (auto + live) |  | `--self-test`: an owned process is terminated and a foreign one with a mismatched image is never touched. Live: after Restore the run's private render window is gone and zero private render windows remain. This check found a real defect — an earlier build leaked one render window because `closeWallpaper` failed silently. |
 | Application rejection control |  | pass (auto) |  | `--self-test`: application projects stay rejected even with Wallpaper Engine installed. |
 | PKGV0024 / over-limit / loose Scene eligibility |  | pass (auto + real install) |  | `--self-test` covers synthetic PKGV0024, over-limit and loose projects; `--measure --list` classified all 21 locally installed Scene projects as `NativeScene`, including the seven PKGV0024 projects and the 170.70 MiB one. |
 | Mouse move / button / wheel / leave transport |  | pass (auto) |  | `--self-test` mapping and wheel arithmetic plus the Node smoke test's ordered-input check (right button, wheel, left button, leave) and movement coalescing. |

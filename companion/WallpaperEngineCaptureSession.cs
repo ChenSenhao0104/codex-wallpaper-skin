@@ -64,6 +64,15 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private double _effectiveFrameRate;
     private string? _lastRejectionReason;
     private string? _failureReason;
+    private long _publishedBytes;
+    private int _lastFrameBytes;
+    private int _maximumFrameBytes;
+    private long _publishCalls;
+    private double _totalPublishMilliseconds;
+    private readonly object _transportLock = new();
+    private int _windowReleased; // 0 unknown, 1 released, 2 leaked
+    private string? _windowLeakReason;
+    private int? _ownedEngineProcessId;
 
     private WallpaperEngineCaptureSession(
         string engineExecutable,
@@ -77,7 +86,8 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         int windowWidth,
         int windowHeight,
         int viewportWidth,
-        int viewportHeight)
+        int viewportHeight,
+        int? ownedEngineProcessId)
     {
         _engineExecutable = engineExecutable;
         _windowName = windowName;
@@ -91,6 +101,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         _windowHeight = windowHeight;
         _viewportWidth = Math.Max(1, viewportWidth);
         _viewportHeight = Math.Max(1, viewportHeight);
+        _ownedEngineProcessId = ownedEngineProcessId;
     }
 
     public byte[] InitialFrame { get; }
@@ -103,6 +114,50 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
 
     /// <summary>Frames skipped because the surface had not changed.</summary>
     public int SkippedUnchangedFrameCount => Volatile.Read(ref _skippedUnchangedFrames);
+
+    /// <summary>Encoded size and transfer cost of the frames actually sent.</summary>
+    public CaptureTransportMetrics TransportMetrics
+    {
+        get
+        {
+            double milliseconds;
+            lock (_transportLock)
+            {
+                milliseconds = _totalPublishMilliseconds;
+            }
+            return new CaptureTransportMetrics(
+                Interlocked.Read(ref _publishedBytes),
+                Volatile.Read(ref _lastFrameBytes),
+                Volatile.Read(ref _maximumFrameBytes),
+                Interlocked.Read(ref _publishCalls),
+                milliseconds);
+        }
+    }
+
+    /// <summary>The private render window's title, for ownership checks.</summary>
+    public string WindowName => _windowName;
+
+    /// <summary>
+    /// Closes render windows that a previous run left behind. Only windows owned
+    /// by the Wallpaper Engine installation beside this project are touched, so a
+    /// foreign window that happens to reuse the title is never disturbed.
+    /// </summary>
+    private static void ReleaseLeftoverRenderWindows(string engineRoot)
+    {
+        foreach (var window in RenderWindowProbe.FindOpenWindows(RenderWindowProbe.WindowTitlePrefix))
+        {
+            if (!IsExpectedWallpaperEngineWindow(window.Handle, engineRoot))
+            {
+                continue;
+            }
+            _ = RenderWindowProbe.TryCloseWindowHandle(window.Handle, TimeSpan.FromSeconds(2));        }
+    }
+
+    /// <summary>True while the private render window still exists on this desktop.</summary>
+    public bool IsWindowAlive => IsWindow(_windowHandle);
+
+    /// <summary>The engine process this session started, or null when it reused one.</summary>
+    public int? OwnedEngineProcessId => _ownedEngineProcessId;
     public string LastRejectionReason => Volatile.Read(ref _lastRejectionReason) ?? string.Empty;
 
     /// <summary>Why streaming ended, or empty while it is still running.</summary>
@@ -169,7 +224,10 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         var width = Math.Clamp((int)Math.Round(Math.Max(960, viewportWidth) * scale), 960, 1920);
         var height = Math.Clamp((int)Math.Round(Math.Max(600, viewportHeight) * scale), 600, 1200);
         var windowName = "Codex Wallpaper Skin " + Guid.NewGuid().ToString("N");
-        var controlExecutable = await EnsureEngineRunningAsync(engineRoot, executable, cancellationToken);
+        // A previous run can have crashed or failed to close its window; those
+        // windows are ours, so release them before adding another one.
+        ReleaseLeftoverRenderWindows(engineRoot);
+        var (controlExecutable, startedEngineProcessId) = await EnsureEngineRunningAsync(engineRoot, executable, cancellationToken);
         await RunControlWithStartupRetryAsync(controlExecutable,
             ["-control", "openWallpaper", "-file", projectPath, "-playInWindow", windowName,
              "-width", width.ToString(), "-height", height.ToString(),
@@ -195,7 +253,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
             return new WallpaperEngineCaptureSession(
                 controlExecutable, windowName, handle, initialFrame, settings.SceneFrameRate,
                 settings.PauseWhenHidden, baseRate, baseVolume, width, height,
-                viewportWidth, viewportHeight);
+                viewportWidth, viewportHeight, startedEngineProcessId);
         }
         catch
         {
@@ -289,7 +347,11 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                         }
                         else if (outcome.Frame is not null && outcome.Quality.Acceptable)
                         {
+                            // Measure what the frame actually costs: the encoded size
+                            // plus the full transport round trip.
+                            var publishStarted = Stopwatch.GetTimestamp();
                             await publishFrame(outcome.Frame, cancellationToken);
+                            RecordTransport(outcome.Frame.Length, Stopwatch.GetElapsedTime(publishStarted));
                             Interlocked.Increment(ref _publishedFrames);
                             RecordPublishedFrame();
                             Volatile.Write(ref _lastPublishedSignature, outcome.Signature);
@@ -637,13 +699,18 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         }
     }
 
-    private static async Task<string> EnsureEngineRunningAsync(
+    /// <summary>
+    /// Reuses a running Wallpaper Engine when one exists. The engine the user was
+    /// already running is never touched; an engine this call starts is recorded so
+    /// Restore can release it again.
+    /// </summary>
+    private static async Task<(string Executable, int? StartedProcessId)> EnsureEngineRunningAsync(
         string engineRoot,
         string executable,
         CancellationToken cancellationToken)
     {
         var runningExecutable = FindRunningEngine(engineRoot);
-        if (runningExecutable is not null) return runningExecutable;
+        if (runningExecutable is not null) return (runningExecutable, null);
         var startInfo = new ProcessStartInfo
         {
             FileName = executable,
@@ -652,14 +719,16 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
             WindowStyle = ProcessWindowStyle.Hidden
         };
         startInfo.ArgumentList.Add("-silent");
-        _ = Process.Start(startInfo)
+        var started = Process.Start(startInfo)
             ?? throw new InvalidOperationException("Wallpaper Engine could not be started for high-fidelity Scene rendering.");
+        var startedProcessId = started.Id;
+        started.Dispose();
         var deadline = DateTimeOffset.UtcNow.AddSeconds(15);
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
             runningExecutable = FindRunningEngine(engineRoot);
-            if (runningExecutable is not null) return runningExecutable;
+            if (runningExecutable is not null) return (runningExecutable, startedProcessId);
             await Task.Delay(150, cancellationToken);
         }
         throw new TimeoutException("Wallpaper Engine did not start within 15 seconds.");
@@ -767,17 +836,47 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         throw new TimeoutException("Wallpaper Engine did not accept the property update within 15 seconds.", lastFailure);
     }
 
-    private static async Task TryCloseWindowAsync(string executable, string windowName)
+    /// <summary>
+    /// Closes the private render window and verifies it is actually gone. The
+    /// control command can fail silently, which previously left a stale render
+    /// window behind after Restore, so a title-based close is used as a backstop
+    /// and the outcome is recorded for Doctor instead of being swallowed.
+    /// </summary>
+    private static async Task<(bool Released, string Reason)> TryCloseWindowAsync(string executable, string windowName)
     {
-        try
+        for (var attempt = 0; attempt < 2; attempt++)
         {
-            await RunControlAsync(executable,
-                ["-control", "closeWallpaper", "-location", windowName], CancellationToken.None);
+            try
+            {
+                await RunControlAsync(executable,
+                    ["-control", "closeWallpaper", "-location", windowName], CancellationToken.None);
+            }
+            catch
+            {
+                // Fall through to the verification and the backstop below.
+            }
+            if (!RenderWindowProbe.IsWindowPresent(windowName))
+            {
+                return (true, string.Empty);
+            }
         }
-        catch
+
+        if (RenderWindowProbe.TryCloseWindow(windowName, TimeSpan.FromSeconds(3)))
         {
+            return (true, string.Empty);
         }
+        return (false,
+            "the render window did not close after two control commands and a window close request");
     }
+
+    /// <summary>True once the owned render window is confirmed gone.</summary>
+    public bool WindowReleased => Volatile.Read(ref _windowReleased) == 1;
+
+    /// <summary>True when the owned render window could not be released.</summary>
+    public bool WindowLeaked => Volatile.Read(ref _windowReleased) == 2;
+
+    /// <summary>Why the render window could not be released, or empty.</summary>
+    public string WindowLeakReason => Volatile.Read(ref _windowLeakReason) ?? string.Empty;
 
     /// <summary>
     /// Maintains a rolling publish rate so a stream that cannot keep up can be
@@ -798,6 +897,22 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         Volatile.Write(ref _rateWindowStartedAt, Stopwatch.GetTimestamp());
     }
 
+    /// <summary>Accumulates the cost of the frames that were actually transported.</summary>
+    private void RecordTransport(int frameBytes, TimeSpan elapsed)
+    {
+        Interlocked.Add(ref _publishedBytes, frameBytes);
+        Interlocked.Increment(ref _publishCalls);
+        Volatile.Write(ref _lastFrameBytes, frameBytes);
+        if (frameBytes > Volatile.Read(ref _maximumFrameBytes))
+        {
+            Volatile.Write(ref _maximumFrameBytes, frameBytes);
+        }
+        lock (_transportLock)
+        {
+            _totalPublishMilliseconds += elapsed.TotalMilliseconds;
+        }
+    }
+
     private static string LimitReason(string reason) =>
         reason.Length <= 200 ? reason : reason[..200];
 
@@ -812,9 +927,22 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         {
             try { await _streamTask.WaitAsync(TimeSpan.FromSeconds(3)); } catch { }
         }
-        await TryCloseWindowAsync(_engineExecutable, _windowName);
+        var release = await TryCloseWindowAsync(_engineExecutable, _windowName);
+        Volatile.Write(ref _windowReleased, release.Released ? 1 : 2);
+        Volatile.Write(ref _windowLeakReason, release.Reason);
+        // Release an engine this session started. An engine the user was already
+        // running is left alone, because it may be driving their desktop wallpaper.
+        if (_ownedEngineProcessId is { } ownedProcessId)
+        {
+            OwnedProcessTermination.TryTerminate(ownedProcessId, ExpectedEngineProcessName(_engineExecutable));
+            _ownedEngineProcessId = null;
+        }
         _lifetime.Dispose();
     }
+
+    /// <summary>The process name Wallpaper Engine runs under, from its executable.</summary>
+    internal static string ExpectedEngineProcessName(string executable) =>
+        Path.GetFileNameWithoutExtension(executable);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct NativeRect

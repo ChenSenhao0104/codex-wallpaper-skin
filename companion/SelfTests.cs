@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 
@@ -1036,6 +1037,120 @@ public static class SelfTests
             }
             True(!detected.WindowsGraphicsCaptureSupported || detected.OsBuild >= CaptureBackends.MinimumGraphicsCaptureBuild);
         });
+        Check("Wallpaper Engine video projects stay direct video", () =>
+        {
+            var root = Path.Combine(Path.GetTempPath(), "codex-wallpaper-skin-video-tests", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                // A real MP4 signature: the validator only requires the ftyp box.
+                var mp4 = new byte[64];
+                "ftyp"u8.CopyTo(mp4.AsSpan(4));
+                var projectDirectory = Path.Combine(root, "steamapps", "workshop", "content", "431960", "3400000000");
+                Directory.CreateDirectory(projectDirectory);
+                var projectPath = Path.Combine(projectDirectory, "project.json");
+                File.WriteAllText(projectPath,
+                    "{\"type\":\"video\",\"title\":\"Direct video\",\"file\":\"scene.mp4\",\"preview\":\"preview.gif\"}");
+                File.WriteAllBytes(Path.Combine(projectDirectory, "scene.mp4"), mp4);
+                File.WriteAllBytes(Path.Combine(projectDirectory, "preview.gif"), CreateGif(192, 108));
+                // An engine beside the project must not turn a video into a scene.
+                var engineRoot = Path.Combine(root, "steamapps", "common", "wallpaper_engine");
+                Directory.CreateDirectory(engineRoot);
+                File.WriteAllText(Path.Combine(engineRoot, "wallpaper64.exe"), "engine stub");
+
+                var entry = WallpaperCatalog.ParseProject(projectPath);
+                Equal(WallpaperKind.Video, entry.Kind);
+                Equal(WallpaperSupport.Direct, entry.Support);
+                True(entry.IsVideo);
+                True(!entry.IsScene);
+                True(!entry.IsNativeScene);
+                Equal("video", entry.MediaMode);
+                True(entry.CanApply);
+                True(entry.EffectivePath!.EndsWith("scene.mp4", StringComparison.OrdinalIgnoreCase));
+                // Native capture must refuse it even though an engine is present.
+                True(!WallpaperEngineCaptureSession.CanUse(entry));
+                using (WallpaperCatalog.OpenValidatedMediaFile(entry)) { }
+
+                // A video with a broken signature falls back to its preview rather
+                // than being handed to the renderer as a video.
+                var brokenDirectory = Path.Combine(root, "steamapps", "workshop", "content", "431960", "3400000001");
+                Directory.CreateDirectory(brokenDirectory);
+                var brokenPath = Path.Combine(brokenDirectory, "project.json");
+                File.WriteAllText(brokenPath,
+                    "{\"type\":\"video\",\"title\":\"Broken video\",\"file\":\"scene.mp4\",\"preview\":\"preview.gif\"}");
+                File.WriteAllBytes(Path.Combine(brokenDirectory, "scene.mp4"), "not an mp4"u8.ToArray());
+                File.WriteAllBytes(Path.Combine(brokenDirectory, "preview.gif"), CreateGif(192, 108));
+                var brokenEntry = WallpaperCatalog.ParseProject(brokenPath);
+                Equal(WallpaperKind.Video, brokenEntry.Kind);
+                Equal(WallpaperSupport.AnimatedPreview, brokenEntry.Support);
+                True(!brokenEntry.IsVideo);
+                Equal("image", brokenEntry.MediaMode);
+            }
+            finally
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        });
+        Check("owned processes are released and foreign ones are never touched", () =>
+        {
+            // A process this component started must actually end...
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = Path.Combine(Environment.SystemDirectory, "ping.exe"),
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            startInfo.ArgumentList.Add("-n");
+            startInfo.ArgumentList.Add("30");
+            startInfo.ArgumentList.Add("127.0.0.1");
+            using var owned = Process.Start(startInfo);
+            True(owned is not null);
+            var ownedId = owned!.Id;
+            _ = OwnedProcessTermination.TryTerminate(ownedId, "ping", TimeSpan.FromSeconds(5));
+            owned.WaitForExit(5000);
+            // Assert the outcome, not a transient return value: whether the kill
+            // reported success can depend on how far the process already got.
+            True(!IsProcessIdRunning(ownedId));
+
+            // ...but a live process whose image does not match must be left alone,
+            // because a recycled process id would otherwise be killed by mistake.
+            using var foreign = Process.Start(startInfo);
+            True(foreign is not null);
+            var foreignId = foreign!.Id;
+            True(!OwnedProcessTermination.TryTerminate(foreignId, "wallpaper64", TimeSpan.FromSeconds(1)));
+            True(!foreign.HasExited);
+            True(!OwnedProcessTermination.TryTerminate(foreignId, string.Empty));
+            True(!OwnedProcessTermination.TryTerminate(0, "ping"));
+            // A process that is already gone counts as released.
+            foreign.Kill();
+            foreign.WaitForExit(5000);
+            _ = OwnedProcessTermination.TryTerminate(foreignId, "ping", TimeSpan.FromSeconds(2));
+            True(!IsProcessIdRunning(foreignId));
+
+            // The window probe must be safe with empty or nonsense input, and must
+            // not report a window for a prefix nothing can own.
+            True(!RenderWindowProbe.IsWindowPresent(string.Empty));
+            Equal(0, RenderWindowProbe.CountOpenWindows(string.Empty));
+            Equal(0, RenderWindowProbe.CountOpenWindows("cws-no-such-window-prefix-"));
+            True(RenderWindowProbe.WindowTitlePrefix.StartsWith("Codex Wallpaper Skin ", StringComparison.Ordinal));
+            Equal(0, RenderWindowProbe.FindOpenWindows("cws-no-such-window-prefix-").Count);
+        });
+        Check("transport cost is measured per frame", () =>
+        {
+            Equal(0d, CaptureTransportMetrics.Empty.AverageFrameBytes);
+            Equal(0d, CaptureTransportMetrics.Empty.AveragePublishMilliseconds);
+            True(CaptureTransportMetrics.Empty.Describe().Length > 0);
+
+            var metrics = new CaptureTransportMetrics(
+                PublishedBytes: 300_000,
+                LastFrameBytes: 30_000,
+                MaximumFrameBytes: 40_000,
+                PublishCalls: 10,
+                TotalPublishMilliseconds: 250);
+            Equal(30_000d, metrics.AverageFrameBytes);
+            Equal(25d, metrics.AveragePublishMilliseconds);
+            True(metrics.Describe().Contains("ms per transfer", StringComparison.Ordinal));
+        });
         Check("native frames are presented atomically", () =>
         {
             var bootstrap = CdpInjectionService.BootstrapScript;
@@ -1212,6 +1327,24 @@ public static class SelfTests
                 throw ApplyException;
             }
             return Task.FromResult(new WallpaperApplyResult(null, "video", null));
+        }
+    }
+
+    /// <summary>True when a process id is still alive, regardless of owning object state.</summary>
+    private static bool IsProcessIdRunning(int processId)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            return !process.HasExited;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+        catch
+        {
+            return false;
         }
     }
 
