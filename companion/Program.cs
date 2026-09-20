@@ -101,6 +101,11 @@ public static class Program
                     1600,
                     1000,
                     timeout.Token);
+                if (!session.IsExcludedFromTaskSwitcher)
+                {
+                    throw new InvalidOperationException(
+                        "Wallpaper Engine render window is still visible to the taskbar or Alt+Tab.");
+                }
                 var streamedFrames = 0;
                 var pointerSamples = 0;
                 session.StartStreaming(
@@ -138,8 +143,16 @@ public static class Program
                         + $"{streamedFrames}/{minimumFrames} frames, {pointerSamples}/{minimumPointerSamples} pointer samples, "
                         + $"session running={session.IsRunning}.");
                 }
+                var backend = session.UsesWindowsGraphicsCapture ? "WGC/D3D11" : "compatibility";
+                var initialFrameBytes = session.InitialFrame.Length;
+                await session.DisposeAsync();
+                if (session.IsRenderWindowAlive)
+                {
+                    throw new InvalidOperationException(
+                        "Wallpaper Engine render window remained open after capture disposal.");
+                }
                 Console.WriteLine(
-                    $"PASS Wallpaper Engine {(soakTest ? "60-second soak" : "capture/input")} ({(session.UsesWindowsGraphicsCapture ? "WGC/D3D11" : "compatibility")}, {session.InitialFrame.Length} initial bytes, {streamedFrames} streamed frames, {pointerSamples} pointer samples)");
+                    $"PASS Wallpaper Engine {(soakTest ? "60-second soak" : "capture/input")} ({backend}, {initialFrameBytes} initial bytes, {streamedFrames} streamed frames, {pointerSamples} pointer samples, private window released)");
                 return 0;
             }
 

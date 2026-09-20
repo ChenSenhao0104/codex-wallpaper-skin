@@ -59,6 +59,7 @@ Automated/local backend evidence for the Codex candidate (not a substitute for t
 - Manual testing of commit `1a1c3c7` found periodic disappearance, a stale Makima frame appearing after switching to Saki, and visibly reduced Lofi frame rate. That commit therefore fails the product gate despite passing short capture tests.
 - The follow-up candidate binds an immutable stream lease to each Scene, invalidates it before replacement, uses one persistent Canvas instead of replacing DOM/texture nodes every frame, and preserves WGC after a no-new-frame timeout. Retest is required before marking these rows as passing.
 - Post-fix private-window soak evidence: Saki completed 60 seconds with 555 frames / 1368 pointer samples; Makima completed a subsequent 60-second run with 554 frames / 1364 pointer samples. This proves the private WGC source can remain alive, but it does not replace the Codex UI retest.
+- Task-switcher isolation follow-up: Makima completed another 60-second WGC/D3D11 run with 551 frames / 1355 pointer samples after the render HWND was converted to a non-activating tool window. The smoke route also verified that the exact owned window was released on disposal. Manual confirmation that Explorer shows no taskbar/Alt+Tab entry remains required.
 - No Workshop media or captured frame was retained in the repository or test artifact.
 
 | Workshop ID / control | Codex candidate | DeepSeek candidate | Converged product | Notes/evidence |

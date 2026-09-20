@@ -85,6 +85,17 @@ public static class SelfTests
             Equal(15, settings.SceneFrameRate);
             Equal(0.5d, settings.SceneResolutionScale);
         });
+        Check("private render window task-switcher style", () =>
+        {
+            const long ordinaryApplicationWindow = 0x00040000L;
+            const long unrelatedStyle = 0x00080000L;
+            var style = WallpaperEngineCaptureSession.ToPrivateRenderExtendedStyle(
+                ordinaryApplicationWindow | unrelatedStyle);
+            True(WallpaperEngineCaptureSession.IsPrivateRenderExtendedStyle(style));
+            Equal(0L, style & ordinaryApplicationWindow);
+            Equal(unrelatedStyle, style & unrelatedStyle);
+            Equal(style, WallpaperEngineCaptureSession.ToPrivateRenderExtendedStyle(style));
+        });
         Check("state catalog overflow fails closed", () =>
         {
             var state = new AppState

@@ -14,7 +14,7 @@
 
 成功 Apply 后会记住最后一张壁纸；以后打开调节器或重新 Connect 会自动恢复。右侧可选择“Windows 登录时恢复”。点击参数右侧数字可输入精确值。**Restore Codex background** 会清除已记住的壁纸与等待队列。若 Codex 已在没有 CDP 参数的情况下运行，软件会立即识别并延迟应用，不再等待 30 秒报错。
 
-Image/Video 项目直接使用已安装的原始素材（视频安全上限 256 MiB）。Scene 项目优先由 Wallpaper Engine 自身在私有离屏窗口中渲染，Codex 鼠标坐标会转发给它，因此水波、Puppet Warp、粒子、脚本和音频响应保留原效果；Wallpaper Engine 需保持后台可用。原生后端不可用时才明确降级到受限内置渲染器或安全预览。Web 项目只使用安全预览，Application 项目永不执行。
+Image/Video 项目直接使用已安装的原始素材（视频安全上限 256 MiB）。Scene 项目优先由 Wallpaper Engine 自身在私有离屏窗口中渲染；该窗口保持可捕获，但不会出现在任务栏或 Alt+Tab，也不会抢占焦点。Codex 鼠标坐标会转发给它，因此水波、Puppet Warp、粒子、脚本和音频响应保留原效果；Wallpaper Engine 需保持后台可用。原生后端不可用时才明确降级到受限内置渲染器或安全预览。Web 项目只使用安全预览，Application 项目永不执行。
 
 ## 命令行与校验
 

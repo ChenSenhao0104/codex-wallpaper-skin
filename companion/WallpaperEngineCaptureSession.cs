@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -26,6 +27,15 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private const uint SwpNoSize = 0x0001;
     private const uint SwpNoZOrder = 0x0004;
     private const uint SwpNoActivate = 0x0010;
+    private const uint SwpFrameChanged = 0x0020;
+    private const uint SwpNoOwnerZOrder = 0x0200;
+    private const int GwlExStyle = -20;
+    private const long WsExToolWindow = 0x00000080L;
+    private const long WsExAppWindow = 0x00040000L;
+    private const long WsExNoActivate = 0x08000000L;
+    private const int SwHide = 0;
+    private const int SwShowNoActivate = 4;
+    private const uint WmClose = 0x0010;
     private const uint WmMouseMove = 0x0200;
     private const uint WmLeftButtonDown = 0x0201;
     private const uint WmLeftButtonUp = 0x0202;
@@ -125,9 +135,9 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
              "-x", "-32000", "-y", "-32000", "-borderless"], cancellationToken);
 
         var handle = await WaitForWindowAsync(windowName, engineRoot, cancellationToken);
-        SetWindowPos(handle, IntPtr.Zero, -32000, -32000, 0, 0, SwpNoSize | SwpNoZOrder | SwpNoActivate);
         try
         {
+            ConfigurePrivateRenderWindow(handle);
             var properties = WallpaperEnginePropertyReader.Read(wallpaper, settings);
             var appliedRate = ReadNumber(properties, "rate", 100);
             var baseRate = appliedRate / Math.Max(.01, settings.PlaybackRate);
@@ -169,7 +179,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         }
         catch
         {
-            await TryCloseWindowAsync(controlExecutable, windowName);
+            await TryCloseWindowAsync(controlExecutable, windowName, handle);
             throw;
         }
     }
@@ -580,6 +590,90 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Wallpaper Engine creates play-in-window surfaces as ordinary top-level
+    /// windows. Moving one off-screen does not keep it out of the taskbar or
+    /// Alt+Tab. Convert it to a non-activating tool window before WGC starts,
+    /// while leaving it shown so Windows continues to compose and capture it.
+    /// </summary>
+    private static void ConfigurePrivateRenderWindow(IntPtr handle)
+    {
+        if (handle == IntPtr.Zero || !IsWindow(handle))
+        {
+            throw new Win32Exception(
+                "Wallpaper Engine closed its private render window before it could be configured.");
+        }
+
+        // If Explorer already observed the window, a brief hide/style/show
+        // transition removes its existing taskbar button. The window is shown
+        // again before WGC or PrintWindow is initialized, so capture is never
+        // asked to consume a minimized, hidden, or cloaked surface.
+        ShowWindow(handle, SwHide);
+        var currentStyle = ReadExtendedWindowStyle(handle);
+        var privateStyle = ToPrivateRenderExtendedStyle(currentStyle);
+        if (privateStyle != currentStyle)
+        {
+            Marshal.SetLastPInvokeError(0);
+            var previous = SetWindowLongPtr(handle, GwlExStyle, new IntPtr(privateStyle));
+            var error = Marshal.GetLastPInvokeError();
+            if (previous == IntPtr.Zero && error != 0)
+            {
+                throw new Win32Exception(error,
+                    "Windows could not exclude the Wallpaper Engine render window from task switching.");
+            }
+        }
+
+        if (!SetWindowPos(
+                handle, IntPtr.Zero, -32000, -32000, 0, 0,
+                SwpNoSize | SwpNoZOrder | SwpNoActivate | SwpFrameChanged | SwpNoOwnerZOrder))
+        {
+            throw new Win32Exception(Marshal.GetLastPInvokeError(),
+                "Windows could not move the private Wallpaper Engine render surface off-screen.");
+        }
+        ShowWindow(handle, SwShowNoActivate);
+        if (!SetWindowPos(
+                handle, IntPtr.Zero, -32000, -32000, 0, 0,
+                SwpNoSize | SwpNoZOrder | SwpNoActivate | SwpNoOwnerZOrder))
+        {
+            throw new Win32Exception(Marshal.GetLastPInvokeError(),
+                "Windows could not preserve the private Wallpaper Engine render surface position.");
+        }
+
+        if (!IsPrivateRenderExtendedStyle(ReadExtendedWindowStyle(handle)))
+        {
+            throw new InvalidOperationException(
+                "Wallpaper Engine's private render window could not be excluded from the taskbar and Alt+Tab.");
+        }
+    }
+
+    private static long ReadExtendedWindowStyle(IntPtr handle)
+    {
+        Marshal.SetLastPInvokeError(0);
+        var value = GetWindowLongPtr(handle, GwlExStyle);
+        var error = Marshal.GetLastPInvokeError();
+        if (value == IntPtr.Zero && error != 0)
+        {
+            throw new Win32Exception(error,
+                "Windows could not read the Wallpaper Engine render window style.");
+        }
+        return value.ToInt64();
+    }
+
+    internal static long ToPrivateRenderExtendedStyle(long currentStyle) =>
+        (currentStyle | WsExToolWindow | WsExNoActivate) & ~WsExAppWindow;
+
+    internal static bool IsPrivateRenderExtendedStyle(long style) =>
+        (style & WsExToolWindow) != 0
+        && (style & WsExNoActivate) != 0
+        && (style & WsExAppWindow) == 0;
+
+    public bool IsExcludedFromTaskSwitcher =>
+        !_disposed
+        && IsWindow(_windowHandle)
+        && IsPrivateRenderExtendedStyle(ReadExtendedWindowStyle(_windowHandle));
+
+    public bool IsRenderWindowAlive => IsWindow(_windowHandle);
+
     private static bool TryResolveEngine(string projectPath, out string engineRoot, out string executable)
     {
         engineRoot = string.Empty;
@@ -770,7 +864,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         throw new TimeoutException("Wallpaper Engine did not accept the property update within 15 seconds.", lastFailure);
     }
 
-    private static async Task TryCloseWindowAsync(string executable, string windowName)
+    private static async Task TryCloseWindowAsync(string executable, string windowName, IntPtr handle)
     {
         try
         {
@@ -779,6 +873,27 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         }
         catch
         {
+        }
+
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(2);
+        while (IsWindow(handle) && DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(50);
+        }
+        if (IsWindow(handle))
+        {
+            var engineRoot = Path.GetDirectoryName(executable);
+            if (!string.IsNullOrWhiteSpace(engineRoot)
+                && IsExpectedWallpaperEngineWindow(handle, engineRoot))
+            {
+                PostMessage(handle, WmClose, 0, 0);
+            }
+        }
+
+        deadline = DateTimeOffset.UtcNow.AddSeconds(2);
+        while (IsWindow(handle) && DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(50);
         }
     }
 
@@ -795,7 +910,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         }
         var graphicsCapture = Interlocked.Exchange(ref _graphicsCapture, null);
         if (graphicsCapture is not null) await graphicsCapture.DisposeAsync();
-        await TryCloseWindowAsync(_engineExecutable, _windowName);
+        await TryCloseWindowAsync(_engineExecutable, _windowName, _windowHandle);
         _lifetime.Dispose();
     }
 
@@ -824,9 +939,18 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     [DllImport("user32.dll")]
     private static extern bool PrintWindow(IntPtr window, IntPtr targetDc, uint flags);
 
-    [DllImport("user32.dll")]
+    [DllImport("user32.dll", SetLastError = true)]
     private static extern bool SetWindowPos(
         IntPtr window, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
+    private static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
+    private static extern IntPtr SetWindowLongPtr(IntPtr window, int index, IntPtr newValue);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr window, int command);
 
     [DllImport("user32.dll")]
     private static extern bool IsWindow(IntPtr window);

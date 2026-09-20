@@ -12,7 +12,7 @@ This is a self-contained Windows 11 x64 companion. It needs no Python, PyYAML, o
 
 The last successful Apply is remembered and restored the next time the controller opens or reconnects. Background settings also offers an opt-in Windows sign-in restore. Click any displayed setting value for exact numeric entry. **Restore Codex background** clears both remembered and queued state. A normally started Codex instance is detected immediately and deferred safely instead of failing after 30 seconds.
 
-Image/Video projects use their original installed media (up to the 256 MiB video safety limit). Scene projects prefer Wallpaper Engine's own private off-screen renderer; Codex pointer coordinates are forwarded to it, preserving native water feedback, Puppet Warp, particles, scripts, and audio response. Wallpaper Engine must remain available in the background. If native rendering is unavailable, the app explicitly falls back to the bounded renderer or a safe preview. Web projects use safe previews only, and Application projects are never executed.
+Image/Video projects use their original installed media (up to the 256 MiB video safety limit). Scene projects prefer Wallpaper Engine's own private off-screen renderer. That surface remains capturable without appearing in the taskbar or Alt+Tab and without taking focus. Codex pointer coordinates are forwarded to it, preserving native water feedback, Puppet Warp, particles, scripts, and audio response. Wallpaper Engine must remain available in the background. If native rendering is unavailable, the app explicitly falls back to the bounded renderer or a safe preview. Web projects use safe previews only, and Application projects are never executed.
 
 ## Command line and verification
 

@@ -38,6 +38,7 @@ This is one shared specification for the Codex and DeepSeek implementation branc
 
 - Launch or reuse a bounded `-playInWindow` Wallpaper Engine window for the selected project.
 - Verify the expected process and window ownership before capture or input forwarding.
+- Keep the private render surface composed and capturable without exposing it in the taskbar or Alt+Tab, and never let it activate or steal focus.
 - Support switching wallpapers, cancellation, Codex reconnect, companion shutdown and Restore without orphaned windows.
 - Do not require Codex to be closed before the companion starts. Diagnose and improve the existing CDP activation/attach flow independently from wallpaper rendering.
 
@@ -95,6 +96,7 @@ The full matrix is in `docs/compatibility/WALLPAPER_ENGINE_MATRIX.md`. Real Work
 9. Application wallpaper projects remain rejected.
 10. Release build, self-tests, runtime smoke test and repository hygiene checks pass.
 11. No private or copyrighted local test material is committed.
+12. The private Wallpaper Engine surface remains capturable but never appears in the taskbar or Alt+Tab and never takes foreground focus.
 
 ## Required evidence from each implementation
 
