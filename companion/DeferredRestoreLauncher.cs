@@ -6,8 +6,11 @@ namespace CodexWallpaperSkin;
 public static class DeferredRestoreLauncher
 {
     private const string WorkerArgument = "--wait-and-restore";
-    private const string WorkerMutexName = @"Local\CodexWallpaperSkin.DeferredRestore";
-    private const string WorkerStopEventName = @"Local\CodexWallpaperSkin.DeferredRestore.Stop";
+    // v2 deliberately does not wait on the legacy mutex. Older preview builds
+    // did not understand the stop event and could hold their mutex forever
+    // after an upgrade, preventing the corrected worker from taking over.
+    private const string WorkerMutexName = @"Local\CodexWallpaperSkin.DeferredRestore.v2";
+    private const string WorkerStopEventName = @"Local\CodexWallpaperSkin.DeferredRestore.v2.Stop";
 
     public static void RequestStop()
     {
