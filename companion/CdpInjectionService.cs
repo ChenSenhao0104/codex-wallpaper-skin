@@ -456,8 +456,10 @@ public sealed class CdpInjectionService : IAsyncDisposable
             return new CapturedPointer(
                 Math.Clamp(value.GetProperty("x").GetDouble(), 0, 1),
                 Math.Clamp(value.GetProperty("y").GetDouble(), 0, 1),
-                value.GetProperty("down").GetBoolean(),
-                value.GetProperty("hidden").GetBoolean());
+                value.TryGetProperty("down", out var down) && down.GetBoolean(),
+                value.TryGetProperty("hidden", out var hidden) && hidden.GetBoolean(),
+                ReadCaptureEvents(value),
+                value.TryGetProperty("overflow", out var overflow) && overflow.ValueKind == JsonValueKind.True);
         }
         catch (OperationCanceledException)
         {
@@ -468,6 +470,68 @@ public sealed class CdpInjectionService : IAsyncDisposable
             return null;
         }
     }
+
+    /// <summary>
+    /// Reads the ordered discrete input transitions exactly as Codex recorded
+    /// them; unknown kinds and buttons fail closed instead of being guessed.
+    /// </summary>
+    private static IReadOnlyList<CapturedInputEvent> ReadCaptureEvents(JsonElement value)
+    {
+        if (!value.TryGetProperty("events", out var events) || events.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+        var result = new List<CapturedInputEvent>();
+        foreach (var element in events.EnumerateArray())
+        {
+            if (element.ValueKind != JsonValueKind.Object
+                || !element.TryGetProperty("kind", out var kindValue)
+                || kindValue.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+            var kind = kindValue.GetString() switch
+            {
+                "down" => CapturedInputKind.Down,
+                "up" => CapturedInputKind.Up,
+                "wheel" => CapturedInputKind.Wheel,
+                "leave" => CapturedInputKind.Leave,
+                _ => (CapturedInputKind?)null
+            };
+            if (kind is null)
+            {
+                continue;
+            }
+            var button = element.TryGetProperty("button", out var buttonValue) && buttonValue.ValueKind == JsonValueKind.String
+                ? buttonValue.GetString() switch
+                {
+                    "right" => CapturedMouseButton.Right,
+                    "middle" => CapturedMouseButton.Middle,
+                    _ => CapturedMouseButton.Left
+                }
+                : CapturedMouseButton.Left;
+            var deltaY = element.TryGetProperty("deltaY", out var deltaValue) && deltaValue.ValueKind == JsonValueKind.Number
+                ? deltaValue.GetDouble()
+                : 0;
+            var deltaMode = element.TryGetProperty("deltaMode", out var modeValue) && modeValue.ValueKind == JsonValueKind.Number
+                ? modeValue.GetInt32()
+                : 0;
+            result.Add(new CapturedInputEvent(
+                kind.Value,
+                button,
+                deltaY,
+                deltaMode,
+                ReadCoordinate(element, "x"),
+                ReadCoordinate(element, "y"),
+                element.TryGetProperty("cancelled", out var cancelled) && cancelled.ValueKind == JsonValueKind.True));
+        }
+        return result;
+    }
+
+    private static double ReadCoordinate(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number
+            ? Math.Clamp(value.GetDouble(), 0, 1)
+            : 0.5;
 
     private async Task StopCaptureAsync()
     {
@@ -632,10 +696,13 @@ public sealed class CdpInjectionService : IAsyncDisposable
             try { state.observer && state.observer.disconnect(); } catch (_) {}
             try { state.rafId && cancelAnimationFrame(state.rafId); } catch (_) {}
             try { state.visibilityHandler && document.removeEventListener('visibilitychange', state.visibilityHandler); } catch (_) {}
-            try { state.capturePointerHandlers && window.removeEventListener('pointermove', state.capturePointerHandlers.move, true); } catch (_) {}
-            try { state.capturePointerHandlers && window.removeEventListener('pointerdown', state.capturePointerHandlers.down, true); } catch (_) {}
-            try { state.capturePointerHandlers && window.removeEventListener('pointerup', state.capturePointerHandlers.up, true); } catch (_) {}
-            try { state.capturePointerHandlers && window.removeEventListener('pointercancel', state.capturePointerHandlers.up, true); } catch (_) {}
+            try { state.captureInputHandlers && window.removeEventListener('pointermove', state.captureInputHandlers.move, true); } catch (_) {}
+            try { state.captureInputHandlers && window.removeEventListener('pointerdown', state.captureInputHandlers.down, true); } catch (_) {}
+            try { state.captureInputHandlers && window.removeEventListener('pointerup', state.captureInputHandlers.up, true); } catch (_) {}
+            try { state.captureInputHandlers && window.removeEventListener('pointercancel', state.captureInputHandlers.cancel, true); } catch (_) {}
+            try { state.captureInputHandlers && window.removeEventListener('pointerleave', state.captureInputHandlers.leave, true); } catch (_) {}
+            try { state.captureInputHandlers && document.removeEventListener('pointerleave', state.captureInputHandlers.leave, true); } catch (_) {}
+            try { state.captureInputHandlers && window.removeEventListener('wheel', state.captureInputHandlers.wheel, true); } catch (_) {}
             try { state.pendingCancel && state.pendingCancel(); } catch (_) {}
             try { state.pendingMedia && state.pendingMedia.pause && state.pendingMedia.pause(); } catch (_) {}
             try { state.pendingSceneController && state.pendingSceneController.dispose && state.pendingSceneController.dispose(); } catch (_) {}
@@ -761,10 +828,13 @@ public sealed class CdpInjectionService : IAsyncDisposable
             try { old.observer && old.observer.disconnect(); } catch (_) {}
             try { old.rafId && cancelAnimationFrame(old.rafId); } catch (_) {}
             try { old.visibilityHandler && document.removeEventListener('visibilitychange', old.visibilityHandler); } catch (_) {}
-            try { old.capturePointerHandlers && window.removeEventListener('pointermove', old.capturePointerHandlers.move, true); } catch (_) {}
-            try { old.capturePointerHandlers && window.removeEventListener('pointerdown', old.capturePointerHandlers.down, true); } catch (_) {}
-            try { old.capturePointerHandlers && window.removeEventListener('pointerup', old.capturePointerHandlers.up, true); } catch (_) {}
-            try { old.capturePointerHandlers && window.removeEventListener('pointercancel', old.capturePointerHandlers.up, true); } catch (_) {}
+            try { old.captureInputHandlers && window.removeEventListener('pointermove', old.captureInputHandlers.move, true); } catch (_) {}
+            try { old.captureInputHandlers && window.removeEventListener('pointerdown', old.captureInputHandlers.down, true); } catch (_) {}
+            try { old.captureInputHandlers && window.removeEventListener('pointerup', old.captureInputHandlers.up, true); } catch (_) {}
+            try { old.captureInputHandlers && window.removeEventListener('pointercancel', old.captureInputHandlers.cancel, true); } catch (_) {}
+            try { old.captureInputHandlers && window.removeEventListener('pointerleave', old.captureInputHandlers.leave, true); } catch (_) {}
+            try { old.captureInputHandlers && document.removeEventListener('pointerleave', old.captureInputHandlers.leave, true); } catch (_) {}
+            try { old.captureInputHandlers && window.removeEventListener('wheel', old.captureInputHandlers.wheel, true); } catch (_) {}
             try { old.pendingCancel && old.pendingCancel(); } catch (_) {}
             try { old.pendingMedia && old.pendingMedia.pause && old.pendingMedia.pause(); } catch (_) {}
             try { old.pendingSceneController && old.pendingSceneController.dispose && old.pendingSceneController.dispose(); } catch (_) {}
@@ -887,7 +957,8 @@ public sealed class CdpInjectionService : IAsyncDisposable
             pendingMedia: null, pendingUrl: null, pendingCancel: null,
             uploads: new Map(), marked: new Set(), settings: null, rawPalette: null,
             palette: null, observer: null, rafId: 0, visibilityHandler: null, nativeSurface,
-            capturePointer: { x: .5, y: .5, down: false }, capturePointerHandlers: null,
+            capturePointer: { x: .5, y: .5, down: false, buttons: { left: false, middle: false, right: false } },
+            captureInputHandlers: null, captureInputEvents: [], captureInputOverflow: false,
             captureFrameBusy: false, captureToken: null,
             captureFrameCount: 0, captureRejectedCount: 0, captureLastError: '',
             styleText, helpers: null
@@ -1114,19 +1185,90 @@ public sealed class CdpInjectionService : IAsyncDisposable
             down: state.capturePointer.down,
             hidden: !!document.hidden
           });
-          const installCapturePointerHandlers = () => {
-            if (state.capturePointerHandlers) return;
+          // Only the dedicated input channel drains the queue. A frame publish
+          // returns position state alone, so it can never consume an input event
+          // that the controller has not forwarded yet.
+          const drainCaptureInput = () => {
+            const snapshot = capturePointerState();
+            // Ordered discrete input since the previous read. Movement is carried
+            // as state above, so it coalesces naturally while button and wheel
+            // ordering is preserved exactly as it happened.
+            snapshot.events = state.captureInputEvents.splice(0, state.captureInputEvents.length);
+            snapshot.overflow = state.captureInputOverflow;
+            state.captureInputOverflow = false;
+            return snapshot;
+          };
+          const enqueueCaptureInput = event => {
+            if (state.captureInputEvents.length >= 256) {
+              // Never reorder or silently drop a button/wheel transition; report
+              // the overflow so the controller can resynchronize instead.
+              state.captureInputOverflow = true;
+              return;
+            }
+            state.captureInputEvents.push(event);
+          };
+          const installCaptureInputHandlers = () => {
+            if (state.captureInputHandlers) return;
             const update = event => {
               state.capturePointer.x = clamp(event.clientX / Math.max(1, innerWidth), 0, 1);
               state.capturePointer.y = clamp(event.clientY / Math.max(1, innerHeight), 0, 1);
             };
-            const down = event => { update(event); state.capturePointer.down = true; };
-            const up = event => { update(event); state.capturePointer.down = false; };
-            state.capturePointerHandlers = { move: update, down, up };
+            const buttonName = button => button === 2 ? 'right' : button === 1 ? 'middle' : 'left';
+            const down = event => {
+              update(event);
+              state.capturePointer.buttons[buttonName(event.button)] = true;
+              state.capturePointer.down = true;
+              enqueueCaptureInput({ kind: 'down', button: buttonName(event.button), x: state.capturePointer.x, y: state.capturePointer.y });
+            };
+            const up = event => {
+              update(event);
+              state.capturePointer.buttons[buttonName(event.button)] = false;
+              state.capturePointer.down = state.capturePointer.buttons.left
+                || state.capturePointer.buttons.middle || state.capturePointer.buttons.right;
+              enqueueCaptureInput({ kind: 'up', button: buttonName(event.button), x: state.capturePointer.x, y: state.capturePointer.y });
+            };
+            const cancel = event => {
+              update(event);
+              for (const name of ['left', 'middle', 'right']) {
+                if (!state.capturePointer.buttons[name]) continue;
+                state.capturePointer.buttons[name] = false;
+                enqueueCaptureInput({ kind: 'up', button: name, x: state.capturePointer.x, y: state.capturePointer.y, cancelled: true });
+              }
+              state.capturePointer.down = false;
+              enqueueCaptureInput({ kind: 'leave', x: state.capturePointer.x, y: state.capturePointer.y });
+            };
+            const wheel = event => {
+              update(event);
+              enqueueCaptureInput({
+                kind: 'wheel',
+                deltaY: Number.isFinite(event.deltaY) ? event.deltaY : 0,
+                deltaMode: Number.isFinite(event.deltaMode) ? event.deltaMode : 0,
+                x: state.capturePointer.x,
+                y: state.capturePointer.y
+              });
+            };
+            const leave = () => {
+              if (!state.capturePointer.down && state.capturePointer.buttons.left === false
+                && state.capturePointer.buttons.middle === false && state.capturePointer.buttons.right === false) {
+                enqueueCaptureInput({ kind: 'leave', x: state.capturePointer.x, y: state.capturePointer.y });
+                return;
+              }
+              for (const name of ['left', 'middle', 'right']) {
+                if (!state.capturePointer.buttons[name]) continue;
+                state.capturePointer.buttons[name] = false;
+                enqueueCaptureInput({ kind: 'up', button: name, x: state.capturePointer.x, y: state.capturePointer.y, cancelled: true });
+              }
+              state.capturePointer.down = false;
+              enqueueCaptureInput({ kind: 'leave', x: state.capturePointer.x, y: state.capturePointer.y });
+            };
+            state.captureInputHandlers = { move: update, down, up, cancel, wheel, leave };
             window.addEventListener('pointermove', update, { passive: true, capture: true });
             window.addEventListener('pointerdown', down, { passive: true, capture: true });
             window.addEventListener('pointerup', up, { passive: true, capture: true });
-            window.addEventListener('pointercancel', up, { passive: true, capture: true });
+            window.addEventListener('pointercancel', cancel, { passive: true, capture: true });
+            window.addEventListener('pointerleave', leave, { passive: true, capture: true });
+            document.addEventListener('pointerleave', leave, { passive: true, capture: true });
+            window.addEventListener('wheel', wheel, { passive: true, capture: true });
           };
           window.__codexWallpaperSkinBeginCapturedStream = token => {
             if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/.test(token)) return false;
@@ -1135,16 +1277,18 @@ public sealed class CdpInjectionService : IAsyncDisposable
             state.captureFrameCount = 0;
             state.captureRejectedCount = 0;
             state.captureLastError = '';
-            // Pointer tracking starts with the lease, so interaction is never
-            // gated on the first successfully captured frame.
-            installCapturePointerHandlers();
+            state.captureInputEvents = [];
+            state.captureInputOverflow = false;
+            // Input tracking starts with the lease, so interaction is never gated
+            // on the first successfully captured frame.
+            installCaptureInputHandlers();
             return true;
           };
-          // Independent pointer channel: input delivery never waits for a frame.
+          // Independent input channel: input delivery never waits for a frame.
           window.__codexWallpaperSkinReadCapturePointer = token => {
             if (token !== state.captureToken) return false;
             if (state.disposed || window.__codexWallpaperSkin !== state) return false;
-            return capturePointerState();
+            return drainCaptureInput();
           };
           window.__codexWallpaperSkinSetCapturedFrame = (token, encoded) => {
             if (token !== state.captureToken) return false;
@@ -1158,7 +1302,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
             if (!(media instanceof HTMLImageElement) || !media.isConnected || media.parentNode !== state.host) {
               throw new Error('The native capture target is unavailable.');
             }
-            installCapturePointerHandlers();
+            installCaptureInputHandlers();
             if (state.captureFrameBusy) {
               // Coalesce while a decode is in flight; ordering of the frames that
               // do arrive is preserved.
@@ -1323,10 +1467,13 @@ public sealed class CdpInjectionService : IAsyncDisposable
                       state.disposed = true;
                       try { state.observer.disconnect(); } catch (_) {}
                       try { state.visibilityHandler && document.removeEventListener('visibilitychange', state.visibilityHandler); } catch (_) {}
-                      try { state.capturePointerHandlers && window.removeEventListener('pointermove', state.capturePointerHandlers.move, true); } catch (_) {}
-                      try { state.capturePointerHandlers && window.removeEventListener('pointerdown', state.capturePointerHandlers.down, true); } catch (_) {}
-                      try { state.capturePointerHandlers && window.removeEventListener('pointerup', state.capturePointerHandlers.up, true); } catch (_) {}
-                      try { state.capturePointerHandlers && window.removeEventListener('pointercancel', state.capturePointerHandlers.up, true); } catch (_) {}
+                      try { state.captureInputHandlers && window.removeEventListener('pointermove', state.captureInputHandlers.move, true); } catch (_) {}
+                      try { state.captureInputHandlers && window.removeEventListener('pointerdown', state.captureInputHandlers.down, true); } catch (_) {}
+                      try { state.captureInputHandlers && window.removeEventListener('pointerup', state.captureInputHandlers.up, true); } catch (_) {}
+                      try { state.captureInputHandlers && window.removeEventListener('pointercancel', state.captureInputHandlers.cancel, true); } catch (_) {}
+                      try { state.captureInputHandlers && window.removeEventListener('pointerleave', state.captureInputHandlers.leave, true); } catch (_) {}
+                      try { state.captureInputHandlers && document.removeEventListener('pointerleave', state.captureInputHandlers.leave, true); } catch (_) {}
+                      try { state.captureInputHandlers && window.removeEventListener('wheel', state.captureInputHandlers.wheel, true); } catch (_) {}
                       try { state.pendingCancel && state.pendingCancel(); } catch (_) {}
                       try { state.pendingMedia && state.pendingMedia.pause && state.pendingMedia.pause(); } catch (_) {}
                       try { state.pendingSceneController && state.pendingSceneController.dispose && state.pendingSceneController.dispose(); } catch (_) {}
@@ -1377,10 +1524,13 @@ public sealed class CdpInjectionService : IAsyncDisposable
             try { current.observer && current.observer.disconnect(); } catch (_) {}
             try { current.rafId && cancelAnimationFrame(current.rafId); } catch (_) {}
             try { current.visibilityHandler && document.removeEventListener('visibilitychange', current.visibilityHandler); } catch (_) {}
-            try { current.capturePointerHandlers && window.removeEventListener('pointermove', current.capturePointerHandlers.move, true); } catch (_) {}
-            try { current.capturePointerHandlers && window.removeEventListener('pointerdown', current.capturePointerHandlers.down, true); } catch (_) {}
-            try { current.capturePointerHandlers && window.removeEventListener('pointerup', current.capturePointerHandlers.up, true); } catch (_) {}
-            try { current.capturePointerHandlers && window.removeEventListener('pointercancel', current.capturePointerHandlers.up, true); } catch (_) {}
+            try { current.captureInputHandlers && window.removeEventListener('pointermove', current.captureInputHandlers.move, true); } catch (_) {}
+            try { current.captureInputHandlers && window.removeEventListener('pointerdown', current.captureInputHandlers.down, true); } catch (_) {}
+            try { current.captureInputHandlers && window.removeEventListener('pointerup', current.captureInputHandlers.up, true); } catch (_) {}
+            try { current.captureInputHandlers && window.removeEventListener('pointercancel', current.captureInputHandlers.cancel, true); } catch (_) {}
+            try { current.captureInputHandlers && window.removeEventListener('pointerleave', current.captureInputHandlers.leave, true); } catch (_) {}
+            try { current.captureInputHandlers && document.removeEventListener('pointerleave', current.captureInputHandlers.leave, true); } catch (_) {}
+            try { current.captureInputHandlers && window.removeEventListener('wheel', current.captureInputHandlers.wheel, true); } catch (_) {}
             try { current.pendingCancel && current.pendingCancel(); } catch (_) {}
             try { current.pendingMedia && current.pendingMedia.pause && current.pendingMedia.pause(); } catch (_) {}
             try { current.pendingSceneController && current.pendingSceneController.dispose && current.pendingSceneController.dispose(); } catch (_) {}

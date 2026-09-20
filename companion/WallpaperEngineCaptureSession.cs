@@ -8,8 +8,6 @@ using System.Windows.Media.Imaging;
 
 namespace CodexWallpaperSkin;
 
-public sealed record CapturedPointer(double X, double Y, bool Down, bool Hidden);
-
 /// <summary>
 /// Uses Wallpaper Engine itself as the renderer for Scene projects. Frames are
 /// captured from a private off-screen play-in-window surface, while pointer
@@ -24,9 +22,22 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private const uint WmMouseMove = 0x0200;
     private const uint WmLeftButtonDown = 0x0201;
     private const uint WmLeftButtonUp = 0x0202;
+    private const uint WmRightButtonDown = 0x0204;
+    private const uint WmRightButtonUp = 0x0205;
+    private const uint WmMiddleButtonDown = 0x0207;
+    private const uint WmMiddleButtonUp = 0x0208;
+    private const uint WmMouseWheel = 0x020A;
+    private const uint WmMouseLeave = 0x02A3;
     private const nuint MkLeftButton = 0x0001;
+    private const nuint MkRightButton = 0x0002;
+    private const nuint MkMiddleButton = 0x0010;
     private const int MaximumFrameBytes = 2 * 1024 * 1024;
     private const int MaximumConsecutiveRejections = 30;
+    /// <summary>
+    /// Input is polled faster than frames are published so pointer responsiveness
+    /// does not inherit the 10/15 FPS capture rate.
+    /// </summary>
+    private static readonly TimeSpan InputPollInterval = TimeSpan.FromSeconds(1d / 60);
     private readonly string _engineExecutable;
     private readonly string _windowName;
     private readonly IntPtr _windowHandle;
@@ -37,10 +48,12 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private bool _lastPageHidden;
     private readonly double _baseRate;
     private readonly double _baseVolume;
-    private bool _lastPointerDown;
     private bool _disposed;
     private int _windowWidth;
     private int _windowHeight;
+    private readonly int _viewportWidth;
+    private readonly int _viewportHeight;
+    private readonly HashSet<CapturedMouseButton> _heldButtons = [];
     private int _publishedFrames;
     private int _rejectedFrames;
     private string? _lastRejectionReason;
@@ -55,7 +68,9 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         double baseRate,
         double baseVolume,
         int windowWidth,
-        int windowHeight)
+        int windowHeight,
+        int viewportWidth,
+        int viewportHeight)
     {
         _engineExecutable = engineExecutable;
         _windowName = windowName;
@@ -67,6 +82,8 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         _baseVolume = baseVolume;
         _windowWidth = windowWidth;
         _windowHeight = windowHeight;
+        _viewportWidth = Math.Max(1, viewportWidth);
+        _viewportHeight = Math.Max(1, viewportHeight);
     }
 
     public byte[] InitialFrame { get; }
@@ -147,7 +164,8 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
             var initialFrame = await Task.Run(() => CaptureInitialFrame(handle), cancellationToken);
             return new WallpaperEngineCaptureSession(
                 controlExecutable, windowName, handle, initialFrame, settings.SceneFrameRate,
-                settings.PauseWhenHidden, baseRate, baseVolume, width, height);
+                settings.PauseWhenHidden, baseRate, baseVolume, width, height,
+                viewportWidth, viewportHeight);
         }
         catch
         {
@@ -188,6 +206,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     {
         var consecutiveFailures = 0;
         var consecutiveRejections = 0;
+        var nextFrameAt = Stopwatch.GetTimestamp();
         try
         {
             while (!cancellationToken.IsCancellationRequested && IsWindow(_windowHandle))
@@ -195,17 +214,21 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                 if (_pauseWhenHidden && _lastPageHidden)
                 {
                     await Task.Delay(TimeSpan.FromMilliseconds(450), cancellationToken);
+                    nextFrameAt = Stopwatch.GetTimestamp();
                 }
                 var started = Stopwatch.GetTimestamp();
 
-                // Pointer input travels on its own channel so interaction never
-                // waits for a successfully captured or accepted frame.
+                // Input travels on its own channel and its own faster tick, so
+                // interaction never waits for a captured or accepted frame.
                 try
                 {
                     var pointer = await readPointer(cancellationToken);
                     if (pointer is not null)
                     {
-                        if (!pointer.Hidden) ForwardPointer(pointer);
+                        if (!pointer.Hidden)
+                        {
+                            ForwardInput(pointer);
+                        }
                         _lastPageHidden = pointer.Hidden;
                     }
                 }
@@ -218,45 +241,50 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                     // Pointer loss alone must not end a healthy capture stream.
                 }
 
-                try
+                var frameDue = Stopwatch.GetElapsedTime(nextFrameAt)
+                    >= TimeSpan.FromSeconds(1d / Math.Max(1, _frameRate));
+                if (frameDue)
                 {
-                    var analysis = CaptureFrame(_windowHandle, out var frame);
-                    if (frame is not null && analysis.Acceptable)
+                    nextFrameAt = Stopwatch.GetTimestamp();
+                    try
                     {
-                        await publishFrame(frame, cancellationToken);
-                        Interlocked.Increment(ref _publishedFrames);
-                        Volatile.Write(ref _lastRejectionReason, null);
-                        consecutiveRejections = 0;
-                    }
-                    else
-                    {
-                        // Empty, uniform and partial surfaces are never presented;
-                        // the last known-good frame stays visible in Codex.
-                        Interlocked.Increment(ref _rejectedFrames);
-                        Volatile.Write(ref _lastRejectionReason, analysis.Reason);
-                        consecutiveRejections++;
-                        if (consecutiveRejections >= MaximumConsecutiveRejections)
+                        var analysis = CaptureFrame(_windowHandle, out var frame);
+                        if (frame is not null && analysis.Acceptable)
                         {
-                            break;
+                            await publishFrame(frame, cancellationToken);
+                            Interlocked.Increment(ref _publishedFrames);
+                            Volatile.Write(ref _lastRejectionReason, null);
+                            consecutiveRejections = 0;
                         }
+                        else
+                        {
+                            // Empty, uniform and partial surfaces are never presented;
+                            // the last known-good frame stays visible in Codex.
+                            Interlocked.Increment(ref _rejectedFrames);
+                            Volatile.Write(ref _lastRejectionReason, analysis.Reason);
+                            consecutiveRejections++;
+                            if (consecutiveRejections >= MaximumConsecutiveRejections)
+                            {
+                                break;
+                            }
+                        }
+                        consecutiveFailures = 0;
                     }
-                    consecutiveFailures = 0;
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    break;
-                }
-                catch
-                {
-                    consecutiveFailures++;
-                    if (consecutiveFailures >= 3) break;
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        break;
+                    }
+                    catch
+                    {
+                        consecutiveFailures++;
+                        if (consecutiveFailures >= 3) break;
+                    }
                 }
 
                 var elapsed = Stopwatch.GetElapsedTime(started);
-                var interval = TimeSpan.FromSeconds(1d / Math.Max(1, _frameRate));
-                if (elapsed < interval)
+                if (elapsed < InputPollInterval)
                 {
-                    await Task.Delay(interval - elapsed, cancellationToken);
+                    await Task.Delay(InputPollInterval - elapsed, cancellationToken);
                 }
             }
         }
@@ -265,22 +293,101 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         }
     }
 
-    private void ForwardPointer(CapturedPointer pointer)
+    /// <summary>
+    /// Forwards every discrete input transition in order, then the latest
+    /// position. Movement is coalesced because it is state, not an event, so a
+    /// burst of moves costs one message while button and wheel order is kept.
+    /// </summary>
+    private void ForwardInput(CapturedPointer pointer)
     {
         if (!GetClientRect(_windowHandle, out var rect)) return;
         var width = Math.Max(1, rect.Right - rect.Left);
         var height = Math.Max(1, rect.Bottom - rect.Top);
-        var x = Math.Clamp((int)Math.Round(pointer.X * (width - 1)), 0, width - 1);
-        var y = Math.Clamp((int)Math.Round(pointer.Y * (height - 1)), 0, height - 1);
-        var lParam = (nint)((y << 16) | (x & 0xffff));
-        var keyState = pointer.Down ? MkLeftButton : 0;
-        PostMessage(_windowHandle, WmMouseMove, keyState, lParam);
-        if (pointer.Down != _lastPointerDown)
+
+        if (pointer.Overflow)
         {
-            PostMessage(_windowHandle, pointer.Down ? WmLeftButtonDown : WmLeftButtonUp, keyState, lParam);
-            _lastPointerDown = pointer.Down;
+            // Input was lost, so any button we believe is held may already be up
+            // in Codex. Release everything rather than leaving a stuck button.
+            ReleaseAllButtons(pointer.X, pointer.Y, width, height);
+        }
+
+        foreach (var inputEvent in pointer.Events)
+        {
+            var (x, y) = CapturePointerTransform.MapToSurface(
+                inputEvent.X, inputEvent.Y, _viewportWidth, _viewportHeight, width, height);
+            var lParam = (nint)((y << 16) | (x & 0xffff));
+            switch (inputEvent.Kind)
+            {
+                case CapturedInputKind.Down:
+                    _heldButtons.Add(inputEvent.Button);
+                    PostMessage(_windowHandle, ButtonMessage(inputEvent.Button, down: true), KeyState(), lParam);
+                    break;
+                case CapturedInputKind.Up:
+                    _heldButtons.Remove(inputEvent.Button);
+                    PostMessage(_windowHandle, ButtonMessage(inputEvent.Button, down: false), KeyState(), lParam);
+                    break;
+                case CapturedInputKind.Wheel:
+                    var rotation = CapturePointerTransform.WheelDelta(inputEvent.DeltaY, inputEvent.DeltaMode);
+                    if (rotation == 0)
+                    {
+                        break;
+                    }
+                    // WM_MOUSEWHEEL carries screen coordinates, unlike the other
+                    // mouse messages, so convert the client point first.
+                    var screen = new NativePoint { X = x, Y = y };
+                    if (ClientToScreen(_windowHandle, ref screen))
+                    {
+                        var wheelParam = (nuint)(((long)(rotation & 0xffff) << 16) | (long)KeyState());
+                        var wheelLParam = (nint)((screen.Y << 16) | (screen.X & 0xffff));
+                        PostMessage(_windowHandle, WmMouseWheel, wheelParam, wheelLParam);
+                    }
+                    break;
+                case CapturedInputKind.Leave:
+                    ReleaseAllButtons(inputEvent.X, inputEvent.Y, width, height);
+                    PostMessage(_windowHandle, WmMouseLeave, 0, 0);
+                    break;
+            }
+        }
+
+        var (moveX, moveY) = CapturePointerTransform.MapToSurface(
+            pointer.X, pointer.Y, _viewportWidth, _viewportHeight, width, height);
+        PostMessage(_windowHandle, WmMouseMove, KeyState(), (nint)((moveY << 16) | (moveX & 0xffff)));
+    }
+
+    private void ReleaseAllButtons(double normalizedX, double normalizedY, int width, int height)
+    {
+        if (_heldButtons.Count == 0)
+        {
+            return;
+        }
+        var (x, y) = CapturePointerTransform.MapToSurface(
+            normalizedX, normalizedY, _viewportWidth, _viewportHeight, width, height);
+        var lParam = (nint)((y << 16) | (x & 0xffff));
+        foreach (var button in _heldButtons.ToArray())
+        {
+            _heldButtons.Remove(button);
+            PostMessage(_windowHandle, ButtonMessage(button, down: false), KeyState(), lParam);
         }
     }
+
+    private nuint KeyState()
+    {
+        nuint state = 0;
+        if (_heldButtons.Contains(CapturedMouseButton.Left)) state |= MkLeftButton;
+        if (_heldButtons.Contains(CapturedMouseButton.Right)) state |= MkRightButton;
+        if (_heldButtons.Contains(CapturedMouseButton.Middle)) state |= MkMiddleButton;
+        return state;
+    }
+
+    private static uint ButtonMessage(CapturedMouseButton button, bool down) => (button, down) switch
+    {
+        (CapturedMouseButton.Left, true) => WmLeftButtonDown,
+        (CapturedMouseButton.Left, false) => WmLeftButtonUp,
+        (CapturedMouseButton.Right, true) => WmRightButtonDown,
+        (CapturedMouseButton.Right, false) => WmRightButtonUp,
+        (CapturedMouseButton.Middle, true) => WmMiddleButtonDown,
+        _ => WmMiddleButtonUp
+    };
 
     private static byte[] CaptureInitialFrame(IntPtr handle)
     {
@@ -635,6 +742,16 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         public int Right;
         public int Bottom;
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X;
+        public int Y;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool ClientToScreen(IntPtr window, ref NativePoint point);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr FindWindow(string? className, string windowName);

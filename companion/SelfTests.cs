@@ -817,11 +817,81 @@ public static class SelfTests
                 Directory.Delete(root, recursive: true);
             }
         });
+        Check("pointer mapping honours device scale and letterbox", () =>
+        {
+            // Matching aspect ratios: normalized positions map across the whole
+            // surface, so device scale alone changes nothing.
+            Equal((0, 0), CapturePointerTransform.MapToSurface(0, 0, 1600, 1000, 3200, 2000));
+            Equal((1600, 1000), CapturePointerTransform.MapToSurface(0.5, 0.5, 1600, 1000, 3200, 2000));
+            Equal((3199, 1999), CapturePointerTransform.MapToSurface(1, 1, 1600, 1000, 3200, 2000));
+
+            // A wider surface pillar-boxes the scene, so the viewport edges land
+            // inside the content rect instead of at the surface edges.
+            Equal((160, 500), CapturePointerTransform.MapToSurface(0, 0.5, 1600, 1000, 1920, 1000));
+            Equal((1760, 500), CapturePointerTransform.MapToSurface(1, 0.5, 1600, 1000, 1920, 1000));
+
+            // A taller surface letterboxes it top and bottom.
+            Equal((800, 100), CapturePointerTransform.MapToSurface(0.5, 0, 1600, 1000, 1600, 1200));
+            Equal((800, 1100), CapturePointerTransform.MapToSurface(0.5, 1, 1600, 1000, 1600, 1200));
+
+            // Out-of-range input is clamped instead of escaping the surface.
+            Equal((0, 0), CapturePointerTransform.MapToSurface(-5, -5, 1600, 1000, 1600, 1000));
+            Equal((1599, 999), CapturePointerTransform.MapToSurface(5, 5, 1600, 1000, 1600, 1000));
+            Equal((0, 0), CapturePointerTransform.MapToSurface(0.5, 0.5, 0, 0, 1, 1));
+        });
+        Check("wheel rotation preserves direction and magnitude", () =>
+        {
+            Equal(-120, CapturePointerTransform.WheelDelta(100, 0));
+            Equal(120, CapturePointerTransform.WheelDelta(-100, 0));
+            Equal(-360, CapturePointerTransform.WheelDelta(3, 1));
+            Equal(360, CapturePointerTransform.WheelDelta(-3, 1));
+            Equal(-360, CapturePointerTransform.WheelDelta(1, 2));
+            Equal(0, CapturePointerTransform.WheelDelta(0, 0));
+            Equal(0, CapturePointerTransform.WheelDelta(double.NaN, 0));
+            Equal(0, CapturePointerTransform.WheelDelta(double.PositiveInfinity, 0));
+            // A single event can never claim more than nine notches.
+            Equal(-1080, CapturePointerTransform.WheelDelta(10_000, 1));
+            Equal(1080, CapturePointerTransform.WheelDelta(-10_000, 1));
+        });
+        Check("input transport carries buttons, wheel and leave in order", () =>
+        {
+            var bootstrap = CdpInjectionService.BootstrapScript;
+            foreach (var listener in new[]
+                     {
+                         "'pointermove'", "'pointerdown'", "'pointerup'", "'pointercancel'",
+                         "'pointerleave'", "'wheel'"
+                     })
+            {
+                True(bootstrap.Contains("addEventListener(" + listener, StringComparison.Ordinal));
+            }
+            True(bootstrap.Contains("installCaptureInputHandlers", StringComparison.Ordinal));
+            True(bootstrap.Contains("captureInputEvents", StringComparison.Ordinal));
+            True(bootstrap.Contains("captureInputOverflow", StringComparison.Ordinal));
+            True(bootstrap.Contains("drainCaptureInput", StringComparison.Ordinal));
+            True(bootstrap.Contains("buttonName(event.button)", StringComparison.Ordinal));
+            True(bootstrap.Contains("kind: 'wheel'", StringComparison.Ordinal));
+            True(bootstrap.Contains("kind: 'leave'", StringComparison.Ordinal));
+            True(bootstrap.Contains("cancelled: true", StringComparison.Ordinal));
+            True(bootstrap.Contains("pointercancel", StringComparison.Ordinal));
+            // The old single-button channel must be gone, and only the dedicated
+            // input channel may drain the queue: a frame publish must return
+            // position state alone, or it could swallow unsent input.
+            True(!bootstrap.Contains("capturePointerHandlers", StringComparison.Ordinal));
+            var readBodyIndex = bootstrap.IndexOf(
+                "window.__codexWallpaperSkinReadCapturePointer = token => {", StringComparison.Ordinal);
+            var frameBodyIndex = bootstrap.IndexOf(
+                "window.__codexWallpaperSkinSetCapturedFrame = (token, encoded) => {", StringComparison.Ordinal);
+            True(readBodyIndex > 0 && frameBodyIndex > readBodyIndex);
+            True(bootstrap[readBodyIndex..frameBodyIndex].Contains("drainCaptureInput()", StringComparison.Ordinal));
+            var frameBody = bootstrap[frameBodyIndex..];
+            True(!frameBody.Contains("drainCaptureInput", StringComparison.Ordinal));
+            True(frameBody.Contains("return capturePointerState();", StringComparison.Ordinal));
+        });
         Check("native frames are presented atomically", () =>
         {
             var bootstrap = CdpInjectionService.BootstrapScript;
             True(bootstrap.Contains("__codexWallpaperSkinReadCapturePointer", StringComparison.Ordinal));
-            True(bootstrap.Contains("installCapturePointerHandlers", StringComparison.Ordinal));
+            True(bootstrap.Contains("installCaptureInputHandlers", StringComparison.Ordinal));
             True(bootstrap.Contains("candidate.onload", StringComparison.Ordinal));
             True(bootstrap.Contains("candidate.onerror", StringComparison.Ordinal));
             True(bootstrap.Contains("new Image()", StringComparison.Ordinal));

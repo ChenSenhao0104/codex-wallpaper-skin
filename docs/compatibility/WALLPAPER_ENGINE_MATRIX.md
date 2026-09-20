@@ -54,7 +54,7 @@ Fill this table during product convergence; it evaluates behavior, not authors o
 | --- | --- | --- | --- | --- |
 | 2935530316 |  | not run |  | Local manual protocol not executed in the automated increment; see `docs/tasks/ISSUE-1-DEEPSEEK-EVIDENCE.md`. |
 | 3494484288 |  | not run |  | Local manual protocol not executed in the automated increment. |
-| 2914257158 |  | not run |  | Local manual protocol not executed in the automated increment. |
+| 2914257158 |  | not run |  | Pointer movement, buttons and wheel are transported and covered by synthetic tests; whether the water actually follows the pointer still needs the local manual protocol. |
 | 3798584436 |  | not run |  | Native eligibility for PKGV0024 is verified automatically (`--self-test`); visual fidelity still needs the local manual protocol. |
 | 3801532994 |  | not run |  | Native eligibility for PKGV0024 and above the 128 MiB fallback parser limit is verified automatically; visual fidelity still needs the local manual protocol. |
 | 3800850100 |  | not run |  | Native eligibility for PKGV0024 is verified automatically; visual fidelity still needs the local manual protocol. |
@@ -67,6 +67,8 @@ Fill this table during product convergence; it evaluates behavior, not authors o
 | Ordinary video control |  | pass (auto) |  | `scripts/runtime-smoke-test.mjs` video path unchanged. |
 | Application rejection control |  | pass (auto) |  | `--self-test`: application projects stay rejected even with Wallpaper Engine installed. |
 | PKGV0024 / over-limit / loose Scene eligibility |  | pass (auto) |  | `--self-test`: `NativeScene` classification, `CanApply` and `CanUse` for PKGV0024, for a package above `MaximumPackageBytes`, and for a loose `scene.json` project. |
+| Mouse move / button / wheel / leave transport |  | pass (auto) |  | `--self-test` mapping and wheel arithmetic plus the Node smoke test's ordered-input check (right button, wheel, left button, leave) and movement coalescing. |
+| Pointer mapping through device scale and letterbox |  | pass (auto) |  | `--self-test`: matching-aspect, pillar-boxed and letterboxed surface geometry, plus out-of-range clamping. |
 | Controller opened before Codex after Windows restart |  | pass (auto) |  | `--self-test`: coordinator activates the verified CDP flow, waits for readiness, then applies the queued wallpaper. |
 | Codex already open without CDP |  | pass (auto) |  | `--self-test`: no activation, no attach, wallpaper retained as queued, `LastAppliedWallpaperId` untouched. |
 | Empty/gray/transient frame |  | pass (auto) |  | `--self-test` frame-quality gate plus the Node smoke test's failed-decode last-known-good check. |

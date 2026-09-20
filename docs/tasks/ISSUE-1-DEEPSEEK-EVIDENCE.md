@@ -6,11 +6,13 @@ This document records what this implementation changes, what is verified automat
 
 ## 1. Scope
 
-Two increments are recorded here.
+Three increments are recorded here.
 
-**Increment 1** covered the `a72fc2c` delta — section 2a (Windows restart and connection recovery), hard gate 5 and the two new regression controls — together with hard gate 6 (empty/gray/transient frames) and the input-independence rule in section 4.
+**Increment 1** covered the `a72fc2c` delta — section 2a (Windows restart and connection recovery), hard gate 5 and the two new regression controls — together with hard gate 6 (empty/gray/transient frames) and the input-independence half of section 4.
 
 **Increment 2** covers section 1 (discovery and backend eligibility) and hard gate 3: native Wallpaper Engine eligibility is no longer coupled to our safe `scene.pkg` parser, so `PKGV0024`, packages above the fallback parser's size limits and loose (unpackaged) Scene projects reach the native backend, while the safe parser remains a compatibility fallback.
+
+**Increment 3** covers the rest of section 4 (interaction) and hard gate 2's synthetic half: mouse move plus left/right/middle press and release, wheel and leave/cancel are transported in the order Codex produced them, the CSS-to-surface mapping accounts for device scale and letterboxing, movement is coalesced while button and wheel order is preserved, and input is polled at 60 Hz independently of the 10/15 FPS frame rate.
 
 ### Changed boundaries
 
@@ -22,7 +24,8 @@ Two increments are recorded here.
 | Product state | One status line; queue only implied by a boolean | Six explicit states with a badge, one actionable sentence, and an action label |
 | Queue | `PendingWallpaperId` + `PendingActivation` boolean | Durable queue with queue timestamp, attempt counter and a bounded failure reason; state schema 5 → 6 |
 | Windows startup entry | Compare command line with the current one; no staleness report | `ControllerInvocation` model with dotnet/portable awareness, `StartupRegistrationStatus`, and a Repair action |
-| Pointer input | Read as the return value of a published frame | Independent `__codexWallpaperSkinReadCapturePointer` channel, installed with the capture lease |
+| Input transport | Only a left-button boolean was read as the return value of a published frame | Ordered input events (left/right/middle down and up, wheel, leave/cancel) on a dedicated channel, polled at 60 Hz; a frame publish returns position state alone and can never drain unsent input |
+| Input mapping | `normalized * (surfaceSize - 1)` | `CapturePointerTransform` maps through device scale and the aspect-fitted (letterboxed) content rect, and converts browser wheel deltas into `WM_MOUSEWHEEL` rotation |
 | Frame presentation | JPEG written straight into the visible `<img>` | Quality gate before transport plus an off-screen back buffer that is swapped in only after a successful decode |
 
 ## 2. How section 1 and hard gate 3 are satisfied
@@ -49,12 +52,15 @@ Two increments are recorded here.
 
 Codex is never terminated, and the coordinator never attaches to a listener that is not the official `OpenAI.Codex` package. When an unverified program holds the configured port, recovery moves to a fresh loopback port.
 
-## 4. Frame presentation and input independence
+## 4. Frame presentation and input transport
 
 - `FrameQualityEvaluator` rejects surfaces whose sampled luminance spread is below 4/255 (an empty, black, white or uniform gray GDI fill) and surfaces with fewer than 64 samples. The threshold is deliberately low so a legitimately dark Scene is still accepted; rejected frames are never transported, so the last known-good frame stays on screen.
 - The capture session publishes only accepted frames and counts `published`/`rejected` frames and the last rejection reason; `Doctor` reports them as `Native capture: <width>x<height> at <fps> FPS, N published, M rejected`.
 - The injected runtime decodes each frame into an off-screen `Image` and swaps it into the visible layer only in `candidate.onload`. An undecodable or superseded frame leaves the previous image untouched, so a partial frame can no longer flash.
-- Pointer state is read through its own CDP call each stream iteration and the listeners are installed when the capture lease begins, so interaction never waits for a frame; mouse move/down/up are forwarded with the existing device-scale mapping.
+- Input runs on its own channel at 60 Hz while frames are still published at 10/15 FPS, so pointer latency does not inherit the capture rate. Listeners are installed when the capture lease begins, and only the input channel drains the queue — a frame publish returns position state alone, so it cannot swallow unsent input.
+- Mouse move, left/right/middle press and release, wheel (with `deltaY`/`deltaMode` preserved) and leave/cancel are transported as ordered events. A `pointercancel` or leave releases whichever buttons were held and emits an explicit cancel, so a scene cannot be left with a stuck button.
+- Movement is state rather than an event, so a burst of moves costs one `WM_MOUSEMOVE`; button and wheel transitions keep their exact order. If the bounded queue ever overflows, the overflow is reported and every held button is released instead of silently reordering input.
+- `CapturePointerTransform` maps the normalized Codex position through device scale and the aspect-fitted content rect (Wallpaper Engine letterboxes when the surface aspect differs from the Codex viewport), and converts browser wheel deltas into `WM_MOUSEWHEEL` rotation in the documented units.
 
 ## 5. Automated evidence
 
@@ -68,22 +74,26 @@ dotnet ./companion/bin/Debug/net8.0-windows/win-x64/CodexWallpaperSkin.dll --sel
 node ./scripts/runtime-smoke-test.mjs
 ```
 
-`--self-test` covers 31 checks, including the 14 recovery, queue, invocation, eligibility and frame-quality checks added by these increments. `scripts/runtime-smoke-test.mjs` additionally exercises the atomic native frame swap, the last-known-good retention on a failed decode, the independent pointer channel, the existing image/video/scene/palette paths, hidden-document pause, cleanup and mismatch refusal.
+`--self-test` covers 34 checks, including the 17 recovery, queue, invocation, eligibility, input and frame-quality checks added by these increments. `scripts/runtime-smoke-test.mjs` additionally exercises the atomic native frame swap, the last-known-good retention on a failed decode, ordered input delivery (buttons, wheel, leave), movement coalescing, the existing image/video/scene/palette paths, hidden-document pause, cleanup and mismatch refusal.
 
 Synthetic fixtures only:
 
 - `SelfTests.cs` builds a minimal Steam-style `steamapps/workshop/content/431960/<id>` layout in a temporary directory, with `steamapps/common/wallpaper_engine/wallpaper64.exe` present or absent as the scenario requires. The size-limit case writes a valid package and then extends it to `MaximumPackageBytes + 1` with `FileStream.SetLength`, so a >128 MiB logical file is exercised without allocating its contents; the whole temporary root is deleted afterwards.
 - Scene packages are synthesized as `PKGV<version>` containers with a `scene.json` entry; `PKGV0024` is used to prove the parser ceiling no longer blocks native eligibility.
-- The Node smoke test uses a mock DOM and a mock `Image` whose decode outcome the test controls. No Workshop media, captured frames or personal screenshots are used or stored.
+- Pointer mapping and wheel conversion are asserted as arithmetic on synthetic dimensions only.
+- The Node smoke test uses a mock DOM and a mock `Image` whose decode outcome the test controls; input is driven through the mock window listeners. No Workshop media, captured frames or personal screenshots are used or stored.
 
 ## 6. Manual matrix status
 
-The local manual protocol in `docs/compatibility/WALLPAPER_ENGINE_MATRIX.md` requires the installed Workshop projects, a fixed Codex viewport and 60-second observation. It has not been executed yet; the Workshop rows therefore remain `not run` for this candidate rather than being claimed as passing. Eligibility, recovery, queue, frame-quality and input-ordering behaviors are covered by the automated checks above; visual fidelity, interaction feel and resource numbers still need the live session.
+The local manual protocol in `docs/compatibility/WALLPAPER_ENGINE_MATRIX.md` requires the installed Workshop projects, a fixed Codex viewport and 60-second observation. It has not been executed yet; the Workshop rows therefore remain `not run` for this candidate rather than being claimed as passing. Eligibility, recovery, queue, frame-quality, input-order and input-mapping behaviors are covered by the automated checks above; visual fidelity, interaction feel (for example whether the Saki water actually follows the pointer) and resource numbers still need the live session.
 
 ## 7. Known limitations and fallbacks
 
 - The high-fidelity capture path still uses `PrintWindow` on a private `-playInWindow` surface. Windows Graphics Capture with D3D11 (section 3) is not implemented yet; the quality gate and atomic presentation mitigate the visible symptoms but not the transport cost.
 - `-playInWindow` capture is capped at 1920x1200 and 10/15 FPS by the existing scene-quality controls.
+- Input is delivered by `PostMessage` to the private render window, which is what interactive Scenes consume; a Scene that requires real OS pointer capture may still behave differently, and that cannot be judged without the live session.
+- `WM_MOUSEWHEEL` carries screen coordinates, so the client point is converted with `ClientToScreen`; if that call fails the wheel event is skipped rather than sent with wrong coordinates.
+- The mapping assumes Wallpaper Engine letterboxes the scene into the render window. If a Scene crops instead of letterboxing, pointer positions in the cropped margins will be off by the crop amount.
 - The safe renderer's limits (`PKGV0012`–`PKGV0023`, 128 MiB package, 64 MiB entry) are unchanged and intentional: it parses packages in the renderer process, so raising them would raise its memory exposure. Native eligibility deliberately does not inherit those limits.
 - A Scene whose content is loose on disk (`scene.json` without `scene.pkg`) can only use the native backend; the safe renderer refuses it with an explicit message.
 - If every live backend fails and a preview exists, the labeled preview is shown with the reason; if there is no preview, the apply fails closed with the reason instead of pretending to succeed.

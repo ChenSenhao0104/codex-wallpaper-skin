@@ -376,6 +376,40 @@ assert(window.__codexWallpaperSkin.media.src !== lastGoodFrame, 'a valid frame d
 assert(window.__codexWallpaperSkinSetCapturedFrame('stalelease123456789', btoa('stale')) === false,
   'a stale native capture stream could overwrite the active lease');
 
+// Ordered discrete input: right button, wheel, then left button. Movement is
+// state and must coalesce to the latest position.
+windowListeners.get('pointermove')?.({ clientX: 600, clientY: 320 });
+windowListeners.get('pointerdown')?.({ button: 2, clientX: 600, clientY: 320 });
+windowListeners.get('wheel')?.({ deltaY: 120, deltaMode: 0, clientX: 600, clientY: 320 });
+windowListeners.get('pointerup')?.({ button: 2, clientX: 600, clientY: 320 });
+windowListeners.get('pointerdown')?.({ button: 0, clientX: 610, clientY: 330 });
+const discreteInput = window.__codexWallpaperSkinReadCapturePointer(captureLease);
+assert(discreteInput && Array.isArray(discreteInput.events), 'discrete input channel returned no events');
+assert(discreteInput.events.map(event => event.kind).join(',') === 'down,wheel,up,down',
+  `discrete input order was not preserved: ${discreteInput.events.map(event => event.kind).join(',')}`);
+assert(discreteInput.events[0].button === 'right', 'right button press was not reported');
+assert(discreteInput.events[1].deltaY === 120 && discreteInput.events[1].deltaMode === 0,
+  'wheel data was not reported');
+assert(discreteInput.events[3].button === 'left', 'left button press was not reported');
+assert(Math.abs(discreteInput.x - 610 / 1200) < .001 && Math.abs(discreteInput.y - 330 / 800) < .001,
+  'pointer movement was not coalesced to the latest position');
+assert(discreteInput.overflow === false, 'a small input burst was reported as overflow');
+assert(window.__codexWallpaperSkinReadCapturePointer(captureLease).events.length === 0,
+  'drained input events were replayed');
+
+// A frame publish must never consume unsent input events.
+windowListeners.get('pointerdown')?.({ button: 0, clientX: 640, clientY: 360 });
+window.__codexWallpaperSkinSetCapturedFrame(captureLease, btoa('frame-between-input'));
+const preserved = window.__codexWallpaperSkinReadCapturePointer(captureLease);
+assert(preserved.events.length === 1 && preserved.events[0].kind === 'down',
+  'publishing a frame consumed an unsent input event');
+windowListeners.get('pointerup')?.({ button: 0, clientX: 640, clientY: 360 });
+
+// Leaving the window is an explicit cancel and must be reported.
+windowListeners.get('pointerleave')?.({ clientX: 10, clientY: 10 });
+const leaveInput = window.__codexWallpaperSkinReadCapturePointer(captureLease);
+assert(leaveInput.events.some(event => event.kind === 'leave'), 'pointer leave was not reported');
+
 window.__codexWallpaperSkinSetSettings({ ...settings, autoPalette: false });
 assert(!root.classList.contains('cws-palette'), 'palette toggle did not turn off');
 assert(root.style.getPropertyValue('--cws-surface-rgb') === '', 'turning palette off retained stale palette variables');
@@ -451,4 +485,4 @@ try { bootstrap(); } catch { mismatchRefused = true; }
 assert(mismatchRefused, 'runtime did not fail closed when the Codex surface marker was missing');
 assert(Function(`return ${cleanupVerification}`)() === true, 'surface-mismatch refusal left runtime artifacts');
 
-process.stdout.write(`PASS runtime image/video/scene/palette/quality/hidden-pause/integrity/pending-cleanup/orphan-repair/restore/mismatch-refusal/atomic-native-frame/pointer-channel (${applied.palette.surface}, ${applied.palette.accent}, ${applied.palette.textContrast}:1)\n`);
+process.stdout.write(`PASS runtime image/video/scene/palette/quality/hidden-pause/integrity/pending-cleanup/orphan-repair/restore/mismatch-refusal/atomic-native-frame/ordered-input-channel (${applied.palette.surface}, ${applied.palette.accent}, ${applied.palette.textContrast}:1)\n`);
