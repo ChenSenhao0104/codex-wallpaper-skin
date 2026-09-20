@@ -112,6 +112,42 @@ public static class SelfTests
             };
             Throws<InvalidDataException>(() => StateStore.ValidateStateForSave(state));
         });
+        Check("wallpaper library rename collection and filters", () =>
+        {
+            var entry = new WallpaperEntry
+            {
+                Id = "test:library",
+                Title = "Complicated original title",
+                CustomTitle = WallpaperLibrary.NormalizeCustomTitle("  Quiet\nNight  "),
+                Collection = WallpaperLibrary.NormalizeCollection(" Relaxing "),
+                Source = "Test",
+                Kind = WallpaperKind.Scene,
+                Support = WallpaperSupport.LiveScene,
+                Note = string.Empty
+            };
+            Equal("Quiet Night", entry.DisplayTitle);
+            True(entry.DisplayLabel.Contains("[Relaxing] Quiet Night", StringComparison.Ordinal));
+            True(WallpaperLibrary.Matches(entry, "quiet", WallpaperKind.Scene, "relaxing", ungrouped: false));
+            True(WallpaperLibrary.Matches(entry, "complicated", null, null, ungrouped: false));
+            True(!WallpaperLibrary.Matches(entry, null, WallpaperKind.Video, null, ungrouped: false));
+            True(!WallpaperLibrary.Matches(entry, null, null, null, ungrouped: true));
+
+            var refreshed = new WallpaperEntry { Title = "Updated source title" };
+            WallpaperLibrary.CopyPersonalization(entry, refreshed);
+            Equal("Quiet Night", refreshed.CustomTitle);
+            Equal("Relaxing", refreshed.Collection);
+            var personalizations = new Dictionary<string, WallpaperPersonalization>(StringComparer.OrdinalIgnoreCase);
+            WallpaperLibraryStore.Update(entry, personalizations);
+            var restored = new WallpaperEntry { Id = entry.Id, Title = "Rescanned title" };
+            WallpaperLibraryStore.Apply(restored, personalizations);
+            Equal("Quiet Night", restored.DisplayTitle);
+            Equal("Relaxing", restored.Collection);
+            restored.CustomTitle = null;
+            restored.Collection = null;
+            WallpaperLibraryStore.Update(restored, personalizations);
+            Equal(0, personalizations.Count);
+            Throws<InvalidDataException>(() => WallpaperLibrary.NormalizeCustomTitle("   "));
+        });
         Check("schema 6 sibling state round-trips without data loss", () =>
         {
             const string json = """

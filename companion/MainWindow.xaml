@@ -84,7 +84,9 @@
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="150"/>
                     </Grid.RowDefinitions>
@@ -95,12 +97,42 @@
                             <Button Content="Scan Wallpaper Engine" Click="ScanWallpaperEngine_Click" Margin="0"/>
                         </StackPanel>
                     </DockPanel>
-                    <ListBox x:Name="WallpaperList" Grid.Row="1" SelectionChanged="WallpaperList_SelectionChanged"
+                    <Grid Grid.Row="1" Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="1.6*"/>
+                            <ColumnDefinition Width="1*"/>
+                            <ColumnDefinition Width="1.15*"/>
+                        </Grid.ColumnDefinitions>
+                        <DockPanel Grid.Column="0" Margin="0,0,8,0">
+                            <TextBlock Text="Search" Margin="0,0,7,0" VerticalAlignment="Center"
+                                       Foreground="{StaticResource MutedBrush}"/>
+                            <TextBox x:Name="WallpaperSearchTextBox"
+                                     ToolTip="Search the current custom name, original name, or collection"
+                                     TextChanged="WallpaperSearch_TextChanged"/>
+                        </DockPanel>
+                        <ComboBox x:Name="WallpaperTypeFilter" Grid.Column="1" Margin="0,0,8,0"
+                                  DisplayMemberPath="Label" SelectionChanged="WallpaperFilter_SelectionChanged"
+                                  ToolTip="Filter by wallpaper type"/>
+                        <ComboBox x:Name="WallpaperCollectionFilter" Grid.Column="2"
+                                  DisplayMemberPath="Label" SelectionChanged="WallpaperFilter_SelectionChanged"
+                                  ToolTip="Show all wallpapers or one personal collection"/>
+                    </Grid>
+                    <ListBox x:Name="WallpaperList" Grid.Row="2" SelectionChanged="WallpaperList_SelectionChanged"
                              Background="#0E1116" Foreground="White" BorderBrush="{StaticResource BorderBrush}"
                              DisplayMemberPath="DisplayLabel" Padding="5"/>
-                    <TextBlock x:Name="WallpaperDetails" Grid.Row="2" Foreground="{StaticResource MutedBrush}"
+                    <DockPanel Grid.Row="3" Margin="0,8,0,0">
+                        <TextBlock x:Name="WallpaperLibrarySummary" DockPanel.Dock="Right"
+                                   Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"/>
+                        <StackPanel Orientation="Horizontal">
+                            <Button x:Name="RenameWallpaperButton" Content="Rename" Click="RenameWallpaper_Click"
+                                    Background="#3B4351" IsEnabled="False" ToolTip="Change only the name shown in this app"/>
+                            <Button x:Name="SetCollectionButton" Content="Set collection" Click="SetCollection_Click"
+                                    Background="#3B4351" IsEnabled="False" ToolTip="Organize this wallpaper in a personal collection"/>
+                        </StackPanel>
+                    </DockPanel>
+                    <TextBlock x:Name="WallpaperDetails" Grid.Row="4" Foreground="{StaticResource MutedBrush}"
                                Margin="0,10,0,10" TextWrapping="Wrap" MinHeight="38"/>
-                    <Border Grid.Row="3" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" Background="#0B0D11">
+                    <Border Grid.Row="5" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" Background="#0B0D11">
                         <Grid>
                             <Image x:Name="PreviewImage" Stretch="Uniform" Margin="4"/>
                             <TextBlock x:Name="PreviewPlaceholder" Text="Select a wallpaper" Foreground="{StaticResource MutedBrush}"

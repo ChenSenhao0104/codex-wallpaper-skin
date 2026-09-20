@@ -85,7 +85,7 @@ public static class DeferredRestoreLauncher
                     var restored = await AutoRestoreService.RestoreAsync(
                         state, injection, activateIfNeeded: true, cancellationToken: cancellationToken);
                     StateStore.Save(state);
-                    Console.WriteLine($"Restored {restored.Wallpaper.Title} ({restored.ApplyResult.Mode}).");
+                    Console.WriteLine($"Restored {restored.Wallpaper.DisplayTitle} ({restored.ApplyResult.Mode}).");
                     if (injection.HasActiveCapture)
                     {
                         var completion = injection.ActiveCaptureCompletion;

@@ -180,12 +180,16 @@ public static class AutoRestoreService
         {
             return null;
         }
+        var personalizations = WallpaperLibraryStore.Load();
+        WallpaperLibraryStore.Apply(saved, personalizations);
         if (saved.Source.Equals("Wallpaper Engine", StringComparison.OrdinalIgnoreCase)
             && !string.IsNullOrWhiteSpace(saved.ProjectPath))
         {
             try
             {
-                return WallpaperCatalog.ParseProject(saved.ProjectPath);
+                var refreshed = WallpaperCatalog.ParseProject(saved.ProjectPath);
+                WallpaperLibraryStore.Apply(refreshed, personalizations);
+                return refreshed;
             }
             catch
             {

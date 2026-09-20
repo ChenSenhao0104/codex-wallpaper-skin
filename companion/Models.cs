@@ -49,6 +49,16 @@ public sealed class WallpaperEntry
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public WallpaperSupport Support { get; set; }
     public string Note { get; set; } = string.Empty;
+    // Personal catalog metadata is deliberately separate from the source title.
+    // Rescanning a Workshop project can refresh its technical metadata without
+    // overwriting the name and collection chosen by the user.
+    [JsonIgnore]
+    public string? CustomTitle { get; set; }
+    [JsonIgnore]
+    public string? Collection { get; set; }
+
+    [JsonIgnore]
+    public string DisplayTitle => string.IsNullOrWhiteSpace(CustomTitle) ? Title : CustomTitle;
 
     [JsonIgnore]
     public bool IsWallpaperEngineProject =>
@@ -89,7 +99,8 @@ public sealed class WallpaperEntry
                 WallpaperSupport.StaticPreview => "STATIC FALLBACK",
                 _ => "REJECTED"
             };
-            return $"{Title}  [{badge}]";
+            var collection = string.IsNullOrWhiteSpace(Collection) ? string.Empty : $"[{Collection}] ";
+            return $"{collection}{DisplayTitle}  [{badge}]";
         }
     }
 }

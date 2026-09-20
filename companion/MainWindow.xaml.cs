@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -14,6 +15,8 @@ public partial class MainWindow : Window
 {
     private const string StaleStartupWarning = "Windows sign-in restore points to another copy of this controller. Turn the sign-in restore option on to update it to this executable.";
     private readonly ObservableCollection<WallpaperEntry> _wallpapers = [];
+    private readonly ICollectionView _wallpaperView;
+    private readonly Dictionary<string, WallpaperPersonalization> _libraryPersonalizations;
     private readonly CdpInjectionService _injection = new();
     private readonly DispatcherTimer _settingsTimer;
     private AppState _state;
@@ -25,14 +28,31 @@ public partial class MainWindow : Window
     private string? _stateWarning;
     private bool _startupChangeGuard;
 
+    private sealed record WallpaperTypeFilterOption(string Label, WallpaperKind? Kind);
+    private sealed record WallpaperCollectionFilterOption(string Label, string? Collection, bool Ungrouped = false);
+
     public MainWindow()
     {
         InitializeComponent();
         _state = StateStore.Load();
+        _libraryPersonalizations = WallpaperLibraryStore.Load();
         _settingsTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(180) };
         _settingsTimer.Tick += SettingsTimer_Tick;
 
-        WallpaperList.ItemsSource = _wallpapers;
+        _wallpaperView = CollectionViewSource.GetDefaultView(_wallpapers);
+        _wallpaperView.Filter = WallpaperMatchesActiveFilters;
+        WallpaperList.ItemsSource = _wallpaperView;
+        WallpaperTypeFilter.ItemsSource = new[]
+        {
+            new WallpaperTypeFilterOption("All types", null),
+            new WallpaperTypeFilterOption("Scenes", WallpaperKind.Scene),
+            new WallpaperTypeFilterOption("Videos", WallpaperKind.Video),
+            new WallpaperTypeFilterOption("Images", WallpaperKind.Image),
+            new WallpaperTypeFilterOption("Web", WallpaperKind.Web),
+            new WallpaperTypeFilterOption("Applications", WallpaperKind.Application),
+            new WallpaperTypeFilterOption("Unknown", WallpaperKind.Unknown)
+        };
+        WallpaperTypeFilter.SelectedIndex = 0;
         FitCombo.ItemsSource = Enum.GetValues<WallpaperFit>();
         SceneFpsCombo.ItemsSource = new[] { 10, 15 };
         EndpointTextBox.Text = _state.CdpBaseUrl;
@@ -43,10 +63,17 @@ public partial class MainWindow : Window
             if (savedItem.Source.Equals("Wallpaper Engine", StringComparison.OrdinalIgnoreCase)
                 && !string.IsNullOrWhiteSpace(savedItem.ProjectPath))
             {
-                try { item = WallpaperCatalog.ParseProject(savedItem.ProjectPath); } catch { }
+                try
+                {
+                    item = WallpaperCatalog.ParseProject(savedItem.ProjectPath);
+                }
+                catch { }
             }
+            WallpaperLibraryStore.Apply(item, _libraryPersonalizations);
             _wallpapers.Add(item);
         }
+        RefreshCollectionFilter();
+        RefreshWallpaperView();
         LoadSettings(_state.Settings);
         AutoRestoreCheck.IsChecked = _state.AutoRestoreOnLaunch;
         try
@@ -75,6 +102,12 @@ public partial class MainWindow : Window
             _stateWarning = string.IsNullOrWhiteSpace(_stateWarning)
                 ? StateStore.LastLoadWarning
                 : _stateWarning + Environment.NewLine + StateStore.LastLoadWarning;
+        }
+        if (!string.IsNullOrWhiteSpace(WallpaperLibraryStore.LastLoadWarning))
+        {
+            _stateWarning = string.IsNullOrWhiteSpace(_stateWarning)
+                ? WallpaperLibraryStore.LastLoadWarning
+                : _stateWarning + Environment.NewLine + WallpaperLibraryStore.LastLoadWarning;
         }
         if (!string.IsNullOrWhiteSpace(_stateWarning))
         {
@@ -122,7 +155,7 @@ public partial class MainWindow : Window
                 WallpaperList.SelectedItem = listed;
             }
             SaveState();
-            SetStatus($"Restored {restored.Wallpaper.Title} from the previous session."
+            SetStatus($"Restored {restored.Wallpaper.DisplayTitle} from the previous session."
                 + (restored.ActivatedCodex ? " Codex was started with its verified local CDP endpoint." : string.Empty));
         });
     }
@@ -169,11 +202,11 @@ public partial class MainWindow : Window
                 {
                     UploadProgress.Value = 0;
                     UploadProgress.Visibility = Visibility.Visible;
-                    SetStatus($"Connected. Restoring {remembered.Title}…");
+                    SetStatus($"Connected. Restoring {remembered.DisplayTitle}…");
                     var progress = new Progress<double>(value => UploadProgress.Value = value * 100);
                     await _injection.ApplyAsync(remembered, _state.Settings, progress, cancellationToken);
                     UploadProgress.Visibility = Visibility.Collapsed;
-                    SetStatus($"Connected and restored {remembered.Title} from the previous session.");
+                    SetStatus($"Connected and restored {remembered.DisplayTitle} from the previous session.");
                     return;
                 }
             }
@@ -309,9 +342,12 @@ public partial class MainWindow : Window
             foreach (var file in dialog.FileNames)
             {
                 var entry = WallpaperCatalog.CreateLocal(file);
+                WallpaperLibraryStore.Apply(entry, _libraryPersonalizations);
                 Upsert(entry);
                 last = entry;
             }
+            RefreshCollectionFilter();
+            RefreshWallpaperView();
             SaveState();
             if (last is not null)
             {
@@ -356,14 +392,24 @@ public partial class MainWindow : Window
                 () => WallpaperCatalog.ScanWorkshopRoots(roots, cancellationToken).ToArray(),
                 cancellationToken);
             _state.WallpaperEngineRoot = roots[0];
-            foreach (var existing in _wallpapers.Where(item => item.Source == "Wallpaper Engine").ToArray())
+            var previousEntries = _wallpapers
+                .Where(item => item.Source.Equals("Wallpaper Engine", StringComparison.OrdinalIgnoreCase))
+                .ToDictionary(item => item.Id, StringComparer.OrdinalIgnoreCase);
+            foreach (var existing in previousEntries.Values)
             {
                 _wallpapers.Remove(existing);
             }
             foreach (var entry in found)
             {
+                if (previousEntries.TryGetValue(entry.Id, out var previous))
+                {
+                    WallpaperLibrary.CopyPersonalization(previous, entry);
+                }
+                WallpaperLibraryStore.Apply(entry, _libraryPersonalizations);
                 Upsert(entry);
             }
+            RefreshCollectionFilter();
+            RefreshWallpaperView();
             SaveState();
             var direct = found.Count(item => item.Support == WallpaperSupport.Direct);
             var liveScene = found.Count(item => item.Support == WallpaperSupport.LiveScene);
@@ -378,6 +424,8 @@ public partial class MainWindow : Window
     {
         var selected = WallpaperList.SelectedItem as WallpaperEntry;
         ApplyButton.IsEnabled = selected?.CanApply == true;
+        RenameWallpaperButton.IsEnabled = selected is not null;
+        SetCollectionButton.IsEnabled = selected is not null;
         PreviewImage.Source = null;
         PreviewPlaceholder.Visibility = Visibility.Visible;
         if (selected is null)
@@ -388,7 +436,7 @@ public partial class MainWindow : Window
         }
 
         _state.SelectedWallpaperId = selected.Id;
-        WallpaperDetails.Text = $"{selected.Source} · {selected.Kind} · {selected.Note}";
+        UpdateWallpaperDetails(selected);
         var path = selected.IsScene ? selected.PreviewPath : selected.EffectivePath;
         if (path is not null && IsWpfPreviewImage(path))
         {
@@ -500,10 +548,10 @@ public partial class MainWindow : Window
                 _ => " Direct image playback is active."
             };
             var warningStatus = string.IsNullOrWhiteSpace(applyResult.Warning) ? string.Empty : " Note: " + applyResult.Warning;
-            SetStatus($"Applied {selected.Title}.{modeStatus}{paletteStatus}{warningStatus} No Codex file was changed; Restore removes the whole layer.");
+            SetStatus($"Applied {selected.DisplayTitle}.{modeStatus}{paletteStatus}{warningStatus} No Codex file was changed; Restore removes the whole layer.");
             if (applyResult.Mode == "wallpaper-engine-capture")
             {
-                _ = MonitorCaptureAsync(selected.Id, selected.Title, _injection.ActiveCaptureCompletion);
+                _ = MonitorCaptureAsync(selected.Id, selected.DisplayTitle, _injection.ActiveCaptureCompletion);
             }
         });
     }
@@ -831,11 +879,178 @@ public partial class MainWindow : Window
         SetStatus("Queued — the wallpaper is not applied yet. Codex is currently running without its startup-only wallpaper channel, so the current task was left untouched. The controller will retry after Codex closes normally; click Restore Codex background to cancel the queue.");
     }
 
+    private void WallpaperSearch_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (!_loading) RefreshWallpaperView();
+    }
+
+    private void WallpaperFilter_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_loading) RefreshWallpaperView();
+    }
+
+    private bool WallpaperMatchesActiveFilters(object item)
+    {
+        if (item is not WallpaperEntry wallpaper) return false;
+        var typeFilter = WallpaperTypeFilter.SelectedItem as WallpaperTypeFilterOption;
+        var collectionFilter = WallpaperCollectionFilter.SelectedItem as WallpaperCollectionFilterOption;
+        return WallpaperLibrary.Matches(
+            wallpaper,
+            WallpaperSearchTextBox.Text,
+            typeFilter?.Kind,
+            collectionFilter?.Collection,
+            collectionFilter?.Ungrouped == true);
+    }
+
+    private void RefreshWallpaperView()
+    {
+        _wallpaperView.Refresh();
+        var visible = _wallpaperView.Cast<object>().Count();
+        WallpaperLibrarySummary.Text = visible == _wallpapers.Count
+            ? $"{visible:N0} wallpaper{(visible == 1 ? string.Empty : "s")}"
+            : $"{visible:N0} of {_wallpapers.Count:N0}";
+    }
+
+    private void RefreshCollectionFilter()
+    {
+        var previous = WallpaperCollectionFilter.SelectedItem as WallpaperCollectionFilterOption;
+        var options = new List<WallpaperCollectionFilterOption>
+        {
+            new("All collections", null),
+            new("Ungrouped", null, Ungrouped: true)
+        };
+        options.AddRange(_wallpapers
+            .Select(item => item.Collection)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .OrderBy(value => value, StringComparer.CurrentCultureIgnoreCase)
+            .Select(value => new WallpaperCollectionFilterOption(value!, value)));
+
+        WallpaperCollectionFilter.ItemsSource = options;
+        WallpaperCollectionFilter.SelectedItem = previous is null
+            ? options[0]
+            : options.FirstOrDefault(option => option.Ungrouped == previous.Ungrouped
+                && string.Equals(option.Collection, previous.Collection, StringComparison.CurrentCultureIgnoreCase))
+                ?? options[0];
+    }
+
+    private void RenameWallpaper_Click(object sender, RoutedEventArgs e)
+    {
+        if (WallpaperList.SelectedItem is not WallpaperEntry selected) return;
+        var dialog = new TextInputDialog(
+            this,
+            "Rename wallpaper",
+            "Choose the name shown and searched in this app. The Steam Workshop project and local file are not renamed.",
+            selected.DisplayTitle,
+            WallpaperLibrary.MaximumCustomTitleLength,
+            "Restore original name");
+        if (dialog.ShowDialog() != true) return;
+
+        var previousCustomTitle = selected.CustomTitle;
+        try
+        {
+            selected.CustomTitle = dialog.UseSecondaryAction
+                ? null
+                : WallpaperLibrary.NormalizeCustomTitle(dialog.Result ?? string.Empty);
+            if (string.Equals(selected.CustomTitle, selected.Title, StringComparison.CurrentCulture))
+            {
+                selected.CustomTitle = null;
+            }
+            SavePersonalization(selected);
+            RefreshWallpaperView();
+            if (_wallpaperView.Contains(selected))
+            {
+                WallpaperList.SelectedItem = selected;
+                UpdateWallpaperDetails(selected);
+            }
+            SaveState();
+            SetStatus(dialog.UseSecondaryAction
+                ? $"Restored the original name: {selected.Title}."
+                : $"Wallpaper renamed to {selected.DisplayTitle}. This app only; source files were not changed.");
+        }
+        catch (Exception exception)
+        {
+            selected.CustomTitle = previousCustomTitle;
+            WallpaperLibraryStore.Update(selected, _libraryPersonalizations);
+            RefreshWallpaperView();
+            if (_wallpaperView.Contains(selected))
+            {
+                WallpaperList.SelectedItem = selected;
+                UpdateWallpaperDetails(selected);
+            }
+            ShowError(exception.Message);
+        }
+    }
+
+    private void SetCollection_Click(object sender, RoutedEventArgs e)
+    {
+        if (WallpaperList.SelectedItem is not WallpaperEntry selected) return;
+        var dialog = new TextInputDialog(
+            this,
+            "Set wallpaper collection",
+            "Enter a personal collection such as Relaxing, Anime, Landscape, or Work. Collections are stored only in this app.",
+            selected.Collection ?? string.Empty,
+            WallpaperLibrary.MaximumCollectionLength,
+            "Remove from collection");
+        if (dialog.ShowDialog() != true) return;
+
+        var previousCollection = selected.Collection;
+        try
+        {
+            selected.Collection = dialog.UseSecondaryAction
+                ? null
+                : WallpaperLibrary.NormalizeCollection(dialog.Result);
+            SavePersonalization(selected);
+            RefreshCollectionFilter();
+            RefreshWallpaperView();
+            if (_wallpaperView.Contains(selected))
+            {
+                WallpaperList.SelectedItem = selected;
+                UpdateWallpaperDetails(selected);
+            }
+            SaveState();
+            SetStatus(string.IsNullOrWhiteSpace(selected.Collection)
+                ? $"Removed {selected.DisplayTitle} from its collection."
+                : $"Added {selected.DisplayTitle} to the {selected.Collection} collection.");
+        }
+        catch (Exception exception)
+        {
+            selected.Collection = previousCollection;
+            WallpaperLibraryStore.Update(selected, _libraryPersonalizations);
+            RefreshCollectionFilter();
+            RefreshWallpaperView();
+            if (_wallpaperView.Contains(selected))
+            {
+                WallpaperList.SelectedItem = selected;
+                UpdateWallpaperDetails(selected);
+            }
+            ShowError(exception.Message);
+        }
+    }
+
+    private void UpdateWallpaperDetails(WallpaperEntry selected)
+    {
+        var collection = string.IsNullOrWhiteSpace(selected.Collection)
+            ? "Ungrouped"
+            : selected.Collection;
+        var originalName = string.IsNullOrWhiteSpace(selected.CustomTitle)
+            ? string.Empty
+            : $" · Original name: {selected.Title}";
+        WallpaperDetails.Text = $"{selected.Source} · {selected.Kind} · Collection: {collection}{originalName} · {selected.Note}";
+    }
+
+    private void SavePersonalization(WallpaperEntry selected)
+    {
+        WallpaperLibraryStore.Update(selected, _libraryPersonalizations);
+        WallpaperLibraryStore.Save(_libraryPersonalizations);
+    }
+
     private void Upsert(WallpaperEntry entry)
     {
         var existing = _wallpapers.FirstOrDefault(item => item.Id.Equals(entry.Id, StringComparison.OrdinalIgnoreCase));
         if (existing is not null)
         {
+            WallpaperLibrary.CopyPersonalization(existing, entry);
             var index = _wallpapers.IndexOf(existing);
             _wallpapers[index] = entry;
         }
