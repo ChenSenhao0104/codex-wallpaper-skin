@@ -38,6 +38,29 @@ Application wallpapers execute arbitrary programs and remain outside the product
 
 Automation may build and test candidates, but every GitHub Release is created as a draft and published only after explicit maintainer approval. Code signing is deferred until a later distribution stage.
 
+## ADR-008 — Posted mouse messages do not drive native scene pointer state
+
+**Status:** accepted as a measured finding; remedy not yet chosen (Windows build 26200, Codex 2026-09-20)
+
+Hard gate 2 requires a confirmed interactive scene (Saki Tenma, `2914257158`) to respond to pointer movement in the **native** Wallpaper Engine path. The companion forwards pointer state by posting `WM_MOUSEMOVE` / button messages to the private `-playInWindow` render window. That mechanism was assumed to be sufficient; it was never verified until now.
+
+Measurement: after applying the scene natively, the harness sampled the rendered output in three phases — pointer parked, a wide hover sweep, and a wide sweep with the left button held — while differencing a water band and a static control band. Pointer dispatch was forced even though the Codex page reported itself hidden, so the test could not be voided by the hidden-page skip.
+
+- quiet water band frame-to-frame pixel delta: 7.53
+- hover sweep: 7.03
+- button-held drag sweep: 7.13
+- static control band: 0.000 in every phase (so the instrument can tell moving from static regions)
+- input messages posted to the render window: **73 accepted, 0 refused**
+
+Conclusion: input delivery works and the renderer accepts the messages, but the scene does not react. The same project *does* expose a pointer-reactive water effect — the browser safe renderer reports `pointerRippleLayers: 1, pointerRipplePassCount: 10` for it — so the missing reaction is in the native path, not in the scene.
+
+Consequences:
+
+- **Hard gate 2 is not satisfied for the native backend.** The earlier claim in `docs/tasks/ISSUE-1-DEEPSEEK-EVIDENCE.md` that posted messages are "what interactive Scenes consume" was an untested assumption and has been corrected.
+- Wallpaper Engine most likely drives scene pointer state from the global cursor position or its own input hook rather than from window messages, and the private render window is placed off-screen at `-32000,-32000`.
+- Candidate remedies, none yet chosen: keep the render window positioned behind the Codex window so the real cursor is genuinely over it; confirm or refute the global-cursor hypothesis with a one-off experiment that moves the real cursor; or label the native backend as non-interactive and route interactive scenes to the safe renderer.
+- Until one of these is implemented and measured, the product must not promise pointer interaction for the native backend.
+
 ## ADR-007 — The injected layer cannot reach an HTTP frame stream
 
 **Status:** accepted (measured on Windows build 26200, Codex 2026-09-20)

@@ -199,6 +199,22 @@ What a single still cannot establish, and therefore what remains unsigned: wheth
 
 Run statistics for this project, three consecutive runs: 357 / 304 / 179 frames published, 13 / 5 / 1 rejected by the quality gate, 8 / 6 / 8 skipped as unchanged, 442-452 KiB per frame, 11.0-12.4 effective FPS against a 15 FPS target, input-channel latency median 1.5-1.8 ms. One further attempt produced no native frames at all (0 published, no owned window), i.e. the native path did not start on that attempt; its full output was not captured, so which fallback it used is unknown. That is an unexplained intermittent start-up failure and is recorded here rather than smoothed over.
 
+### Gate 2 evidence: native pointer interaction does not reach the scene
+
+`--measure <id> --pointer-probe` samples the rendered output in three phases — pointer parked, a wide hover sweep, and a wide sweep with the left button held — comparing a water band against a static control band by per-pixel frame differencing. Recorded in `docs/ARCHITECTURE_DECISIONS.md` as ADR-008.
+
+| Phase | Water band pixel delta | Control band pixel delta |
+| --- | --- | --- |
+| Pointer parked | 7.53 | 0.000 |
+| Hover sweep | 7.03 | 0.000 |
+| Button-held drag sweep | 7.13 | 0.000 |
+
+Input messages posted to the render window in that run: **73 accepted, 0 refused**. The static control band is exactly 0.000 in every phase, so the instrument distinguishes moving from static regions and the water band's own animation is real.
+
+Conclusion: delivery works and the renderer accepts the messages, yet the scene does not react. The same project *does* have a pointer-reactive water effect — the browser safe renderer reports `pointerRippleLayers: 1, pointerRipplePassCount: 10` for it. **Hard gate 2 is therefore not satisfied for the native backend**, and the earlier statement in this document that posted messages are "what interactive Scenes consume" is retracted: it was an assumption, and it is now contradicted by measurement.
+
+Two measurement pitfalls were found and eliminated before trusting that result, and both are worth recording: the first version compared band *mean brightness*, which barely moves even when ripples appear (0.10 vs 0.12), and the second version posted **zero** messages because the Codex page reported itself hidden and pointer forwarding is intentionally skipped then. The probe now reports the hidden state and forces forwarding, so the measurement cannot be silently voided again.
+
 ## 8. Known limitations and fallbacks
 
 - The high-fidelity capture path still uses `PrintWindow` on a private `-playInWindow` surface. Windows Graphics Capture is **not** blocked by the build environment as an earlier revision of this document claimed: the targeting pack is in the local NuGet cache, and a scratch project targeting `net8.0-windows10.0.19041.0` restores, builds and runs offline with remote sources cleared (`GraphicsCaptureSession.IsSupported()` returned true on this machine). Implementing it needs a `NuGet.config` that clears remote sources and a companion target-framework change, which is a maintainer decision. Each changed frame is still a full-frame JPEG transfer; the unchanged-frame skip and atomic presentation mitigate the cost and the visible symptoms.

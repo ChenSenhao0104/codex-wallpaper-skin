@@ -74,6 +74,9 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private string? _windowLeakReason;
     private int? _ownedEngineProcessId;
     private byte[]? _lastAcceptedFrame;
+    private int _forwardedInputMessages;
+    private int _forwardInputWhileHidden;
+    private int _failedInputMessages;
 
     private WallpaperEngineCaptureSession(
         string engineExecutable,
@@ -134,6 +137,24 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                 milliseconds);
         }
     }
+
+    /// <summary>
+    /// When true, pointer input is forwarded even if the page reports itself
+    /// hidden. Off by default — a hidden Codex window has nothing to point at —
+    /// but the interaction probe needs it so a measurement can still answer
+    /// whether the renderer consumes forwarded input.
+    /// </summary>
+    public bool ForwardInputWhileHidden
+    {
+        get => Volatile.Read(ref _forwardInputWhileHidden) == 1;
+        set => Volatile.Write(ref _forwardInputWhileHidden, value ? 1 : 0);
+    }
+
+    /// <summary>Input messages successfully posted to the render window.</summary>
+    public int ForwardedInputMessages => Volatile.Read(ref _forwardedInputMessages);
+
+    /// <summary>Input messages the render window refused.</summary>
+    public int FailedInputMessages => Volatile.Read(ref _failedInputMessages);
 
     /// <summary>The most recent frame that was accepted and presented.</summary>
     public byte[]? LastAcceptedFrame => Volatile.Read(ref _lastAcceptedFrame);
@@ -316,7 +337,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                     var pointer = await readPointer(cancellationToken);
                     if (pointer is not null)
                     {
-                        if (!pointer.Hidden)
+                        if (!pointer.Hidden || ForwardInputWhileHidden)
                         {
                             ForwardInput(pointer);
                         }
@@ -431,11 +452,11 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
             {
                 case CapturedInputKind.Down:
                     _heldButtons.Add(inputEvent.Button);
-                    PostMessage(_windowHandle, ButtonMessage(inputEvent.Button, down: true), KeyState(), lParam);
+                    PostInput(ButtonMessage(inputEvent.Button, down: true), KeyState(), lParam);
                     break;
                 case CapturedInputKind.Up:
                     _heldButtons.Remove(inputEvent.Button);
-                    PostMessage(_windowHandle, ButtonMessage(inputEvent.Button, down: false), KeyState(), lParam);
+                    PostInput(ButtonMessage(inputEvent.Button, down: false), KeyState(), lParam);
                     break;
                 case CapturedInputKind.Wheel:
                     var rotation = CapturePointerTransform.WheelDelta(inputEvent.DeltaY, inputEvent.DeltaMode);
@@ -450,19 +471,36 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                     {
                         var wheelParam = (nuint)(((long)(rotation & 0xffff) << 16) | (long)KeyState());
                         var wheelLParam = (nint)((screen.Y << 16) | (screen.X & 0xffff));
-                        PostMessage(_windowHandle, WmMouseWheel, wheelParam, wheelLParam);
+                        PostInput(WmMouseWheel, wheelParam, wheelLParam);
                     }
                     break;
                 case CapturedInputKind.Leave:
                     ReleaseAllButtons(inputEvent.X, inputEvent.Y, width, height);
-                    PostMessage(_windowHandle, WmMouseLeave, 0, 0);
+                    PostInput(WmMouseLeave, 0, 0);
                     break;
             }
         }
 
         var (moveX, moveY) = CapturePointerTransform.MapToSurface(
             pointer.X, pointer.Y, _viewportWidth, _viewportHeight, width, height);
-        PostMessage(_windowHandle, WmMouseMove, KeyState(), (nint)((moveY << 16) | (moveX & 0xffff)));
+        PostInput(WmMouseMove, KeyState(), (nint)((moveY << 16) | (moveX & 0xffff)));
+    }
+
+    /// <summary>
+    /// Posts one input message and counts whether the render window accepted it,
+    /// so a scene that ignores pointer input can be told apart from input that
+    /// never arrived.
+    /// </summary>
+    private void PostInput(uint message, nuint wParam, nint lParam)
+    {
+        if (PostMessage(_windowHandle, message, wParam, lParam))
+        {
+            Interlocked.Increment(ref _forwardedInputMessages);
+        }
+        else
+        {
+            Interlocked.Increment(ref _failedInputMessages);
+        }
     }
 
     private void ReleaseAllButtons(double normalizedX, double normalizedY, int width, int height)
@@ -477,7 +515,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         foreach (var button in _heldButtons.ToArray())
         {
             _heldButtons.Remove(button);
-            PostMessage(_windowHandle, ButtonMessage(button, down: false), KeyState(), lParam);
+            PostInput(ButtonMessage(button, down: false), KeyState(), lParam);
         }
     }
 

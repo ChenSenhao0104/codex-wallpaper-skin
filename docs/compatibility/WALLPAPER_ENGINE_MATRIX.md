@@ -54,7 +54,7 @@ Fill this table during product convergence; it evaluates behavior, not authors o
 | --- | --- | --- | --- | --- |
 | 2935530316 |  | measured |  | Live session 2026-09-20, 60 s, native dynamic: 713 and 652 frames published, 0 rejected, 10.5–11.9 FPS against a 15 FPS target, input latency median 1.6–1.8 ms, restore verified. The framing/sharpness/flashing verdict still needs a human at the screen; see `docs/tasks/ISSUE-1-DEEPSEEK-EVIDENCE.md`. |
 | 3494484288 |  | not run |  | Local manual protocol not executed in the automated increment. |
-| 2914257158 |  | not run |  | Pointer movement, buttons and wheel are transported and covered by synthetic tests; whether the water actually follows the pointer still needs the local manual protocol. |
+| 2914257158 |  | fail (native pointer) |  | Native rendering, framing and frame stability measured clean (0-13 rejected frames per run, no blank frames presented). **Pointer interaction does not reach the scene**: 73 input messages were accepted by the render window across parked / hover-sweep / drag-sweep phases, and the water band's frame-to-frame motion did not change (7.53 / 7.03 / 7.13 against a static 0.000 control band). See ADR-008. |
 | 3798584436 |  | not run |  | Native eligibility for PKGV0024 is verified automatically (`--self-test`); visual fidelity still needs the local manual protocol. |
 | 3801532994 |  | not run |  | Native eligibility for PKGV0024 and above the 128 MiB fallback parser limit is verified automatically; visual fidelity still needs the local manual protocol. |
 | 3800850100 |  | not run |  | Native eligibility for PKGV0024 is verified automatically; visual fidelity still needs the local manual protocol. |

@@ -60,6 +60,29 @@ public sealed class CdpInjectionService : IAsyncDisposable
     /// <summary>The most recently presented native frame, for local inspection.</summary>
     public byte[]? LatestCaptureFrame => _captureSession?.LastAcceptedFrame;
 
+    /// <summary>Input messages posted to the render window, and those it refused.</summary>
+    public (int Forwarded, int Failed) InputMessageCounts =>
+        _captureSession is null ? (0, 0) : (_captureSession.ForwardedInputMessages, _captureSession.FailedInputMessages);
+
+    /// <summary>
+    /// Measurement-only switch: forward pointer input even while the page reports
+    /// itself hidden, so an interaction probe can still test the renderer.
+    /// </summary>
+    public void ForceInputWhileHidden(bool enabled)
+    {
+        if (_captureSession is not null)
+        {
+            _captureSession.ForwardInputWhileHidden = enabled;
+        }
+    }
+
+    /// <summary>True when the page last reported itself hidden.</summary>
+    public async Task<bool?> IsPageHiddenAsync(CancellationToken cancellationToken = default)
+    {
+        var pointer = await ReadCapturePointerAsync(cancellationToken);
+        return pointer?.Hidden;
+    }
+
     /// <summary>
     /// Gate 8 check: after Restore, the private render window this session owned
     /// must be gone. Null when no session was ever started.
@@ -74,6 +97,34 @@ public sealed class CdpInjectionService : IAsyncDisposable
 
     /// <summary>Structured capture health, or null when no native stream is active.</summary>
     public CaptureHealth? CaptureHealthSnapshot => _captureSession?.Snapshot();
+
+    /// <summary>
+    /// Dispatches one synthetic pointer event into Codex, which the capture input
+    /// channel then forwards to the renderer. <paramref name="buttonDown"/> null
+    /// sends a move, true a left press, false a left release. Used by the
+    /// pointer-interaction probe; coordinates are normalized to the viewport.
+    /// </summary>
+    internal async Task DispatchPointerAsync(
+        double normalizedX,
+        double normalizedY,
+        bool? buttonDown = null,
+        CancellationToken cancellationToken = default)
+    {
+        var client = RequireClient();
+        if (_captureToken is null)
+        {
+            throw new InvalidOperationException("Native capture is not active, so pointer input cannot be dispatched.");
+        }
+        var x = Math.Clamp(normalizedX, 0, 1).ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
+        var y = Math.Clamp(normalizedY, 0, 1).ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
+        var kind = buttonDown is null ? "pointermove" : buttonDown.Value ? "pointerdown" : "pointerup";
+        var buttons = buttonDown == true ? ", buttons: 1" : string.Empty;
+        var button = buttonDown is null ? string.Empty : ", button: 0";
+        await client.EvaluateAsync(
+            $"window.dispatchEvent(new PointerEvent('{kind}', "
+            + $"{{ clientX: innerWidth * {x}, clientY: innerHeight * {y}{button}{buttons} }}))",
+            cancellationToken);
+    }
 
     /// <summary>
     /// Measures the input channel latency: inject a synthetic pointer move into

@@ -29,8 +29,12 @@ internal static class MeasurementCommand
             return 64;
         }
         var seconds = ReadSeconds(args);
-        return await MeasureAsync(state, identifier, seconds, ReadSaveFramePath(args), cancellationToken);
+        return await MeasureAsync(
+            state, identifier, seconds, ReadSaveFramePath(args), ReadPointerProbe(args), cancellationToken);
     }
+
+    private static bool ReadPointerProbe(string[] args) =>
+        args.Contains("--pointer-probe", StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Reads --save-frame's path. The dump is written outside the repository by
@@ -94,6 +98,7 @@ internal static class MeasurementCommand
         string identifier,
         int seconds,
         string? savedFramePathParameter,
+        bool pointerProbe,
         CancellationToken cancellationToken)
     {
         var roots = WallpaperCatalog.DiscoverWorkshopRoots().ToList();
@@ -186,6 +191,10 @@ internal static class MeasurementCommand
             transport = injection.TransportMetrics;
             // Gate 8 needs the window identity before Restore clears the session.
             ownedWindowName = injection.OwnedCaptureWindowName;
+            if (pointerProbe && injection.HasActiveCapture)
+            {
+                await RunPointerProbeAsync(injection, savedFramePathParameter, cancellationToken);
+            }
             var savedFramePath = savedFramePathParameter;
             if (savedFramePath is not null)
             {
@@ -430,6 +439,254 @@ internal static class MeasurementCommand
         SceneFrameRate = 15,
         SceneResolutionScale = 1
     }.Normalize();
+
+    /// <summary>
+    /// Answers "does the scene react to the pointer?" with an A/B observation on
+    /// the *rendered* output. Frames are sampled first with the pointer parked and
+    /// then while it is swept across the scene, and the temporal variability of a
+    /// water band is compared with a control band that should not be
+    /// pointer-driven. A scene that ignores pointer input shows no difference
+    /// between the two phases; a pointer-driven effect raises the swept phase in
+    /// the water band only.
+    /// </summary>
+    private static async Task RunPointerProbeAsync(
+        CdpInjectionService injection,
+        string? savedFramePrefix,
+        CancellationToken cancellationToken)
+    {
+        const int samplesPerPhase = 10;
+        // Derive a stem so the two phase dumps sit next to the requested path
+        // instead of stacking extensions.
+        var stem = savedFramePrefix is null
+            ? null
+            : Path.Combine(
+                Path.GetDirectoryName(savedFramePrefix) ?? ".",
+                Path.GetFileNameWithoutExtension(savedFramePrefix));
+        var quiet = await SampleBandsAsync(
+            injection, PointerPhase.Quiet, samplesPerPhase, stem is null ? null : stem + ".quiet.jpg", cancellationToken);
+        var pageHidden = await injection.IsPageHiddenAsync(cancellationToken);
+        Console.WriteLine($"Pointer probe: the Codex page reports itself hidden: {pageHidden}. "
+            + (pageHidden == true
+                ? "Pointer forwarding is skipped while hidden, so this probe forces it to keep the measurement valid."
+                : "Pointer forwarding is active."));
+        injection.ForceInputWhileHidden(true);
+        var swept = await SampleBandsAsync(
+            injection, PointerPhase.MoveSweep, samplesPerPhase, stem is null ? null : stem + ".swept.jpg", cancellationToken);
+        var dragged = await SampleBandsAsync(
+            injection, PointerPhase.DragSweep, samplesPerPhase, stem is null ? null : stem + ".drag.jpg", cancellationToken);
+        if (quiet is null || swept is null)
+        {
+            Console.WriteLine("Pointer probe: no frames were available, so the scene reaction could not be judged.");
+            return;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("=== pointer interaction probe ===");
+        Console.WriteLine("phase         water pixel delta   control pixel delta   water luma sd");
+        PrintPhase("quiet", quiet);
+        PrintPhase("move sweep", swept);
+        if (dragged is not null)
+        {
+            PrintPhase("drag sweep", dragged);
+        }
+
+        var quietWater = quiet["water"].MeanPixelDelta;
+        var best = swept["water"].MeanPixelDelta;
+        var bestLabel = "move sweep";
+        if (dragged is not null && dragged["water"].MeanPixelDelta > best)
+        {
+            best = dragged["water"].MeanPixelDelta;
+            bestLabel = "drag sweep";
+        }
+        var controlBest = Math.Max(swept["control"].MeanPixelDelta, dragged?["control"].MeanPixelDelta ?? 0);
+        var gain = best - quietWater;
+        var controlGain = controlBest - quiet["control"].MeanPixelDelta;
+        var (forwarded, failed) = injection.InputMessageCounts;
+        Console.WriteLine($"pointer messages posted to the render window: {forwarded} accepted, {failed} refused");
+        Console.WriteLine($"best water pixel-delta gain: {gain:+0.000;-0.000;0.000} from '{bestLabel}' "
+            + $"(quiet {quietWater:0.000} -> {best:0.000}); control gain {controlGain:+0.000;-0.000;0.000}");
+        Console.WriteLine(gain > 0.25 && gain > controlGain * 2
+            ? $"Verdict: the native render reacts to pointer input in the water band (via {bestLabel}), and not in the control band."
+            : "Verdict: the native render showed no measurable pointer-driven reaction in the water band.");
+
+        void PrintPhase(string label, Dictionary<string, BandStats> phase) =>
+            Console.WriteLine($"{label,-13} {phase["water"].MeanPixelDelta,18:0.000} {phase["control"].MeanPixelDelta,21:0.000} "
+                + $"{phase["water"].LumaStdDev,15:0.00}");
+    }
+
+    private enum PointerPhase
+    {
+        Quiet,
+        MoveSweep,
+        DragSweep
+    }
+
+    private sealed record BandStats(double MeanPixelDelta, double LumaStdDev);
+
+    /// <summary>
+    /// Samples the rendered output for one phase and returns per-band statistics:
+    /// how much individual pixels change from frame to frame (which is what a
+    /// ripple actually does) and how much the band's mean luminance varies. Band
+    /// mean brightness alone is nearly blind to ripples, which is why the pixel
+    /// delta is the primary signal here.
+    /// </summary>
+    private static async Task<Dictionary<string, BandStats>?> SampleBandsAsync(
+        CdpInjectionService injection,
+        PointerPhase phase,
+        int sampleCount,
+        string? savedFramePath,
+        CancellationToken cancellationToken)
+    {
+        var waterLuma = new List<double>();
+        var controlLuma = new List<double>();
+        var waterDeltas = new List<double>();
+        var controlDeltas = new List<double>();
+        double[]? previousWater = null;
+        double[]? previousControl = null;
+        byte[]? last = null;
+        var sweeping = phase != PointerPhase.Quiet;
+        if (phase == PointerPhase.DragSweep)
+        {
+            // Press first: this scene's water responds to a drag, so a hover-only
+            // sweep would test the wrong interaction.
+            await injection.DispatchPointerAsync(0.5, 0.62, buttonDown: true, cancellationToken);
+            await Task.Delay(120, cancellationToken);
+        }
+        try
+        {
+            for (var index = 0; index < sampleCount; index++)
+            {
+                if (sweeping)
+                {
+                    var angle = index / (double)sampleCount * Math.PI * 2;
+                    await injection.DispatchPointerAsync(
+                        0.5 + 0.32 * Math.Cos(angle),
+                        0.62 + 0.22 * Math.Sin(angle),
+                        buttonDown: null,
+                        cancellationToken);
+                }
+                await Task.Delay(160, cancellationToken);
+                var frame = injection.LatestCaptureFrame;
+                if (frame is null || frame.Length == 0)
+                {
+                    continue;
+                }
+                last = frame;
+                var bands = MeasureBands(frame);
+                if (bands is null)
+                {
+                    continue;
+                }
+                var currentWater = bands.Value.Water;
+                var currentControl = bands.Value.Control;
+                if (previousWater is not null && previousControl is not null
+                    && previousWater.Length == currentWater.Length)
+                {
+                    waterDeltas.Add(MeanAbsoluteDifference(previousWater, currentWater));
+                    controlDeltas.Add(MeanAbsoluteDifference(previousControl, currentControl));
+                }
+                previousWater = currentWater;
+                previousControl = currentControl;
+                waterLuma.Add(currentWater.Average());
+                controlLuma.Add(currentControl.Average());
+            }
+        }
+        finally
+        {
+            if (phase == PointerPhase.DragSweep)
+            {
+                try
+                {
+                    await injection.DispatchPointerAsync(0.5, 0.62, buttonDown: false, CancellationToken.None);
+                }
+                catch
+                {
+                    // Releasing is best effort; capture teardown will follow anyway.
+                }
+            }
+        }
+
+        if (last is null || waterLuma.Count < 3)
+        {
+            return null;
+        }
+        if (savedFramePath is not null)
+        {
+            await File.WriteAllBytesAsync(savedFramePath, last, cancellationToken);
+            Console.WriteLine($"Pointer probe: wrote {savedFramePath}");
+        }
+        return new Dictionary<string, BandStats>
+        {
+            ["water"] = BuildStats(waterLuma, waterDeltas),
+            ["control"] = BuildStats(controlLuma, controlDeltas)
+        };
+    }
+
+    private static double MeanAbsoluteDifference(double[] previous, double[] current)
+    {
+        var sum = 0d;
+        for (var index = 0; index < current.Length; index++)
+        {
+            sum += Math.Abs(current[index] - previous[index]);
+        }
+        return current.Length == 0 ? 0 : sum / current.Length;
+    }
+
+    private static BandStats BuildStats(IReadOnlyList<double> values, IReadOnlyList<double> deltas)
+    {
+        var mean = values.Average();
+        var variance = values.Sum(value => (value - mean) * (value - mean)) / values.Count;
+        return new BandStats(
+            deltas.Count == 0 ? 0 : deltas.Average(),
+            Math.Sqrt(variance));
+    }
+
+    /// <summary>
+    /// Sampled luminance of two regions of a captured JPEG: the water band a
+    /// Saki-like scene exposes to the pointer, and a wall band it does not.
+    /// </summary>
+    private static (double[] Water, double[] Control)? MeasureBands(byte[] jpeg)
+    {
+        try
+        {
+            using var stream = new MemoryStream(jpeg, writable: false);
+            var frame = System.Windows.Media.Imaging.BitmapFrame.Create(
+                stream,
+                System.Windows.Media.Imaging.BitmapCreateOptions.PreservePixelFormat,
+                System.Windows.Media.Imaging.BitmapCacheOption.OnLoad);
+            var converted = new System.Windows.Media.Imaging.FormatConvertedBitmap(
+                frame, System.Windows.Media.PixelFormats.Bgr32, null, 0);
+            var width = converted.PixelWidth;
+            var height = converted.PixelHeight;
+            var stride = width * 4;
+            var buffer = new byte[stride * height];
+            converted.CopyPixels(buffer, stride, 0);
+            return (
+                SampleBandLuma(buffer, stride, width, height, 0.20, 0.80, 0.45, 0.95),
+                SampleBandLuma(buffer, stride, width, height, 0.20, 0.80, 0.02, 0.16));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static double[] SampleBandLuma(
+        byte[] bgra, int stride, int width, int height,
+        double x0, double x1, double y0, double y1)
+    {
+        var values = new List<double>();
+        for (var y = (int)(height * y0); y < (int)(height * y1); y += 3)
+        {
+            var offset = y * stride;
+            for (var x = (int)(width * x0); x < (int)(width * x1); x += 3)
+            {
+                var index = offset + x * 4;
+                values.Add(0.114 * bgra[index] + 0.587 * bgra[index + 1] + 0.299 * bgra[index + 2]);
+            }
+        }
+        return [.. values];
+    }
 
     private static double Median(IReadOnlyList<double> values)
     {
