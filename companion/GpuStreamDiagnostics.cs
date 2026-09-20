@@ -54,6 +54,31 @@ public sealed class GpuStreamDiagnostics
     public string Status { get; set; } = GpuStreamStatusLabel.UnsupportedOrFailed;
     public string? Note { get; set; }
 
+    /// <summary>
+    /// Cadence of the frames that actually came from the capture source. This is
+    /// the user-visible truth: Media Foundation resamples the media timeline to the
+    /// declared rate, so the coded frame count can be higher than the number of
+    /// distinct frames the Scene produced.
+    /// </summary>
+    public double MeasuredSourceFps
+    {
+        get
+        {
+            var seconds = _clock.Elapsed.TotalSeconds;
+            return seconds < 0.5 ? 0 : Interlocked.Read(ref _submittedFrames) / seconds;
+        }
+    }
+
+    /// <summary>Cadence measured from coded frames, including any frames Media Foundation repeated.</summary>
+    public double MeasuredCodedFps
+    {
+        get
+        {
+            var seconds = _clock.Elapsed.TotalSeconds;
+            return seconds < 0.5 ? 0 : Interlocked.Read(ref _codedFrames) / seconds;
+        }
+    }
+
     public void CountCaptured() => Interlocked.Increment(ref _capturedFrames);
     public void CountRejected() => Interlocked.Increment(ref _rejectedFrames);
     public void CountDropped() => Interlocked.Increment(ref _droppedFrames);

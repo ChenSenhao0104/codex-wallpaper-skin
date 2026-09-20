@@ -28,6 +28,9 @@ public static class GpuStreamStatusLabel
     public const int TargetFrameRate = 60;
     public const int FallbackFrameRate = 30;
 
+    /// <summary>Lowest cadence still reported as a GPU mode rather than as a failure.</summary>
+    public const int MinimumGpuFrameRate = 10;
+
     public static string Describe(GpuStreamStatus status) => status switch
     {
         GpuStreamStatus.GpuDynamic60 => GpuDynamic60,
@@ -51,10 +54,6 @@ public static class GpuStreamStatusLabel
         IsGpuDynamic(status)
         && observedSeconds >= 5
         && presentedFps < FallbackFrameRate - 2;
-
-    /// <summary>True when the stream is being run below the mode the user asked for.</summary>
-    public static bool IsBelowRequested(int declaredFrameRate, int requestedFrameRate) =>
-        declaredFrameRate < NormalizeFrameRate(requestedFrameRate);
 
     /// <summary>
     /// Maps a stored or reported label back to its state so a persisted status
@@ -82,15 +81,20 @@ public static class GpuStreamStatusLabel
     public static int NormalizeFrameRate(int requested) =>
         requested >= TargetFrameRate ? TargetFrameRate : FallbackFrameRate;
 
+    /// <summary>True when a stream runs below the mode the user asked for.</summary>
+    public static bool IsBelowRequested(int effectiveFrameRate, int requestedFrameRate) =>
+        effectiveFrameRate < NormalizeFrameRate(requestedFrameRate);
+
     /// <summary>
     /// Chooses the frame rate to declare to the encoder from the measured capture
     /// cadence, never above what the user asked for.
     ///
-    /// The measured cadence itself is declared rather than snapping to 30 or 60.
-    /// Declaring a higher rate makes Media Foundation repeat frames so the product
-    /// can claim a cadence the user cannot see; declaring a lower one makes the
-    /// encoder discard frames it was fast enough to accept. Declaring what was
-    /// measured keeps the media timeline equal to real time in both directions.
+    /// The declared rate is authoritative — Media Foundation resamples the media
+    /// timeline to it — so it must be one the source can actually sustain.
+    /// Declaring more makes the encoder repeat frames and wastes bitrate; declaring
+    /// far less makes it discard frames the machine could have delivered. The
+    /// measured cadence is declared with a small downward margin so ordinary jitter
+    /// does not turn into duplication.
     /// </summary>
     public static int AlignFrameRate(int measuredFrameRate, int requestedFrameRate)
     {
@@ -99,11 +103,12 @@ public static class GpuStreamStatusLabel
         {
             return requested;
         }
-        return Math.Clamp(measuredFrameRate, MinimumGpuFrameRate, requested);
+        // Stay clearly under the measurement. The source rate varies over a session
+        // (a Scene that slows down must not be padded), and when the declaration is
+        // wrong, dropping frames is cheaper and smoother than repeating them.
+        var conservative = (int)Math.Floor(measuredFrameRate * 0.85);
+        return Math.Clamp(conservative, MinimumGpuFrameRate, requested);
     }
-
-    /// <summary>Lowest cadence still reported as a GPU mode rather than as a failure.</summary>
-    public const int MinimumGpuFrameRate = 10;
 
     /// <summary>
     /// Selects the honest product status. The order matters: an active recovery

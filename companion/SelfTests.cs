@@ -743,13 +743,15 @@ public static class SelfTests
                 out _, out var fastReason));
             True(fastReason.Contains("frames per second", StringComparison.Ordinal));
 
-            // The declared rate is the measured cadence, never more than the user
-            // asked for: declaring a higher rate would be filled with repeated
-            // frames, and a lower one would discard frames the machine could feed.
+            // The declared rate is authoritative, so it is chosen from the measured
+            // source cadence with a deliberate margin: the source rate varies over a
+            // session, and dropping frames is cheaper and smoother than repeating them.
+            Equal(51, GpuStreamStatusLabel.AlignFrameRate(60, 60));
             Equal(60, GpuStreamStatusLabel.AlignFrameRate(75, 60));
-            Equal(45, GpuStreamStatusLabel.AlignFrameRate(45, 60));
-            Equal(19, GpuStreamStatusLabel.AlignFrameRate(19, 60));
+            Equal(38, GpuStreamStatusLabel.AlignFrameRate(45, 60));
             Equal(30, GpuStreamStatusLabel.AlignFrameRate(60, 30));
+            Equal(27, GpuStreamStatusLabel.AlignFrameRate(32, 60));
+            Equal(16, GpuStreamStatusLabel.AlignFrameRate(19, 60));
             Equal(GpuStreamStatusLabel.MinimumGpuFrameRate, GpuStreamStatusLabel.AlignFrameRate(2, 60));
             Equal(60, GpuStreamStatusLabel.AlignFrameRate(0, 60));
             True(GpuStreamStatusLabel.IsBelowRequested(19, 60));
@@ -770,6 +772,55 @@ public static class SelfTests
             var flat = new byte[64 * 64 * 4];
             True(!CapturedFrameQuality.IsAcceptable(flat, 64, 64));
             True(!CapturedFrameQuality.IsAcceptable(uniform, 32, 32));
+        });
+
+        Check("Wallpaper Engine frame rate cap is read without a path", () =>
+        {
+            var root = Path.Combine(Path.GetTempPath(), "codex-wallpaper-skin-cap-tests", Guid.NewGuid().ToString("N"));
+            var workshop = Path.Combine(root, "steamapps", "workshop", "content", "431960", "1");
+            var engine = Path.Combine(root, "steamapps", "common", "wallpaper_engine");
+            Directory.CreateDirectory(workshop);
+            Directory.CreateDirectory(engine);
+            try
+            {
+                var project = Path.Combine(workshop, "project.json");
+                File.WriteAllText(project, "{\"type\":\"scene\"}");
+                // The user profile key is arbitrary, so the reader must not depend on it.
+                File.WriteAllText(Path.Combine(engine, "config.json"), """
+                    { "someone" : { "general" : { "user" : { "fps" : 25, "msaa" : "x2" } } } }
+                    """);
+                True(WallpaperEnginePropertyReader.TryReadFrameRateCap(project, out var cap));
+                Equal(25, cap);
+
+                File.WriteAllText(Path.Combine(engine, "config.json"), """
+                    { "someone" : { "general" : { "user" : { "fps" : "not a number" } } } }
+                    """);
+                True(!WallpaperEnginePropertyReader.TryReadFrameRateCap(project, out _));
+
+                File.WriteAllText(Path.Combine(engine, "config.json"), "{ not json");
+                True(!WallpaperEnginePropertyReader.TryReadFrameRateCap(project, out _));
+
+                File.Delete(Path.Combine(engine, "config.json"));
+                True(!WallpaperEnginePropertyReader.TryReadFrameRateCap(project, out _));
+
+                // A project with no engine beside it must fail closed rather than throw.
+                var orphan = Path.Combine(Path.GetTempPath(), "codex-wallpaper-skin-cap-orphan", Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(orphan);
+                try
+                {
+                    var orphanProject = Path.Combine(orphan, "project.json");
+                    File.WriteAllText(orphanProject, "{\"type\":\"scene\"}");
+                    True(!WallpaperEnginePropertyReader.TryReadFrameRateCap(orphanProject, out _));
+                }
+                finally
+                {
+                    Directory.Delete(orphan, recursive: true);
+                }
+            }
+            finally
+            {
+                Directory.Delete(root, recursive: true);
+            }
         });
 
         return new SelfTestResult(passed, failed, messages);

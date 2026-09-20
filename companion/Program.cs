@@ -224,6 +224,21 @@ public static class Program
                 return decoded ? 0 : 1;
             }
 
+            var rateProbeIndex = Array.FindIndex(args,
+                value => value.Equals("--gpu-capture-rate-probe", StringComparison.OrdinalIgnoreCase));
+            if (rateProbeIndex >= 0)
+            {
+                if (rateProbeIndex + 1 >= args.Length)
+                {
+                    throw new ArgumentException("--gpu-capture-rate-probe requires a project.json path.");
+                }
+                return await RunGpuCaptureRateProbeAsync(
+                    args[rateProbeIndex + 1],
+                    ReadDoubleOption(args, "--seconds", 8),
+                    ReadDoubleOption(args, "--scale", .75),
+                    args.Contains("--readback", StringComparer.OrdinalIgnoreCase));
+            }
+
             if (args.Contains("--doctor", StringComparer.OrdinalIgnoreCase))
             {
                 var state = StateStore.Load();
@@ -321,10 +336,6 @@ public static class Program
                 $"The GPU media path reported '{session.StatusLabel}' instead of a GPU mode: "
                 + (session.GpuFailureReason ?? session.GpuStatusNote ?? "no reason was reported"));
         }
-        if (!string.IsNullOrWhiteSpace(session.GpuStatusNote))
-        {
-            Console.WriteLine("  note: " + session.GpuStatusNote);
-        }
 
         var batches = 0;
         var fragments = 0;
@@ -353,6 +364,7 @@ public static class Program
         var status = session.StatusLabel;
         var codec = session.GpuCodec ?? "unknown";
         var failure = session.GpuFailureReason;
+        var note = session.GpuStatusNote;
         await session.DisposeAsync();
         if (session.IsRenderWindowAlive)
         {
@@ -383,21 +395,112 @@ public static class Program
             out var decodeSummary, out var decodeFailure);
         Console.WriteLine("  " + (decoded ? decodeSummary : "decode check: " + decodeFailure));
 
-        // Honesty gate: Media Foundation repeats frames to fill a declared rate, so
-        // a coded-frame count far above the submitted count would mean the product
-        // is claiming a cadence the machine never sustained.
-        if (snapshot.SubmittedFrames > 0 && snapshot.CodedFrames > snapshot.SubmittedFrames * 1.25)
+        // Honesty gate: the status may not claim a cadence the source never produced.
+        // Media Foundation resamples the timeline to the declared rate, so the coded
+        // frame count can legitimately exceed the source's own rate; what must never
+        // happen is the product claiming the 60 FPS target while the Scene delivered
+        // far fewer distinct frames per second.
+        var sourceFps = seconds > 0 ? snapshot.SubmittedFrames / seconds : 0;
+        var duplication = snapshot.SubmittedFrames > 0
+            ? (double)snapshot.CodedFrames / snapshot.SubmittedFrames
+            : 0;
+        if (sourceFps < GpuStreamStatusLabel.TargetFrameRate - 5 && session.Status == GpuStreamStatus.GpuDynamic60)
         {
             throw new InvalidOperationException(
-                $"The encoder coded {snapshot.CodedFrames} frames from {snapshot.SubmittedFrames} submitted frames, "
-                + "so the declared frame rate is being filled with repeated frames rather than measured cadence.");
+                $"The source delivered {sourceFps:F1} distinct frames per second but the status claimed the "
+                + $"{GpuStreamStatusLabel.TargetFrameRate} FPS target.");
         }
+        if (!string.IsNullOrWhiteSpace(note))
+        {
+            Console.WriteLine("  status note: " + note);
+        }
+        Console.WriteLine(
+            $"  source cadence {sourceFps:F1} fps; coded/submitted ratio {duplication:F2}"
+            + (duplication > 1.25 ? " (Media Foundation repeated frames to fill the declared rate)" : string.Empty));
         Console.WriteLine("  " + snapshot.Describe());
         Console.WriteLine(
             $"PASS GPU media path ({status}; {codec}; {batches} transport batches, {fragments} fragments "
             + $"({report.SampleCount} muxed samples, {avc.NalUnits} AVC NAL units), {bytes} bytes, "
             + $"encoder={snapshot.EncoderMode}, capture={snapshot.CaptureWidth}x{snapshot.CaptureHeight}, "
             + $"private window released)");
+        return 0;
+    }
+
+    /// <summary>
+    /// Measures how fast the Wallpaper Engine capture surface is actually
+    /// produced, with and without the capture consumer's GPU-to-CPU readback.
+    ///
+    /// This separates two explanations for a low frame rate that would otherwise
+    /// be indistinguishable: the source renders slowly, or the readback stalls the
+    /// shared GPU and throttles the source. Without `--readback` the capture
+    /// callback performs no copy and no map, so the number is the source's own
+    /// ceiling.
+    /// </summary>
+    private static async Task<int> RunGpuCaptureRateProbeAsync(
+        string projectPath,
+        double seconds,
+        double sceneScale,
+        bool readback)
+    {
+        if (seconds is < 2 or > 120)
+        {
+            throw new ArgumentException("--seconds must be between 2 and 120 for the capture rate probe.");
+        }
+        if (sceneScale is < 0.5 or > 1)
+        {
+            throw new ArgumentException("--scale must be between 0.5 and 1 for the capture rate probe.");
+        }
+        var wallpaper = WallpaperCatalog.ParseProject(projectPath);
+        if (!wallpaper.IsWallpaperEngineScene)
+        {
+            throw new InvalidDataException("The capture rate probe accepts Wallpaper Engine Scene projects only.");
+        }
+
+        var settings = new WallpaperSettings { Muted = true, SceneFrameRate = 60, SceneResolutionScale = sceneScale };
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(seconds + 45));
+        await using var session = await WallpaperEngineCaptureSession.StartAsync(
+            wallpaper, settings, 1600, 1000, timeout.Token,
+            useGpuMediaPath: false, skipInternalCapture: true);
+        var handle = session.RenderWindowHandle;
+        if (handle == IntPtr.Zero || !session.IsRenderWindowAlive)
+        {
+            throw new InvalidOperationException("The private Wallpaper Engine render window is unavailable.");
+        }
+
+        await using var capture = readback
+            ? WindowsGraphicsCaptureSource.TryStartRaw(handle, out var rawFailure)
+            : WindowsGraphicsCaptureSource.TryStartCountOnly(handle, out rawFailure);
+        if (capture is null)
+        {
+            throw new InvalidOperationException("Windows Graphics Capture could not attach to the render window: " + rawFailure);
+        }
+
+        var consumed = 0;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        if (readback)
+        {
+            while (clock.Elapsed.TotalSeconds < seconds)
+            {
+                if (capture.TryReadRawFrame(200, out var pixels, out _, out _) && pixels is not null)
+                {
+                    consumed++;
+                }
+            }
+        }
+        else
+        {
+            await Task.Delay(TimeSpan.FromSeconds(seconds), CancellationToken.None);
+        }
+        var elapsed = clock.Elapsed.TotalSeconds;
+        var elapsedPublished = capture.PublishedRawFrames;
+        var mode = readback ? "with GPU-to-CPU readback" : "count only (no copy, no map)";
+        var rate = elapsedPublished / Math.Max(0.001, elapsed);
+        Console.WriteLine(
+            $"  capture source: {mode}; {elapsedPublished} frames in {elapsed:F2}s = {rate:F1} fps"
+            + (readback ? $"; {consumed} frames consumed" : string.Empty));
+        Console.WriteLine(
+            $"PASS capture rate probe ({(readback ? "readback" : "source-only")} {rate:F1} fps at "
+            + $"{capture.FrameSize.Width}x{capture.FrameSize.Height})");
         return 0;
     }
 

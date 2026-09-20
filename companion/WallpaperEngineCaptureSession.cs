@@ -68,11 +68,13 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private byte[] _lastEncodedFrame;
     private readonly double _baseRate;
     private readonly double _baseVolume;
+    private readonly int _requestedFrameRate;
     private int _lastPointerButtons;
     private int _stopRequested;
     private string? _gpuFailure;
     private string? _gpuCodec;
     private int _recovering;
+    private int _engineFrameRateCap;
     private bool _disposed;
 
     private WallpaperEngineCaptureSession(
@@ -87,8 +89,10 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         double baseVolume,
         GpuMediaPipeline? gpuPipeline = null,
         byte[]? gpuInitialFrame = null,
-        string? gpuStartFailure = null)
+        string? gpuStartFailure = null,
+        int engineFrameRateCap = 0)
     {
+        _engineFrameRateCap = engineFrameRateCap;
         _engineExecutable = engineExecutable;
         _windowName = windowName;
         _windowHandle = windowHandle;
@@ -99,13 +103,15 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         InitialFrame = gpuInitialFrame ?? initialFrame;
         _lastEncodedFrame = InitialFrame;
         _frameRate = NormalizeFrameRate(frameRate);
+        // The product mode the user asked for, kept separate from the compatibility
+        // backend's own 10/15 pacing so a status claim can never confuse the two.
+        _requestedFrameRate = GpuStreamStatusLabel.NormalizeFrameRate(frameRate);
         _pauseWhenHidden = pauseWhenHidden;
         _baseRate = baseRate;
         _baseVolume = baseVolume;
-        Status = gpuPipeline is null
-            ? GpuStreamStatus.ReducedFrameRateCompatibility
-            : GpuStreamStatusLabel.Decide(new GpuStreamStatusInput(true, false, gpuPipeline.FrameRate, true, true));
-        StatusLabel = GpuStreamStatusLabel.Describe(Status);
+        // Published immediately, not only after streaming starts, so the controller
+        // can show why the GPU path is not running at the requested rate.
+        UpdateGpuStatus();
     }
 
     public byte[] InitialFrame { get; }
@@ -114,10 +120,14 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     /// <summary>True when the v0.4 GPU media path owns this session.</summary>
     public bool UsesGpuMediaPath => _gpuPipeline is not null;
 
-    /// <summary>Status label required by Issue #2, shared by the controller window, Doctor and the acceptance report.</summary>
-    public string StatusLabel { get; private set; }
+    /// <summary>
+    /// Status label required by Issue #2, shared by the controller window, Doctor
+    /// and the acceptance report. Derived from <see cref="Status"/> so the pair can
+    /// never disagree, and initialised conservatively until the first update.
+    /// </summary>
+    public string StatusLabel => GpuStreamStatusLabel.Describe(Status);
 
-    public GpuStreamStatus Status { get; private set; }
+    public GpuStreamStatus Status { get; private set; } = GpuStreamStatus.UnsupportedOrFailed;
 
     /// <summary>Exact Media Source Extensions codec string reported by the encoder, when the GPU path is active.</summary>
     public string? GpuCodec => _gpuCodec ?? _gpuPipeline?.Codec;
@@ -151,7 +161,8 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         int viewportWidth,
         int viewportHeight,
         CancellationToken cancellationToken = default,
-        bool useGpuMediaPath = false)
+        bool useGpuMediaPath = false,
+        bool skipInternalCapture = false)
     {
         ArgumentNullException.ThrowIfNull(wallpaper);
         ArgumentNullException.ThrowIfNull(settings);
@@ -175,6 +186,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         var width = Math.Clamp((int)Math.Round(Math.Max(960, viewportWidth) * scale), 960, 1920);
         var height = Math.Clamp((int)Math.Round(Math.Max(600, viewportHeight) * scale), 600, 1200);
         var windowName = "Codex Wallpaper Skin " + Guid.NewGuid().ToString("N");
+        WallpaperEnginePropertyReader.TryReadFrameRateCap(projectPath, out var engineFrameRateCap);
         var controlExecutable = await EnsureEngineRunningAsync(engineRoot, executable, cancellationToken);
         await RunControlWithStartupRetryAsync(controlExecutable,
             ["-control", "openWallpaper", "-file", projectPath, "-playInWindow", windowName,
@@ -196,7 +208,10 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                 await RunPropertyControlWithRetryAsync(controlExecutable, json, windowName, cancellationToken);
             }
 
-            var graphicsCapture = WindowsGraphicsCaptureSource.TryStart(handle);
+            // A diagnostics probe can own the capture itself, in which case the
+            // session still creates and owns the private render window but does not
+            // attach a second capture session to it.
+            var graphicsCapture = skipInternalCapture ? null : WindowsGraphicsCaptureSource.TryStart(handle);
             byte[] initialFrame;
             string? gpuStartFailure = null;
             if (graphicsCapture is not null)
@@ -253,7 +268,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                             return new WallpaperEngineCaptureSession(
                                 controlExecutable, windowName, handle, graphicsCapture, initialFrame,
                                 settings.SceneFrameRate, settings.PauseWhenHidden, baseRate, baseVolume,
-                                gpuPipeline, gpuInitialFrame);
+                                gpuPipeline, gpuInitialFrame, gpuStartFailure: null, engineFrameRateCap: engineFrameRateCap);
                         }
                     }
                     catch (Exception exception)
@@ -272,7 +287,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
             return new WallpaperEngineCaptureSession(
                 controlExecutable, windowName, handle, graphicsCapture, initialFrame, settings.SceneFrameRate,
                 settings.PauseWhenHidden, baseRate, baseVolume, gpuPipeline: null, gpuInitialFrame: null,
-                gpuStartFailure: gpuStartFailure);
+                gpuStartFailure: gpuStartFailure, engineFrameRateCap: engineFrameRateCap);
         }
         catch
         {
@@ -477,25 +492,31 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         var recovering = Volatile.Read(ref _recovering) != 0;
         var pipeline = _gpuPipeline;
         var declared = pipeline?.FrameRate ?? _frameRate;
-        var requested = GpuStreamStatusLabel.NormalizeFrameRate(_frameRate);
+        var requested = _requestedFrameRate;
+        // The label follows the cadence of frames that really came from the source
+        // once there is enough media to measure it. The coded cadence is not used:
+        // Media Foundation resamples the timeline to the declared rate, so it can
+        // include repeated frames and would overstate what the user sees.
+        var measured = pipeline?.MeasuredSourceFps ?? 0;
+        var effective = measured >= 1 ? (int)Math.Round(measured) : declared;
         Status = GpuStreamStatusLabel.Decide(new GpuStreamStatusInput(
             GpuPathActive: pipeline is not null && _gpuFailure is null,
             Recovering: recovering,
-            // The declared rate decides the label: a stream that had to be
-            // declared below the target is reported as the fallback, never as the
-            // 60 FPS target, because Media Foundation would otherwise fill the
-            // difference with repeated frames.
-            RequestedFrameRate: declared,
+            RequestedFrameRate: effective,
             CompatibilityCaptureAvailable: true,
             StaticFallbackAvailable: !string.IsNullOrWhiteSpace(_gpuFailure)));
-        StatusLabel = GpuStreamStatusLabel.Describe(Status);
         if (_gpuFailure is null && pipeline is not null
-            && GpuStreamStatusLabel.IsBelowRequested(declared, requested))
+            && GpuStreamStatusLabel.IsBelowRequested(effective, requested))
         {
-            GpuStatusNote = $"the Wallpaper Engine capture surface sustains about {declared} frames per second at "
-                + $"{pipeline.Width}x{pipeline.Height}, so a {requested} FPS rate was not declared to the encoder "
-                + "(a higher rate would only be filled with repeated frames); "
-                + "reduce the scene render scale for a higher cadence";
+            var cap = Volatile.Read(ref _engineFrameRateCap);
+            var cappedNote = cap > 0 && Math.Abs(effective - cap) <= Math.Max(2, cap * 0.15)
+                ? $"Wallpaper Engine is configured to {cap} FPS in its own settings, which caps the captured cadence; "
+                    + "raise that setting for a higher rate"
+                : $"the Wallpaper Engine capture surface sustains about {effective} frames per second at "
+                    + $"{pipeline.Width}x{pipeline.Height}; the Scene itself is the limit, and the rate is "
+                    + "independent of the render scale";
+            GpuStatusNote = cappedNote
+                + $" (this session runs a {effective} FPS GPU mode, not the {requested} FPS target)";
         }
         else
         {
@@ -1022,6 +1043,9 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
 
     public bool IsRenderWindowAlive => IsWindow(_windowHandle);
 
+    /// <summary>The private render window this session owns, for diagnostics that need to attach their own capture.</summary>
+    public IntPtr RenderWindowHandle => _windowHandle;
+
     private static bool TryResolveEngine(string projectPath, out string engineRoot, out string executable)
     {
         engineRoot = string.Empty;
@@ -1456,6 +1480,97 @@ internal static class CapturedFrameQuality
 
 internal static class WallpaperEnginePropertyReader
 {
+    private const long MaximumConfigBytes = 16 * 1024 * 1024;
+
+    /// <summary>
+    /// Reads Wallpaper Engine's own global frame rate limit ("fps" under
+    /// general/user) from the same config.json the property reader already
+    /// consults.
+    ///
+    /// This matters for honest status: when the capture rate sits exactly at that
+    /// limit, the limit is the reason the GPU path cannot reach 60 FPS, and the
+    /// user can raise it. Reporting "reduce the render scale" instead would be
+    /// wrong, because the measurement shows the rate is independent of resolution.
+    /// Never throws and never returns a path.
+    /// </summary>
+    internal static bool TryReadFrameRateCap(string projectPath, out int framesPerSecond)
+    {
+        framesPerSecond = 0;
+        try
+        {
+            var configPath = FindEngineConfigPath(projectPath);
+            if (configPath is null)
+            {
+                return false;
+            }
+            var info = new FileInfo(configPath);
+            if (!info.Exists || info.Length is <= 0 or > MaximumConfigBytes)
+            {
+                return false;
+            }
+            using var document = JsonDocument.Parse(File.ReadAllBytes(configPath));
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+            foreach (var profile in document.RootElement.EnumerateObject())
+            {
+                if (profile.Value.ValueKind != JsonValueKind.Object
+                    || !TryGetPropertyIgnoreCase(profile.Value, "general", out var general)
+                    || !TryGetPropertyIgnoreCase(general, "user", out var user)
+                    || !TryGetPropertyIgnoreCase(user, "fps", out var fps))
+                {
+                    continue;
+                }
+                if (fps.ValueKind == JsonValueKind.Number
+                    && fps.TryGetInt32(out var value)
+                    && value is >= 1 and <= 360)
+                {
+                    framesPerSecond = value;
+                    return true;
+                }
+            }
+        }
+        catch (Exception exception) when (exception is IOException or JsonException or UnauthorizedAccessException
+            or ArgumentException or NotSupportedException or PathTooLongException)
+        {
+        }
+        return false;
+    }
+
+    private static bool TryGetPropertyIgnoreCase(JsonElement element, string name, out JsonElement value)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (property.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                {
+                    value = property.Value;
+                    return true;
+                }
+            }
+        }
+        value = default;
+        return false;
+    }
+
+    /// <summary>Locates the installed engine's config.json without exposing the path to any diagnostic.</summary>
+    private static string? FindEngineConfigPath(string projectPath)
+    {
+        var directory = new FileInfo(Path.GetFullPath(projectPath)).Directory;
+        for (var depth = 0; depth < 10 && directory is not null; depth++, directory = directory.Parent)
+        {
+            if (!directory.Name.Equals("steamapps", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            var candidate = Path.Combine(directory.FullName, "common", "wallpaper_engine", "config.json");
+            return File.Exists(candidate) ? candidate : null;
+        }
+        return null;
+    }
+
     public static Dictionary<string, object?> Read(WallpaperEntry wallpaper, WallpaperSettings settings)
     {
         // The official renderer automatically loads every default declared by

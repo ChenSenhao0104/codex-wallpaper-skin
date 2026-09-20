@@ -118,12 +118,11 @@ internal sealed class GpuMediaPipeline : IDisposable
                 return false;
             }
 
-            // The frame rate declared to the encoder must be one the machine can
-            // actually feed. Media Foundation fills a declared rate by repeating
-            // frames when input arrives more slowly, which would let the product
-            // claim 60 FPS while the user sees about 17 unique frames per second.
-            // The capture cadence is therefore measured first and the honest rate
-            // is declared, capped by what the user asked for.
+            // The declared frame rate is authoritative: Media Foundation resamples
+            // the timeline to it, repeating frames when input is slower and
+            // discarding them when it is faster. It is therefore measured from the
+            // live source, after the Scene has finished initialising, and capped by
+            // what the user asked for.
             var requestedFrameRate = GpuStreamStatusLabel.NormalizeFrameRate(settings.SceneFrameRate);
             var measuredFrameRate = MeasureCaptureFrameRate(capture, requestedFrameRate);
             var frameRate = GpuStreamStatusLabel.AlignFrameRate(measuredFrameRate, requestedFrameRate);
@@ -179,27 +178,45 @@ internal sealed class GpuMediaPipeline : IDisposable
     }
 
     /// <summary>
-    /// Measures how many frames per second the capture source can actually
-    /// deliver, so the encoder can be told the truth instead of a rate that
-    /// Media Foundation would fill by repeating frames.
+    /// Measures how many frames per second the live capture source can deliver, so
+    /// the encoder can be declared a rate that matches it instead of one Media
+    /// Foundation would fill with repeated frames.
+    ///
+    /// A Scene that has just started still compiles shaders and loads textures, so
+    /// the first frames are deliberately discarded: measuring during initialisation
+    /// under-reports the steady-state rate and would pin the whole session to a
+    /// cadence the machine can beat.
     /// </summary>
     private static int MeasureCaptureFrameRate(WindowsGraphicsCaptureSource capture, int requestedFrameRate)
     {
-        var window = TimeSpan.FromMilliseconds(600);
-        var started = capture.PublishedRawFrames;
+        var settle = TimeSpan.FromMilliseconds(500);
+        var window = TimeSpan.FromMilliseconds(1200);
         var clock = System.Diagnostics.Stopwatch.StartNew();
-        var buffer = new byte[1];
-        while (clock.Elapsed < window)
+        while (clock.Elapsed < settle)
         {
-            // Drain the channel so the producer keeps publishing, but do not feed
-            // the encoder yet: this measurement precedes its creation.
-            capture.TryReadRawFrame(40, out _, out _, out _);
+            // Drain without counting, so the producer keeps publishing.
+            capture.TryReadRawFrame(60, out _, out _, out _);
         }
-        var published = capture.PublishedRawFrames - started;
-        var seconds = Math.Max(0.05, clock.Elapsed.TotalSeconds);
+        var publishedAtStart = capture.PublishedRawFrames;
+        var measuredFrom = clock.Elapsed;
+        while (clock.Elapsed - measuredFrom < window)
+        {
+            capture.TryReadRawFrame(60, out _, out _, out _);
+        }
+        var published = capture.PublishedRawFrames - publishedAtStart;
+        var seconds = Math.Max(0.05, (clock.Elapsed - measuredFrom).TotalSeconds);
         var measured = (int)Math.Round(published / seconds);
         return measured <= 0 ? requestedFrameRate : measured;
     }
+
+    /// <summary>
+    /// Cadence of frames that really came from the source. This, not the coded
+    /// frame count, is what a status claim may rest on.
+    /// </summary>
+    public double MeasuredSourceFps => Diagnostics.MeasuredSourceFps;
+
+    /// <summary>Coded cadence, which includes frames Media Foundation repeated to fill the declared rate.</summary>
+    public double MeasuredCodedFps => Diagnostics.MeasuredCodedFps;
 
     private static bool WaitForFirstFrame(
         WindowsGraphicsCaptureSource capture,

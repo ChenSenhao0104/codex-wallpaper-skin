@@ -48,6 +48,7 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
         });
     private readonly Channel<byte[]>? _rawFrames;
     private readonly bool _rawPixels;
+    private readonly bool _countingOnly;
     private readonly GraphicsCaptureItem _item;
     private readonly IDirect3DDevice _winRtDevice;
     private readonly Direct3D11CaptureFramePool _framePool;
@@ -80,13 +81,15 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
         IDirect3DDevice winRtDevice,
         IntPtr d3dDevice,
         IntPtr d3dContext,
-        bool rawPixels)
+        bool rawPixels,
+        bool countingOnly = false)
     {
         _item = item;
         _winRtDevice = winRtDevice;
         _d3dDevice = d3dDevice;
         _d3dContext = d3dContext;
         _rawPixels = rawPixels;
+        _countingOnly = countingOnly;
         if (rawPixels)
         {
             _rawFrames = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(RawFrameCapacity)
@@ -108,8 +111,21 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
         _captureSession.StartCapture();
     }
 
-    /// <summary>True when this source publishes raw BGRA pixels instead of bitmaps.</summary>
+    /// <summary>
+    /// True when this source publishes raw BGRA pixels instead of bitmaps.
+    /// </summary>
     public bool UsesRawPixels => _rawPixels;
+
+    /// <summary>
+    /// Counts frames without copying or mapping anything.
+    ///
+    /// This exists to answer one question with evidence rather than assumption:
+    /// is a low frame rate caused by the capture consumer's GPU-to-CPU readback
+    /// stalling the shared GPU, or by the source itself rendering slowly? With
+    /// counting enabled the callback performs no copy, no map and no allocation,
+    /// so the measured rate is the source's own ceiling.
+    /// </summary>
+    public bool UsesCountingOnly => _countingOnly;
 
     /// <summary>Size of the most recent frame, or (0, 0) before the first frame arrives.</summary>
     public (int Width, int Height) FrameSize
@@ -128,7 +144,14 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
     public static WindowsGraphicsCaptureSource? TryStartRaw(IntPtr window, out string failure) =>
         TryStart(window, rawPixels: true, out failure);
 
-    private static WindowsGraphicsCaptureSource? TryStart(IntPtr window, bool rawPixels, out string failure)
+    public static WindowsGraphicsCaptureSource? TryStartCountOnly(IntPtr window, out string failure) =>
+        TryStart(window, rawPixels: false, out failure, countingOnly: true);
+
+    private static WindowsGraphicsCaptureSource? TryStart(
+        IntPtr window,
+        bool rawPixels,
+        out string failure,
+        bool countingOnly = false)
     {
         failure = string.Empty;
         if (window == IntPtr.Zero || !GraphicsCaptureSession.IsSupported())
@@ -146,7 +169,7 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
                 return null;
             }
             CreateD3DDevice(out d3dDevice, out d3dContext, out var winRtDevice);
-            return new WindowsGraphicsCaptureSource(item, winRtDevice, d3dDevice, d3dContext, rawPixels);
+            return new WindowsGraphicsCaptureSource(item, winRtDevice, d3dDevice, d3dContext, rawPixels, countingOnly);
         }
         catch (Exception exception)
         {
@@ -214,6 +237,12 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
             {
                 using var frame = sender.TryGetNextFrame();
                 if (frame is null) return;
+                if (_countingOnly)
+                {
+                    // No copy, no map, no allocation: this is the source's own rate.
+                    Interlocked.Increment(ref _publishedRawFrames);
+                    return;
+                }
                 if (_rawPixels)
                 {
                     var pixels = CopySurfacePixels(frame.Surface, out var width, out var height);
