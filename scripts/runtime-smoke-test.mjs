@@ -324,15 +324,36 @@ assert(!inertOverlay.hasAttribute('data-cws-surface'), 'pointer-inert overlay wa
 
 const captureLease = 'capturelease1234567890';
 assert(window.__codexWallpaperSkinBeginCapturedStream(captureLease) === true, 'native capture lease was rejected');
-window.__codexWallpaperSkinSetCapturedFrame(captureLease, btoa('mock-jpeg-frame'));
+const preCaptureMedia = window.__codexWallpaperSkin.media;
+assert(window.__codexWallpaperSkinSetCapturedFrame(captureLease, btoa('mock-jpeg-frame')) === true,
+  'native capture frame was rejected');
+assert(window.__codexWallpaperSkin.media !== preCaptureMedia && !preCaptureMedia.isConnected,
+  'decoded native frame did not atomically replace the previous image element');
 windowListeners.get('pointermove')?.({ clientX: 300, clientY: 600 });
 windowListeners.get('pointerdown')?.({ clientX: 300, clientY: 600, buttons: 1 });
 windowListeners.get('wheel')?.({ clientX: 300, clientY: 600, deltaY: -120 });
-const capturedPointer = window.__codexWallpaperSkinSetCapturedFrame(captureLease, btoa('mock-jpeg-frame-2'));
+const capturedPointer = window.__codexWallpaperSkinGetCapturedPointer(captureLease);
 assert(capturedPointer && Math.abs(capturedPointer.x - .25) < .001 && Math.abs(capturedPointer.y - .75) < .001,
   'native capture pointer coordinates were not normalized');
-assert(capturedPointer.buttons === 1 && capturedPointer.wheel === 120,
+assert(capturedPointer.buttons === 1 && capturedPointer.wheel === 120 && capturedPointer.inside === true,
   'native capture button/wheel state was not preserved');
+windowListeners.get('pointerleave')?.({ clientX: 300, clientY: 600 });
+const departedPointer = window.__codexWallpaperSkinGetCapturedPointer(captureLease);
+assert(departedPointer.buttons === 0 && departedPointer.inside === false,
+  'native capture pointer leave did not release input state');
+assert(window.__codexWallpaperSkinGetCapturedPointer('stalelease123456789') === false,
+  'a stale native capture stream could read pointer state');
+globalThis.deferMediaDecode = true;
+const lastGoodCaptureMedia = window.__codexWallpaperSkin.media;
+assert(window.__codexWallpaperSkinSetCapturedFrame(captureLease, btoa('deferred-native-frame')) === true,
+  'deferred native frame was rejected');
+assert(window.__codexWallpaperSkin.media === lastGoodCaptureMedia,
+  'an undecoded native frame replaced the last known-good frame');
+const deferredCaptureMedia = window.__codexWallpaperSkin.captureStaging;
+globalThis.deferMediaDecode = false;
+deferredCaptureMedia.onload();
+assert(window.__codexWallpaperSkin.media === deferredCaptureMedia && !lastGoodCaptureMedia.isConnected,
+  'decoded native frame did not complete the atomic buffer swap');
 assert(window.__codexWallpaperSkin.media.src.startsWith('data:image/jpeg;base64,'),
   'native capture frame was not committed to the background image');
 assert(window.__codexWallpaperSkinSetCapturedFrame('stalelease123456789', btoa('stale')) === false,

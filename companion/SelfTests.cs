@@ -370,10 +370,12 @@ public static class SelfTests
             True(!CdpInjectionService.BootstrapScript.Contains("body > :not", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("canvas.width = 32", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("cws-palette", StringComparison.Ordinal));
-            True(CdpInjectionService.BootstrapScript.Contains("existing.version === 12", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("existing.version === 13", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinBeginCapturedStream", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinSetCapturedFrame", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinGetCapturedPointer", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("pointermove", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("pointerleave", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("--app-color-background-surface: transparent", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("setProperty('--cws-root-alpha', '0')", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("markedAncestor", StringComparison.Ordinal));

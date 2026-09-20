@@ -127,7 +127,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
                             throw new InvalidOperationException("Codex rejected the native capture stream lease.");
                         }
                         _captureSession = session;
-                        session.StartStreaming(PublishCapturedFrameAsync);
+                        session.StartStreaming(PublishCapturedFrameAsync, ReadCapturedPointerAsync);
                         return initial with
                         {
                             Mode = "wallpaper-engine-capture",
@@ -400,7 +400,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
         }
     }
 
-    private async Task<CapturedPointer?> PublishCapturedFrameAsync(
+    private async Task PublishCapturedFrameAsync(
         byte[] frame,
         CancellationToken cancellationToken)
     {
@@ -410,6 +410,20 @@ public sealed class CdpInjectionService : IAsyncDisposable
             ?? throw new InvalidOperationException("The native capture stream lease is no longer active.");
         var evaluation = await client.EvaluateAsync(
             $"window.__codexWallpaperSkinSetCapturedFrame({Js(token)}, {Js(encoded)})",
+            cancellationToken);
+        if (!ReadBoolean(evaluation))
+        {
+            throw new InvalidOperationException("Another controller replaced the native capture stream.");
+        }
+    }
+
+    private async Task<CapturedPointer?> ReadCapturedPointerAsync(CancellationToken cancellationToken)
+    {
+        var client = RequireClient();
+        var token = _captureToken
+            ?? throw new InvalidOperationException("The native capture stream lease is no longer active.");
+        var evaluation = await client.EvaluateAsync(
+            $"window.__codexWallpaperSkinGetCapturedPointer({Js(token)})",
             cancellationToken);
         try
         {
@@ -423,12 +437,10 @@ public sealed class CdpInjectionService : IAsyncDisposable
                 Math.Clamp(value.GetProperty("y").GetDouble(), 0, 1),
                 Math.Clamp(value.GetProperty("buttons").GetInt32(), 0, 7),
                 Math.Clamp(value.GetProperty("wheel").GetInt32(), -1200, 1200),
-                value.GetProperty("hidden").GetBoolean());
+                value.GetProperty("hidden").GetBoolean(),
+                value.GetProperty("inside").GetBoolean());
         }
-        catch (InvalidOperationException)
-        {
-            throw;
-        }
+        catch (InvalidOperationException) { throw; }
         catch
         {
             return null;
@@ -548,6 +560,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
             || typeof window.__codexWallpaperSkinSetSettings !== 'undefined'
             || typeof window.__codexWallpaperSkinBeginCapturedStream !== 'undefined'
             || typeof window.__codexWallpaperSkinSetCapturedFrame !== 'undefined'
+            || typeof window.__codexWallpaperSkinGetCapturedPointer !== 'undefined'
             || typeof window.__codexWallpaperSkinCleanup !== 'undefined'
             || typeof window.__cwsCreateSceneWallpaper !== 'undefined'
             || typeof window.__cwsWeSceneLibrary !== 'undefined'
@@ -598,9 +611,12 @@ public sealed class CdpInjectionService : IAsyncDisposable
             try { state.rafId && cancelAnimationFrame(state.rafId); } catch (_) {}
             try { state.visibilityHandler && document.removeEventListener('visibilitychange', state.visibilityHandler); } catch (_) {}
             try { state.capturePointerHandlers && window.removeEventListener('pointermove', state.capturePointerHandlers.move, true); } catch (_) {}
+            try { state.capturePointerHandlers && window.removeEventListener('pointerenter', state.capturePointerHandlers.enter, true); } catch (_) {}
             try { state.capturePointerHandlers && window.removeEventListener('pointerdown', state.capturePointerHandlers.down, true); } catch (_) {}
             try { state.capturePointerHandlers && window.removeEventListener('pointerup', state.capturePointerHandlers.up, true); } catch (_) {}
             try { state.capturePointerHandlers && window.removeEventListener('pointercancel', state.capturePointerHandlers.cancel, true); } catch (_) {}
+            try { state.capturePointerHandlers && window.removeEventListener('pointerleave', state.capturePointerHandlers.leave, true); } catch (_) {}
+            try { state.capturePointerHandlers && window.removeEventListener('blur', state.capturePointerHandlers.blur, true); } catch (_) {}
             try { state.capturePointerHandlers && window.removeEventListener('wheel', state.capturePointerHandlers.wheel, true); } catch (_) {}
             try { state.pendingCancel && state.pendingCancel(); } catch (_) {}
             try { state.pendingMedia && state.pendingMedia.pause && state.pendingMedia.pause(); } catch (_) {}
@@ -636,6 +652,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
           delete window.__codexWallpaperSkinSetSettings;
           delete window.__codexWallpaperSkinBeginCapturedStream;
           delete window.__codexWallpaperSkinSetCapturedFrame;
+          delete window.__codexWallpaperSkinGetCapturedPointer;
           delete window.__codexWallpaperSkinCleanup;
           delete window.__cwsCreateSceneWallpaper;
           delete window.__cwsWeSceneLibrary;
@@ -662,6 +679,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
             && typeof window.__codexWallpaperSkinSetSettings === 'undefined'
             && typeof window.__codexWallpaperSkinBeginCapturedStream === 'undefined'
             && typeof window.__codexWallpaperSkinSetCapturedFrame === 'undefined'
+            && typeof window.__codexWallpaperSkinGetCapturedPointer === 'undefined'
             && typeof window.__codexWallpaperSkinCleanup === 'undefined'
             && typeof window.__cwsCreateSceneWallpaper === 'undefined'
             && typeof window.__cwsWeSceneLibrary === 'undefined'
@@ -683,7 +701,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
             throw new Error('Refusing to inject: this is not a ready Codex app:// page.');
           }
           const existing = window.__codexWallpaperSkin;
-          const existingHealthy = existing && existing.version === 12 && !existing.disposed
+          const existingHealthy = existing && existing.version === 13 && !existing.disposed
             && existing.host?.isConnected && existing.style?.isConnected && existing.overlay?.isConnected
             && document.getElementById('codex-wallpaper-skin-host') === existing.host
             && document.getElementById('codex-wallpaper-skin-style') === existing.style
@@ -710,6 +728,8 @@ public sealed class CdpInjectionService : IAsyncDisposable
             && window.__codexWallpaperSkinBeginCapturedStream === existing.helpers.beginCapturedStream
             && typeof window.__codexWallpaperSkinSetCapturedFrame === 'function'
             && window.__codexWallpaperSkinSetCapturedFrame === existing.helpers.setCapturedFrame
+            && typeof window.__codexWallpaperSkinGetCapturedPointer === 'function'
+            && window.__codexWallpaperSkinGetCapturedPointer === existing.helpers.getCapturedPointer
             && typeof window.__codexWallpaperSkinCleanup === 'function'
             && window.__codexWallpaperSkinCleanup === existing.helpers.cleanup;
           if (existingHealthy) return 'ready';
@@ -724,9 +744,12 @@ public sealed class CdpInjectionService : IAsyncDisposable
             try { old.rafId && cancelAnimationFrame(old.rafId); } catch (_) {}
             try { old.visibilityHandler && document.removeEventListener('visibilitychange', old.visibilityHandler); } catch (_) {}
             try { old.capturePointerHandlers && window.removeEventListener('pointermove', old.capturePointerHandlers.move, true); } catch (_) {}
+            try { old.capturePointerHandlers && window.removeEventListener('pointerenter', old.capturePointerHandlers.enter, true); } catch (_) {}
             try { old.capturePointerHandlers && window.removeEventListener('pointerdown', old.capturePointerHandlers.down, true); } catch (_) {}
             try { old.capturePointerHandlers && window.removeEventListener('pointerup', old.capturePointerHandlers.up, true); } catch (_) {}
             try { old.capturePointerHandlers && window.removeEventListener('pointercancel', old.capturePointerHandlers.cancel, true); } catch (_) {}
+            try { old.capturePointerHandlers && window.removeEventListener('pointerleave', old.capturePointerHandlers.leave, true); } catch (_) {}
+            try { old.capturePointerHandlers && window.removeEventListener('blur', old.capturePointerHandlers.blur, true); } catch (_) {}
             try { old.capturePointerHandlers && window.removeEventListener('wheel', old.capturePointerHandlers.wheel, true); } catch (_) {}
             try { old.pendingCancel && old.pendingCancel(); } catch (_) {}
             try { old.pendingMedia && old.pendingMedia.pause && old.pendingMedia.pause(); } catch (_) {}
@@ -761,6 +784,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
           delete window.__codexWallpaperSkinSetSettings;
           delete window.__codexWallpaperSkinBeginCapturedStream;
           delete window.__codexWallpaperSkinSetCapturedFrame;
+          delete window.__codexWallpaperSkinGetCapturedPointer;
           delete window.__codexWallpaperSkinCleanup;
 
           const nativeStyle = getComputedStyle(root);
@@ -844,12 +868,12 @@ public sealed class CdpInjectionService : IAsyncDisposable
           document.body.appendChild(host);
 
           const state = window.__codexWallpaperSkin = {
-            version: 12, disposed: false, style, host, overlay, media: null, assetUrl: null,
+            version: 13, disposed: false, style, host, overlay, media: null, assetUrl: null,
             sceneController: null, pendingSceneController: null,
             pendingMedia: null, pendingUrl: null, pendingCancel: null,
             uploads: new Map(), marked: new Set(), settings: null, rawPalette: null,
             palette: null, observer: null, rafId: 0, visibilityHandler: null, nativeSurface,
-            capturePointer: { x: .5, y: .5, buttons: 0, wheel: 0 }, capturePointerHandlers: null,
+            capturePointer: { x: .5, y: .5, buttons: 0, wheel: 0, inside: false }, capturePointerHandlers: null,
             captureFrameBusy: false, captureStaging: null, captureToken: null,
             styleText, helpers: null
           };
@@ -1069,11 +1093,40 @@ public sealed class CdpInjectionService : IAsyncDisposable
             root.style.setProperty('--cws-root-alpha', '0');
             const palette = applyPalette(); scheduleSurfaceScan(); return palette;
           };
+          const ensureCapturePointerHandlers = () => {
+            if (state.capturePointerHandlers) return;
+            const update = event => {
+              state.capturePointer.x = clamp(event.clientX / Math.max(1, innerWidth), 0, 1);
+              state.capturePointer.y = clamp(event.clientY / Math.max(1, innerHeight), 0, 1);
+              state.capturePointer.inside = true;
+            };
+            const enter = event => { update(event); state.capturePointer.inside = true; };
+            const down = event => { update(event); state.capturePointer.buttons = event.buttons & 7; };
+            const up = event => { update(event); state.capturePointer.buttons = event.buttons & 7; };
+            const cancel = event => { update(event); state.capturePointer.buttons = 0; state.capturePointer.inside = false; };
+            const leave = event => { update(event); state.capturePointer.buttons = 0; state.capturePointer.inside = false; };
+            const blur = () => { state.capturePointer.buttons = 0; state.capturePointer.inside = false; };
+            const wheel = event => {
+              update(event);
+              state.capturePointer.wheel = Math.round(clamp(
+                state.capturePointer.wheel - event.deltaY, -1200, 1200));
+            };
+            state.capturePointerHandlers = { move: update, enter, down, up, cancel, leave, blur, wheel };
+            window.addEventListener('pointermove', update, { passive: true, capture: true });
+            window.addEventListener('pointerenter', enter, { passive: true, capture: true });
+            window.addEventListener('pointerdown', down, { passive: true, capture: true });
+            window.addEventListener('pointerup', up, { passive: true, capture: true });
+            window.addEventListener('pointercancel', cancel, { passive: true, capture: true });
+            window.addEventListener('pointerleave', leave, { passive: true, capture: true });
+            window.addEventListener('blur', blur, { passive: true, capture: true });
+            window.addEventListener('wheel', wheel, { passive: true, capture: true });
+          };
           window.__codexWallpaperSkinBeginCapturedStream = token => {
             if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/.test(token)) return false;
             state.captureToken = token;
             state.captureFrameBusy = false;
             state.captureStaging = null;
+            ensureCapturePointerHandlers();
             return true;
           };
           window.__codexWallpaperSkinSetCapturedFrame = (token, encoded) => {
@@ -1088,26 +1141,6 @@ public sealed class CdpInjectionService : IAsyncDisposable
             if (!(media instanceof HTMLImageElement) || !media.isConnected || media.parentNode !== state.host) {
               throw new Error('The native capture target is unavailable.');
             }
-            if (!state.capturePointerHandlers) {
-              const update = event => {
-                state.capturePointer.x = clamp(event.clientX / Math.max(1, innerWidth), 0, 1);
-                state.capturePointer.y = clamp(event.clientY / Math.max(1, innerHeight), 0, 1);
-              };
-              const down = event => { update(event); state.capturePointer.buttons = event.buttons & 7; };
-              const up = event => { update(event); state.capturePointer.buttons = event.buttons & 7; };
-              const cancel = event => { update(event); state.capturePointer.buttons = 0; };
-              const wheel = event => {
-                update(event);
-                state.capturePointer.wheel = Math.round(clamp(
-                  state.capturePointer.wheel - event.deltaY, -1200, 1200));
-              };
-              state.capturePointerHandlers = { move: update, down, up, cancel, wheel };
-              window.addEventListener('pointermove', update, { passive: true, capture: true });
-              window.addEventListener('pointerdown', down, { passive: true, capture: true });
-              window.addEventListener('pointerup', up, { passive: true, capture: true });
-              window.addEventListener('pointercancel', cancel, { passive: true, capture: true });
-              window.addEventListener('wheel', wheel, { passive: true, capture: true });
-            }
             if (!state.captureFrameBusy) {
               state.captureFrameBusy = true;
               const nextSource = `data:image/jpeg;base64,${encoded}`;
@@ -1119,16 +1152,26 @@ public sealed class CdpInjectionService : IAsyncDisposable
               };
               staging.onload = () => {
                 if (!state.disposed && token === state.captureToken && state.media === media) {
-                  // Decode away from the visible element first. Assigning a
-                  // browser-cached image keeps the previous good frame visible
-                  // until the replacement is ready instead of flashing blank.
-                  media.src = nextSource;
+                  // Real double buffering: the previous visible frame stays in
+                  // the host until its replacement has fully decoded. Swapping
+                  // whole image elements avoids a transient empty texture when
+                  // Chromium uploads a new source to the existing element.
+                  staging.className = media.className;
+                  staging.style.cssText = media.style.cssText;
+                  host.insertBefore(staging, state.overlay);
+                  state.media = staging;
+                  media.remove();
                 }
                 release();
               };
               staging.onerror = release;
               staging.src = nextSource;
             }
+            return true;
+          };
+          window.__codexWallpaperSkinGetCapturedPointer = token => {
+            if (token !== state.captureToken || state.disposed || window.__codexWallpaperSkin !== state) return false;
+            ensureCapturePointerHandlers();
             const wheelDelta = state.capturePointer.wheel;
             state.capturePointer.wheel = 0;
             return {
@@ -1136,7 +1179,8 @@ public sealed class CdpInjectionService : IAsyncDisposable
               y: state.capturePointer.y,
               buttons: state.capturePointer.buttons,
               wheel: wheelDelta,
-              hidden: !!document.hidden
+              hidden: !!document.hidden,
+              inside: !!state.capturePointer.inside
             };
           };
           window.__codexWallpaperSkinFinishUpload = async (token, mediaKind, settings, sceneOptions) => {
@@ -1192,6 +1236,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
                 && window.__codexWallpaperSkinSetSettings === state.helpers.setSettings
                 && window.__codexWallpaperSkinBeginCapturedStream === state.helpers.beginCapturedStream
                 && window.__codexWallpaperSkinSetCapturedFrame === state.helpers.setCapturedFrame
+                && window.__codexWallpaperSkinGetCapturedPointer === state.helpers.getCapturedPointer
                 && window.__codexWallpaperSkinCleanup === state.helpers.cleanup;
               if (!runtimeIntact()) {
                 throw new Error('The wallpaper runtime was restored or replaced while media was decoding.');
@@ -1252,6 +1297,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
                     && window.__codexWallpaperSkinSetSettings === state.helpers.setSettings
                     && window.__codexWallpaperSkinBeginCapturedStream === state.helpers.beginCapturedStream
                     && window.__codexWallpaperSkinSetCapturedFrame === state.helpers.setCapturedFrame
+                    && window.__codexWallpaperSkinGetCapturedPointer === state.helpers.getCapturedPointer
                     && window.__codexWallpaperSkinCleanup === state.helpers.cleanup;
                   if (!runtimeIntact) {
                     if (window.__codexWallpaperSkin === state && typeof window.__codexWallpaperSkinCleanup === 'function') {
@@ -1261,9 +1307,12 @@ public sealed class CdpInjectionService : IAsyncDisposable
                       try { state.observer.disconnect(); } catch (_) {}
                       try { state.visibilityHandler && document.removeEventListener('visibilitychange', state.visibilityHandler); } catch (_) {}
                       try { state.capturePointerHandlers && window.removeEventListener('pointermove', state.capturePointerHandlers.move, true); } catch (_) {}
+                      try { state.capturePointerHandlers && window.removeEventListener('pointerenter', state.capturePointerHandlers.enter, true); } catch (_) {}
                       try { state.capturePointerHandlers && window.removeEventListener('pointerdown', state.capturePointerHandlers.down, true); } catch (_) {}
                       try { state.capturePointerHandlers && window.removeEventListener('pointerup', state.capturePointerHandlers.up, true); } catch (_) {}
                       try { state.capturePointerHandlers && window.removeEventListener('pointercancel', state.capturePointerHandlers.cancel, true); } catch (_) {}
+                      try { state.capturePointerHandlers && window.removeEventListener('pointerleave', state.capturePointerHandlers.leave, true); } catch (_) {}
+                      try { state.capturePointerHandlers && window.removeEventListener('blur', state.capturePointerHandlers.blur, true); } catch (_) {}
                       try { state.capturePointerHandlers && window.removeEventListener('wheel', state.capturePointerHandlers.wheel, true); } catch (_) {}
                       try { state.pendingCancel && state.pendingCancel(); } catch (_) {}
                       try { state.pendingMedia && state.pendingMedia.pause && state.pendingMedia.pause(); } catch (_) {}
@@ -1316,9 +1365,12 @@ public sealed class CdpInjectionService : IAsyncDisposable
             try { current.rafId && cancelAnimationFrame(current.rafId); } catch (_) {}
             try { current.visibilityHandler && document.removeEventListener('visibilitychange', current.visibilityHandler); } catch (_) {}
             try { current.capturePointerHandlers && window.removeEventListener('pointermove', current.capturePointerHandlers.move, true); } catch (_) {}
+            try { current.capturePointerHandlers && window.removeEventListener('pointerenter', current.capturePointerHandlers.enter, true); } catch (_) {}
             try { current.capturePointerHandlers && window.removeEventListener('pointerdown', current.capturePointerHandlers.down, true); } catch (_) {}
             try { current.capturePointerHandlers && window.removeEventListener('pointerup', current.capturePointerHandlers.up, true); } catch (_) {}
             try { current.capturePointerHandlers && window.removeEventListener('pointercancel', current.capturePointerHandlers.cancel, true); } catch (_) {}
+            try { current.capturePointerHandlers && window.removeEventListener('pointerleave', current.capturePointerHandlers.leave, true); } catch (_) {}
+            try { current.capturePointerHandlers && window.removeEventListener('blur', current.capturePointerHandlers.blur, true); } catch (_) {}
             try { current.capturePointerHandlers && window.removeEventListener('wheel', current.capturePointerHandlers.wheel, true); } catch (_) {}
             try { current.pendingCancel && current.pendingCancel(); } catch (_) {}
             try { current.pendingMedia && current.pendingMedia.pause && current.pendingMedia.pause(); } catch (_) {}
@@ -1346,6 +1398,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
               delete window.__codexWallpaperSkinSetSettings;
               delete window.__codexWallpaperSkinBeginCapturedStream;
               delete window.__codexWallpaperSkinSetCapturedFrame;
+              delete window.__codexWallpaperSkinGetCapturedPointer;
               delete window.__codexWallpaperSkinCleanup;
             }
             return 'cleaned';
@@ -1358,6 +1411,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
             setSettings: window.__codexWallpaperSkinSetSettings,
             beginCapturedStream: window.__codexWallpaperSkinBeginCapturedStream,
             setCapturedFrame: window.__codexWallpaperSkinSetCapturedFrame,
+            getCapturedPointer: window.__codexWallpaperSkinGetCapturedPointer,
             cleanup: window.__codexWallpaperSkinCleanup
           };
           return 'ready';

@@ -7,7 +7,13 @@ using System.Windows.Media.Imaging;
 
 namespace CodexWallpaperSkin;
 
-public sealed record CapturedPointer(double X, double Y, int Buttons, int WheelDelta, bool Hidden);
+public sealed record CapturedPointer(
+    double X,
+    double Y,
+    int Buttons,
+    int WheelDelta,
+    bool Hidden,
+    bool Inside);
 
 /// <summary>
 /// Uses Wallpaper Engine itself as the renderer for Scene projects. Frames are
@@ -28,6 +34,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private const uint WmMiddleButtonDown = 0x0207;
     private const uint WmMiddleButtonUp = 0x0208;
     private const uint WmMouseWheel = 0x020A;
+    private const uint WmMouseLeave = 0x02A3;
     private const uint CwpSkipDisabled = 0x0002;
     private const uint CwpSkipTransparent = 0x0004;
     private const nuint MkLeftButton = 0x0001;
@@ -41,7 +48,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private Task? _streamTask;
     private int _frameRate;
     private bool _pauseWhenHidden;
-    private bool _lastPageHidden;
+    private volatile bool _lastPageHidden;
     private readonly double _baseRate;
     private readonly double _baseVolume;
     private int _lastPointerButtons;
@@ -138,12 +145,17 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         }
     }
 
-    public void StartStreaming(Func<byte[], CancellationToken, Task<CapturedPointer?>> publishFrame)
+    public void StartStreaming(
+        Func<byte[], CancellationToken, Task> publishFrame,
+        Func<CancellationToken, Task<CapturedPointer?>> readPointer)
     {
         ArgumentNullException.ThrowIfNull(publishFrame);
+        ArgumentNullException.ThrowIfNull(readPointer);
         if (_disposed) throw new ObjectDisposedException(nameof(WallpaperEngineCaptureSession));
         if (_streamTask is not null) throw new InvalidOperationException("Wallpaper Engine capture is already streaming.");
-        _streamTask = Task.Run(() => StreamAsync(publishFrame, _lifetime.Token));
+        _streamTask = Task.WhenAll(
+            Task.Run(() => StreamFramesAsync(publishFrame, _lifetime.Token)),
+            Task.Run(() => StreamPointerAsync(readPointer, _lifetime.Token)));
     }
 
     public async Task UpdateSettingsAsync(WallpaperSettings settings, CancellationToken cancellationToken = default)
@@ -160,8 +172,8 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         await RunPropertyControlWithRetryAsync(_engineExecutable, json, _windowName, cancellationToken);
     }
 
-    private async Task StreamAsync(
-        Func<byte[], CancellationToken, Task<CapturedPointer?>> publishFrame,
+    private async Task StreamFramesAsync(
+        Func<byte[], CancellationToken, Task> publishFrame,
         CancellationToken cancellationToken)
     {
         var consecutiveFailures = 0;
@@ -172,17 +184,13 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                 if (_pauseWhenHidden && _lastPageHidden)
                 {
                     await Task.Delay(TimeSpan.FromMilliseconds(450), cancellationToken);
+                    continue;
                 }
                 var started = Stopwatch.GetTimestamp();
                 try
                 {
                     var frame = CaptureJpeg(_windowHandle);
-                    var pointer = await publishFrame(frame, cancellationToken);
-                    if (pointer is not null && !pointer.Hidden)
-                    {
-                        ForwardPointer(pointer);
-                    }
-                    if (pointer is not null) _lastPageHidden = pointer.Hidden;
+                    await publishFrame(frame, cancellationToken);
                     consecutiveFailures = 0;
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -217,11 +225,21 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         var y = Math.Clamp((int)Math.Round(pointer.Y * (height - 1)), 0, height - 1);
         var target = FindPointerTarget(_windowHandle, x, y, out var targetPoint);
         var lParam = PackPoint(targetPoint.X, targetPoint.Y);
-        var keyState = PointerKeyState(pointer.Buttons);
+        var effectiveButtons = pointer.Hidden || !pointer.Inside ? 0 : pointer.Buttons;
+        var keyState = PointerKeyState(effectiveButtons);
+        if (pointer.Hidden || !pointer.Inside)
+        {
+            ForwardButton(target, lParam, effectiveButtons, 1, WmLeftButtonDown, WmLeftButtonUp, keyState);
+            ForwardButton(target, lParam, effectiveButtons, 2, WmRightButtonDown, WmRightButtonUp, keyState);
+            ForwardButton(target, lParam, effectiveButtons, 4, WmMiddleButtonDown, WmMiddleButtonUp, keyState);
+            PostMessage(target, WmMouseLeave, 0, 0);
+            _lastPointerButtons = 0;
+            return;
+        }
         PostMessage(target, WmMouseMove, keyState, lParam);
-        ForwardButton(target, lParam, pointer.Buttons, 1, WmLeftButtonDown, WmLeftButtonUp, keyState);
-        ForwardButton(target, lParam, pointer.Buttons, 2, WmRightButtonDown, WmRightButtonUp, keyState);
-        ForwardButton(target, lParam, pointer.Buttons, 4, WmMiddleButtonDown, WmMiddleButtonUp, keyState);
+        ForwardButton(target, lParam, effectiveButtons, 1, WmLeftButtonDown, WmLeftButtonUp, keyState);
+        ForwardButton(target, lParam, effectiveButtons, 2, WmRightButtonDown, WmRightButtonUp, keyState);
+        ForwardButton(target, lParam, effectiveButtons, 4, WmMiddleButtonDown, WmMiddleButtonUp, keyState);
         if (pointer.WheelDelta != 0)
         {
             var screenPoint = new NativePoint { X = x, Y = y };
@@ -229,7 +247,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
             var wheelState = keyState | ((nuint)(ushort)(short)Math.Clamp(pointer.WheelDelta, -1200, 1200) << 16);
             PostMessage(target, WmMouseWheel, wheelState, PackPoint(screenPoint.X, screenPoint.Y));
         }
-        _lastPointerButtons = pointer.Buttons;
+        _lastPointerButtons = effectiveButtons;
     }
 
     private void ForwardButton(
@@ -246,6 +264,52 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         if (wasDown != isDown)
         {
             PostMessage(target, isDown ? downMessage : upMessage, keyState, lParam);
+        }
+    }
+
+    private async Task StreamPointerAsync(
+        Func<CancellationToken, Task<CapturedPointer?>> readPointer,
+        CancellationToken cancellationToken)
+    {
+        var consecutiveFailures = 0;
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested && IsWindow(_windowHandle))
+            {
+                var started = Stopwatch.GetTimestamp();
+                try
+                {
+                    var pointer = await readPointer(cancellationToken);
+                    if (pointer is not null)
+                    {
+                        _lastPageHidden = pointer.Hidden;
+                        ForwardPointer(pointer);
+                    }
+                    consecutiveFailures = 0;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch
+                {
+                    consecutiveFailures++;
+                }
+
+                // Input is deliberately independent from capture. Slow or
+                // rejected DirectX frames must not freeze an interactive Scene.
+                var interval = consecutiveFailures == 0
+                    ? TimeSpan.FromMilliseconds(1000d / 30)
+                    : TimeSpan.FromMilliseconds(Math.Min(500, 50 * consecutiveFailures));
+                var elapsed = Stopwatch.GetElapsedTime(started);
+                if (elapsed < interval)
+                {
+                    await Task.Delay(interval - elapsed, cancellationToken);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
         }
     }
 
