@@ -74,6 +74,7 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
                 outputType.Set(MediaTypeAttributeKeys.FrameRate, MediaFactory.PackRatio(frameRate, 1)).CheckError();
                 outputType.Set(MediaTypeAttributeKeys.PixelAspectRatio, MediaFactory.PackRatio(1, 1)).CheckError();
                 outputType.Set(MediaTypeAttributeKeys.InterlaceMode, (uint)VideoInterlaceMode.Progressive).CheckError();
+                SetBt709ColorMetadata(outputType);
                 // Constrained Baseline keeps the elementary stream compatible
                 // with Chromium WebCodecs across integrated and discrete GPUs.
                 outputType.Set(MediaTypeAttributeKeys.Mpeg2Profile, 66u).CheckError();
@@ -88,6 +89,7 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
                 inputType.Set(MediaTypeAttributeKeys.PixelAspectRatio, MediaFactory.PackRatio(1, 1)).CheckError();
                 inputType.Set(MediaTypeAttributeKeys.InterlaceMode, (uint)VideoInterlaceMode.Progressive).CheckError();
                 inputType.Set(MediaTypeAttributeKeys.AllSamplesIndependent, true).CheckError();
+                SetBt709ColorMetadata(inputType);
                 transform.SetInputType(0, inputType, 0);
             }
 
@@ -313,7 +315,7 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
                 var blue = bgra[offset];
                 var green = bgra[offset + 1];
                 var red = bgra[offset + 2];
-                result[targetRow + x] = ClampByte(((66 * red + 129 * green + 25 * blue + 128) >> 8) + 16);
+                result[targetRow + x] = ClampByte(((47 * red + 157 * green + 16 * blue + 128) >> 8) + 16);
             }
         });
         Parallel.For(0, height / 2, uvY =>
@@ -336,14 +338,22 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
                 red >>= 2;
                 green >>= 2;
                 blue >>= 2;
-                result[uvRow + x] = ClampByte(((-38 * red - 74 * green + 112 * blue + 128) >> 8) + 128);
-                result[uvRow + x + 1] = ClampByte(((112 * red - 94 * green - 18 * blue + 128) >> 8) + 128);
+                result[uvRow + x] = ClampByte(((-26 * red - 87 * green + 113 * blue + 128) >> 8) + 128);
+                result[uvRow + x + 1] = ClampByte(((112 * red - 102 * green - 10 * blue + 128) >> 8) + 128);
             }
         });
         return result;
     }
 
     private static byte ClampByte(int value) => (byte)Math.Clamp(value, 0, 255);
+
+    private static void SetBt709ColorMetadata(IMFMediaType mediaType)
+    {
+        mediaType.Set(MediaTypeAttributeKeys.VideoPrimaries, (uint)VideoPrimaries.Bt709).CheckError();
+        mediaType.Set(MediaTypeAttributeKeys.TransferFunction, (uint)VideoTransferFunction.Func709).CheckError();
+        mediaType.Set(MediaTypeAttributeKeys.YuvMatrix, (uint)VideoTransferMatrix.Bt709).CheckError();
+        mediaType.Set(MediaTypeAttributeKeys.VideoNominalRange, (uint)NominalRange.Range16_235).CheckError();
+    }
 
     private static bool ContainsIdrNal(ReadOnlySpan<byte> bytes)
     {

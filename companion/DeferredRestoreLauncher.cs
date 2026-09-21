@@ -101,6 +101,40 @@ public static class DeferredRestoreLauncher
                         }
                         if (stopEvent.WaitOne(0)) return 0;
                         await completion.WaitAsync(cancellationToken);
+                        // Keep the last confirmed browser frame while a private
+                        // Wallpaper Engine renderer is being recovered. Do not
+                        // reopen Codex after the user intentionally closes it.
+                        if (CdpProcessIdentity.FindRunningOfficialCodexProcessIds().Count == 0) return 0;
+                        for (var recoveryAttempt = 1; recoveryAttempt <= 2; recoveryAttempt++)
+                        {
+                            if (await DelayOrStopAsync(
+                                    stopEvent,
+                                    recoveryAttempt == 1 ? TimeSpan.FromSeconds(1) : TimeSpan.FromSeconds(3),
+                                    cancellationToken)) return 0;
+                            if (CdpProcessIdentity.FindRunningOfficialCodexProcessIds().Count == 0) return 0;
+                            try
+                            {
+                                restored = await AutoRestoreService.RestoreAsync(
+                                    state, injection, activateIfNeeded: false, cancellationToken: cancellationToken);
+                                StateStore.Save(state);
+                                completion = injection.ActiveCaptureCompletion;
+                                while (!completion.IsCompleted && !stopEvent.WaitOne(0))
+                                {
+                                    await Task.WhenAny(completion, Task.Delay(250, cancellationToken));
+                                }
+                                if (stopEvent.WaitOne(0)) return 0;
+                                await completion.WaitAsync(cancellationToken);
+                                if (CdpProcessIdentity.FindRunningOfficialCodexProcessIds().Count == 0) return 0;
+                            }
+                            catch when (recoveryAttempt < 2)
+                            {
+                                // One final bounded attempt remains.
+                            }
+                            catch
+                            {
+                                return 0;
+                            }
+                        }
                     }
                     return 0;
                 }

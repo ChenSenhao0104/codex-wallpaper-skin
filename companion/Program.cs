@@ -6,6 +6,9 @@ namespace CodexWallpaperSkin;
 
 public static class Program
 {
+    private const string GuiMutexName = @"Local\CodexWallpaperSkin.Companion.Gui";
+    private const string GuiShowEventName = @"Local\CodexWallpaperSkin.Companion.Gui.Show";
+
     [STAThread]
     public static int Main(string[] args)
     {
@@ -15,7 +18,8 @@ public static class Program
             return RunCliAsync(args).GetAwaiter().GetResult();
         }
 
-        using var instanceMutex = new Mutex(false, @"Local\CodexWallpaperSkin.Companion.Gui");
+        using var instanceMutex = new Mutex(false, GuiMutexName);
+        using var showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, GuiShowEventName);
         var ownsMutex = false;
         try
         {
@@ -29,11 +33,7 @@ public static class Program
             }
             if (!ownsMutex)
             {
-                MessageBox.Show(
-                    "Codex Wallpaper Skin is already open. Use the existing adjustment window.",
-                    "Codex Wallpaper Skin",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information);
+                showEvent.Set();
                 return 0;
             }
 
@@ -47,7 +47,31 @@ public static class Program
             };
             var mainWindow = new MainWindow();
             application.SessionEnding += (_, _) => mainWindow.PrepareForSystemShutdown();
-            return application.Run(mainWindow);
+            using var showCancellation = new CancellationTokenSource();
+            var showWaiter = Task.Run(() =>
+            {
+                while (!showCancellation.IsCancellationRequested)
+                {
+                    if (!showEvent.WaitOne(TimeSpan.FromMilliseconds(500))) continue;
+                    if (showCancellation.IsCancellationRequested) break;
+                    application.Dispatcher.BeginInvoke(mainWindow.ShowFromExternalActivation);
+                }
+            });
+            application.Exit += (_, _) =>
+            {
+                showCancellation.Cancel();
+                showEvent.Set();
+            };
+            try
+            {
+                return application.Run(mainWindow);
+            }
+            finally
+            {
+                showCancellation.Cancel();
+                showEvent.Set();
+                try { showWaiter.Wait(TimeSpan.FromSeconds(2)); } catch { }
+            }
         }
         finally
         {

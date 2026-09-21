@@ -94,6 +94,11 @@ public static class SelfTests
             Equal(24, nv12.Length);
             True(nv12.Take(16).All(value => value == 16));
             True(nv12.Skip(16).All(value => value == 128));
+
+            var white = Enumerable.Repeat((byte)255, 4 * 4 * 4).ToArray();
+            var whiteNv12 = MediaFoundationH264Encoder.ConvertBgraToNv12(white, 4, 4, 16);
+            True(whiteNv12.Take(16).All(value => value == 235));
+            True(whiteNv12.Skip(16).All(value => value == 128));
         });
         Check("bounded loopback binary media protocol", () =>
             TestLoopbackMediaProtocolAsync().GetAwaiter().GetResult());

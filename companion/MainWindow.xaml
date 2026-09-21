@@ -300,6 +300,10 @@
 
                         <TextBlock Text="Fit" Foreground="{StaticResource MutedBrush}"/>
                         <ComboBox x:Name="FitCombo" SelectionChanged="SettingsChanged" Margin="0,3,0,10"/>
+                        <Button Content="Show the complete wallpaper (may add margins)"
+                                Click="ShowCompleteWallpaper_Click" Background="#3B4351"
+                                HorizontalAlignment="Left" Margin="0,0,0,10"
+                                ToolTip="Uses Contain and centers the source. A different aspect ratio cannot both fill the whole Codex window and show every edge."/>
 
                         <DockPanel><TextBlock Text="Focus X"/><TextBlock x:Name="FocusXValue" DockPanel.Dock="Right" Cursor="Hand" ToolTip="Click to enter an exact value" Tag="FocusXSlider|Focus X|%|2" MouseLeftButtonUp="NumericValue_Click"/></DockPanel>
                         <Slider x:Name="FocusXSlider" Minimum="-100" Maximum="200" ValueChanged="SettingsChanged"
@@ -335,7 +339,10 @@
                         <Slider x:Name="BlurSlider" Minimum="0" Maximum="30" TickFrequency="1" IsSnapToTickEnabled="True" ValueChanged="SettingsChanged"/>
 
                         <DockPanel><TextBlock Text="Animation playback speed"/><TextBlock x:Name="RateValue" DockPanel.Dock="Right" Cursor="Hand" ToolTip="Click to enter an exact value" Tag="RateSlider|Animation playback speed|×|2" MouseLeftButtonUp="NumericValue_Click"/></DockPanel>
-                        <Slider x:Name="RateSlider" Minimum="25" Maximum="200" TickFrequency="5" ValueChanged="SettingsChanged"/>
+                        <Slider x:Name="RateSlider" Minimum="25" Maximum="200" TickFrequency="5" ValueChanged="SettingsChanged"
+                                ToolTip="Adjusts ordinary videos and Wallpaper Engine Scene playback from 0.25× to 2.00×."/>
+                        <Button Content="Reset playback speed to 1.00×" Click="ResetPlaybackRate_Click"
+                                Background="#3B4351" HorizontalAlignment="Left" Margin="0,0,0,8"/>
                         <CheckBox x:Name="MutedCheck" Content="Mute video / Wallpaper Engine scene" Checked="SettingsChanged" Unchecked="SettingsChanged"/>
                         <CheckBox x:Name="PauseHiddenCheck" Content="Pause video / throttle scene while Codex is hidden" Checked="SettingsChanged" Unchecked="SettingsChanged"/>
 
@@ -353,7 +360,7 @@
                                   Content="Automatically reapply the last wallpaper when this controller opens"
                                   Checked="RestorePreferenceChanged" Unchecked="RestorePreferenceChanged"/>
                         <CheckBox x:Name="StartupRestoreCheck"
-                                  Content="Restore at Windows sign-in (starts Codex if needed)"
+                                  Content="Remember the last wallpaper across Windows restarts (starts Codex if needed)"
                                   Checked="StartupRestoreChanged" Unchecked="StartupRestoreChanged"
                                   ToolTip="Adds or removes a per-user Windows startup entry. No administrator permission is required."/>
 

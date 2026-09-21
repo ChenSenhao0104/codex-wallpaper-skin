@@ -988,6 +988,24 @@ public partial class MainWindow : Window
         SetStatus("Original media color/clarity restored. Interface palette and panel opacity were left unchanged.");
     }
 
+    private void ShowCompleteWallpaper_Click(object sender, RoutedEventArgs e)
+    {
+        FitCombo.SelectedItem = WallpaperFit.Contain;
+        FocusXSlider.Value = 50;
+        FocusYSlider.Value = 50;
+        UpdateSettingLabels();
+        _state.Settings = ReadSettings();
+        _settingsTimer.Stop();
+        _settingsTimer.Start();
+        SetStatus("Complete-wallpaper fit selected. Every edge is preserved; margins may appear when the wallpaper and Codex window use different aspect ratios.");
+    }
+
+    private void ResetPlaybackRate_Click(object sender, RoutedEventArgs e)
+    {
+        RateSlider.Value = 100;
+        UpdateSettingLabels();
+    }
+
     private async Task RunBusyAsync(Func<CancellationToken, Task> operation)
     {
         if (_busy)
@@ -1407,9 +1425,12 @@ public partial class MainWindow : Window
         var menu = new System.Windows.Forms.ContextMenuStrip();
         var openItem = new System.Windows.Forms.ToolStripMenuItem("Open adjustment window");
         openItem.Click += (_, _) => Dispatcher.BeginInvoke(ShowFromTray);
+        var backgroundItem = new System.Windows.Forms.ToolStripMenuItem("Keep wallpaper running and hide this icon");
+        backgroundItem.Click += (_, _) => Dispatcher.BeginInvoke(new Action(KeepRunningWithoutTray));
         var exitItem = new System.Windows.Forms.ToolStripMenuItem("Restore Codex background and exit");
         exitItem.Click += (_, _) => Dispatcher.BeginInvoke(new Action(RestoreAndExitFromTray));
         menu.Items.Add(openItem);
+        menu.Items.Add(backgroundItem);
         menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
         menu.Items.Add(exitItem);
         _trayIcon = new System.Windows.Forms.NotifyIcon
@@ -1430,6 +1451,33 @@ public partial class MainWindow : Window
         if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
         Activate();
         if (_trayIcon is not null) _trayIcon.Visible = false;
+    }
+
+    internal void ShowFromExternalActivation() => ShowFromTray();
+
+    private void KeepRunningWithoutTray()
+    {
+        if (_allowExit || _closeRequested) return;
+        try
+        {
+            // This explicit command mirrors Wallpaper Engine's remembered
+            // background behavior: keep the current owner alive now and start
+            // the hidden restore worker again at the next Windows sign-in.
+            StartupRegistration.SetEnabled(true);
+            _startupChangeGuard = true;
+            StartupRestoreCheck.IsChecked = true;
+            _startupChangeGuard = false;
+            _state.AutoRestoreOnLaunch = true;
+            SaveState();
+            Hide();
+            ShowInTaskbar = false;
+            if (_trayIcon is not null) _trayIcon.Visible = false;
+        }
+        catch (Exception exception)
+        {
+            _startupChangeGuard = false;
+            ShowError("Background persistence could not be enabled: " + exception.Message);
+        }
     }
 
     private async void RestoreAndExitFromTray()
