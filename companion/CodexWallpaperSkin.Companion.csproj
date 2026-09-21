@@ -3,11 +3,12 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>CodexWallpaperSkin</AssemblyName>
     <RootNamespace>CodexWallpaperSkin</RootNamespace>
-    <Version>0.4.0</Version>
+    <Version>0.4.1</Version>
     <Authors>Codex Wallpaper Skin contributors</Authors>
     <Description>Reversible local and Wallpaper Engine backgrounds for Codex Desktop.</Description>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
@@ -16,6 +17,7 @@
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>false</SelfContained>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <NoWarn>$(NoWarn);WFAC010</NoWarn>
     <StartupObject>CodexWallpaperSkin.Program</StartupObject>
   </PropertyGroup>
   <ItemGroup>

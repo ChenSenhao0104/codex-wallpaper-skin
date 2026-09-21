@@ -55,7 +55,7 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
         if (width is < 64 or > 4096 || height is < 64 or > 4096)
             throw new ArgumentOutOfRangeException(nameof(width));
         frameRate = Math.Clamp(frameRate, 15, 60);
-        bitrate = Math.Clamp(bitrate, 1_000_000, 24_000_000);
+        bitrate = Math.Clamp(bitrate, 1_000_000, 40_000_000);
 
         MediaFactory.MFStartup().CheckError();
         IMFTransform? transform = null;

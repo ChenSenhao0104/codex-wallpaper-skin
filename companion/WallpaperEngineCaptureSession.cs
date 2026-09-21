@@ -172,9 +172,10 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
             throw new FileNotFoundException("The Wallpaper Engine project.json is unavailable or unsafe.", projectPath);
         }
 
-        var scale = Math.Clamp(settings.SceneResolutionScale, 0.5, 1);
-        var width = Math.Clamp((int)Math.Round(Math.Max(960, viewportWidth) * scale), 960, 1920);
-        var height = Math.Clamp((int)Math.Round(Math.Max(600, viewportHeight) * scale), 600, 1200);
+        var (width, height) = CalculateCaptureSize(
+            viewportWidth,
+            viewportHeight,
+            settings.SceneResolutionScale);
         var windowName = "Codex Wallpaper Skin " + Guid.NewGuid().ToString("N");
         var controlExecutable = await EnsureEngineRunningAsync(engineRoot, executable, cancellationToken);
         await RunControlWithStartupRetryAsync(controlExecutable,
@@ -406,10 +407,29 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
 
     private static int CalculateH264Bitrate(int width, int height, int frameRate)
     {
-        // Roughly 0.10 bits per pixel per frame, bounded for dependable local
-        // decode quality without producing oversized CDP batches.
-        var estimated = (long)width * height * frameRate / 10;
-        return (int)Math.Clamp(estimated, 4_000_000, 20_000_000);
+        // Favor clarity over network-style compression: this is a local-only
+        // stream. The higher ceiling reduces gradients and fine-line smearing
+        // while keeping batches bounded and within hardware encoder limits.
+        var estimated = (long)width * height * frameRate / 5;
+        return (int)Math.Clamp(estimated, 6_000_000, 32_000_000);
+    }
+
+    internal static (int Width, int Height) CalculateCaptureSize(
+        int viewportWidth,
+        int viewportHeight,
+        double requestedScale)
+    {
+        const int maximumWidth = 2560;
+        const int maximumHeight = 1600;
+        var sourceWidth = Math.Clamp(viewportWidth, 640, 4096);
+        var sourceHeight = Math.Clamp(viewportHeight, 400, 4096);
+        var scale = Math.Clamp(requestedScale, 0.5, 1);
+        var desiredWidth = sourceWidth * scale;
+        var desiredHeight = sourceHeight * scale;
+        var fit = Math.Min(1, Math.Min(maximumWidth / desiredWidth, maximumHeight / desiredHeight));
+        var width = Math.Max(2, (int)Math.Round(desiredWidth * fit)) & ~1;
+        var height = Math.Max(2, (int)Math.Round(desiredHeight * fit)) & ~1;
+        return (width, height);
     }
 
     private static double StopwatchTicksToMilliseconds(long ticks) =>

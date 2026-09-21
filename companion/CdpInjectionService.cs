@@ -307,7 +307,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
                                             + (session.ConfiguredWallpaperEngineFrameRateLimit is int engineFps && engineFps < settings.SceneFrameRate
                                                 ? $"Wallpaper Engine currently limits Scene rendering to {engineFps} FPS, below this app's {settings.SceneFrameRate} FPS target. "
                                                 : string.Empty)
-                                            + "Keep this controller running while the animated wallpaper is active."
+                                            + "Closing the adjustment window keeps the controller running in the notification area."
                                     };
                                 }
                             }
@@ -360,9 +360,9 @@ public sealed class CdpInjectionService : IAsyncDisposable
                                 Warning = session.UsesWindowsGraphicsCapture
                                     ? "Rendered by Wallpaper Engine and carried over a bounded local binary stream. "
                                         + "JPEG encoding remains active as the explicit compatibility codec while the GPU video codec is unavailable. "
-                                        + "Keep this controller running while the animated wallpaper is active."
+                                        + "Closing the adjustment window keeps the controller running in the notification area."
                                     : "Rendered by Wallpaper Engine with the compatibility capture path because Windows Graphics Capture was unavailable. "
-                                        + "Keep this controller running while the animated wallpaper is active."
+                                        + "Closing the adjustment window keeps the controller running in the notification area."
                             };
                         }
                         await mediaStream.DisposeAsync();
@@ -386,9 +386,9 @@ public sealed class CdpInjectionService : IAsyncDisposable
                             Warning = session.UsesWindowsGraphicsCapture
                                 ? "Rendered by Wallpaper Engine through the reduced-frame-rate JPEG/CDP compatibility backend because Codex blocked the isolated local media channel. "
                                     + (h264Failure is null ? string.Empty : "Hardware video startup failed safely: " + LimitMessage(h264Failure.Message) + " ")
-                                    + "Keep this controller running while the animated wallpaper is active."
+                                    + "Closing the adjustment window keeps the controller running in the notification area."
                                 : "Rendered by Wallpaper Engine with the compatibility capture path because Windows Graphics Capture was unavailable. "
-                                    + "Keep this controller running while the animated wallpaper is active."
+                                    + "Closing the adjustment window keeps the controller running in the notification area."
                         };
                     }
                     catch (OperationCanceledException)
@@ -780,8 +780,8 @@ public sealed class CdpInjectionService : IAsyncDisposable
         {
             var value = evaluation.GetProperty("result").GetProperty("value");
             return (
-                Math.Clamp(value.GetProperty("width").GetInt32(), 960, 3840),
-                Math.Clamp(value.GetProperty("height").GetInt32(), 600, 2160));
+                Math.Clamp(value.GetProperty("width").GetInt32(), 640, 4096),
+                Math.Clamp(value.GetProperty("height").GetInt32(), 400, 4096));
         }
         catch
         {

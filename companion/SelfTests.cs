@@ -108,6 +108,22 @@ public static class SelfTests
             Equal(unrelatedStyle, style & unrelatedStyle);
             Equal(style, WallpaperEngineCaptureSession.ToPrivateRenderExtendedStyle(style));
         });
+        Check("native capture sizing preserves the Codex viewport aspect ratio", () =>
+        {
+            var fullHd = WallpaperEngineCaptureSession.CalculateCaptureSize(3840, 2160, 1);
+            Equal(2560, fullHd.Width);
+            Equal(1440, fullHd.Height);
+            True(Math.Abs((double)fullHd.Width / fullHd.Height - 16d / 9d) < 0.001);
+
+            var halfScale = WallpaperEngineCaptureSession.CalculateCaptureSize(3840, 2160, 0.5);
+            Equal(1920, halfScale.Width);
+            Equal(1080, halfScale.Height);
+
+            var sixteenTen = WallpaperEngineCaptureSession.CalculateCaptureSize(2560, 1600, 1);
+            Equal(2560, sixteenTen.Width);
+            Equal(1600, sixteenTen.Height);
+            True(Math.Abs((double)sixteenTen.Width / sixteenTen.Height - 1.6) < 0.001);
+        });
         Check("state catalog overflow fails closed", () =>
         {
             var state = new AppState

@@ -29,6 +29,9 @@ public partial class MainWindow : Window
     private bool _startupChangeGuard;
     private string? _streamRecoveryWallpaperId;
     private int _streamRecoveryAttempts;
+    private System.Windows.Forms.NotifyIcon? _trayIcon;
+    private bool _allowExit;
+    private bool _trayTipShown;
 
     private sealed record WallpaperTypeFilterOption(string Label, WallpaperKind? Kind);
     private sealed record WallpaperCollectionFilterOption(string Label, string? Collection, bool Ungrouped = false);
@@ -118,6 +121,7 @@ public partial class MainWindow : Window
         Closing += MainWindow_Closing;
         Closed += MainWindow_Closed;
         Loaded += MainWindow_Loaded;
+        InitializeTrayIcon();
     }
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -1300,6 +1304,28 @@ public partial class MainWindow : Window
 
     private void MainWindow_Closing(object? sender, CancelEventArgs e)
     {
+        if (!_allowExit)
+        {
+            e.Cancel = true;
+            _settingsTimer.Stop();
+            SaveState();
+            Hide();
+            ShowInTaskbar = false;
+            if (_trayIcon is not null)
+            {
+                _trayIcon.Visible = true;
+                if (!_trayTipShown)
+                {
+                    _trayTipShown = true;
+                    _trayIcon.ShowBalloonTip(
+                        4000,
+                        "Codex Wallpaper Skin is still running",
+                        "The adjustment window is hidden, while the animated wallpaper continues. Double-click the tray icon to reopen it.",
+                        System.Windows.Forms.ToolTipIcon.Info);
+                }
+            }
+            return;
+        }
         if (_busy)
         {
             e.Cancel = true;
@@ -1358,5 +1384,82 @@ public partial class MainWindow : Window
             // Closing the controller intentionally leaves the renderer layer in place.
             // High-fidelity Scene playback is handed to the hidden restore worker above.
         }
+        finally
+        {
+            if (_trayIcon is not null)
+            {
+                _trayIcon.Visible = false;
+                _trayIcon.Dispose();
+                _trayIcon = null;
+            }
+            Application.Current.Shutdown();
+        }
+    }
+
+    internal void PrepareForSystemShutdown()
+    {
+        _allowExit = true;
+        _closeRequested = true;
+    }
+
+    private void InitializeTrayIcon()
+    {
+        var menu = new System.Windows.Forms.ContextMenuStrip();
+        var openItem = new System.Windows.Forms.ToolStripMenuItem("Open adjustment window");
+        openItem.Click += (_, _) => Dispatcher.BeginInvoke(ShowFromTray);
+        var exitItem = new System.Windows.Forms.ToolStripMenuItem("Restore Codex background and exit");
+        exitItem.Click += (_, _) => Dispatcher.BeginInvoke(new Action(RestoreAndExitFromTray));
+        menu.Items.Add(openItem);
+        menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
+        menu.Items.Add(exitItem);
+        _trayIcon = new System.Windows.Forms.NotifyIcon
+        {
+            Text = "Codex Wallpaper Skin",
+            Icon = System.Drawing.SystemIcons.Application,
+            ContextMenuStrip = menu,
+            Visible = false
+        };
+        _trayIcon.DoubleClick += (_, _) => Dispatcher.BeginInvoke(ShowFromTray);
+    }
+
+    private void ShowFromTray()
+    {
+        if (_allowExit || _closeRequested) return;
+        ShowInTaskbar = true;
+        Show();
+        if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+        Activate();
+        if (_trayIcon is not null) _trayIcon.Visible = false;
+    }
+
+    private async void RestoreAndExitFromTray()
+    {
+        if (_busy || _allowExit) return;
+        ShowFromTray();
+        var choice = MessageBox.Show(
+            this,
+            "This will restore the original Codex background, stop the live wallpaper stream, and exit the controller. Continue?",
+            "Restore and exit",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question,
+            MessageBoxResult.No);
+        if (choice != MessageBoxResult.Yes) return;
+
+        var restored = false;
+        await RunBusyAsync(async cancellationToken =>
+        {
+            SyncConnectionState();
+            await _injection.CleanupAllAsync(_state.CdpBaseUrl, cancellationToken);
+            _state.LastAppliedWallpaperId = null;
+            _state.PendingWallpaperId = null;
+            _state.PendingActivation = false;
+            SaveState();
+            DeferredRestoreLauncher.RequestStop();
+            restored = true;
+        });
+        if (!restored) return;
+        _allowExit = true;
+        _closeRequested = true;
+        Close();
     }
 }

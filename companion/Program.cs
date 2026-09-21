@@ -43,9 +43,11 @@ public static class Program
 
             var application = new Application
             {
-                ShutdownMode = ShutdownMode.OnMainWindowClose
+                ShutdownMode = ShutdownMode.OnExplicitShutdown
             };
-            return application.Run(new MainWindow());
+            var mainWindow = new MainWindow();
+            application.SessionEnding += (_, _) => mainWindow.PrepareForSystemShutdown();
+            return application.Run(mainWindow);
         }
         finally
         {
