@@ -109,7 +109,7 @@ public static class SelfTests
             Equal(.5d, preset.SceneResolutionScale);
             Equal("--launch-remembered-wallpaper", LegacyDesktopLauncherCleanup.LegacyArgument);
         });
-        Check("named visual preset library migration", () =>
+        Check("named visual preset library remains backward compatible", () =>
         {
             var legacy = new AppState
             {
@@ -124,12 +124,12 @@ public static class SelfTests
             };
             StateStore.MigrateState(legacy);
             StateStore.NormalizeState(legacy);
-            Equal(AppState.CurrentSchema, legacy.SchemaVersion);
+            Equal(7, legacy.SchemaVersion);
             Equal(1, legacy.VisualPresets.Count);
             Equal("Brighter high-clarity", legacy.VisualPresets[0].Name);
             Equal(1.23d, legacy.VisualPresets[0].Settings.Brightness);
             Equal(VisualPresetProfile.DefaultId, legacy.SelectedVisualPresetId);
-            True(legacy.VisualPreset is null);
+            Equal(1.23d, legacy.VisualPreset?.Brightness ?? 0);
 
             legacy.VisualPresets.Add(new VisualPresetProfile
             {

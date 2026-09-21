@@ -70,7 +70,7 @@ public static class StateStore
         ValidateStateForSave(state);
         state.Settings ??= new WallpaperSettings();
         state.Settings.Normalize();
-        NormalizeVisualPresets(state);
+        NormalizeVisualPresets(state, importLegacySelection: false);
         state.SchemaVersion = AppState.CurrentSchema;
         var json = JsonSerializer.Serialize(state, JsonOptions);
         if (Encoding.UTF8.GetByteCount(json) > MaximumStateBytes)
@@ -95,7 +95,7 @@ public static class StateStore
     {
         state.Settings ??= new WallpaperSettings();
         state.Settings.Normalize();
-        NormalizeVisualPresets(state);
+        NormalizeVisualPresets(state, importLegacySelection: true);
         state.Wallpapers ??= [];
         state.Wallpapers = state.Wallpapers
             .Where(item => item is not null && !string.IsNullOrWhiteSpace(item.Id) && item.Id.Length <= 2048)
@@ -172,24 +172,9 @@ public static class StateStore
             state.VisualPreset ??= VisualPresetSettings.BuiltIn();
             state.SchemaVersion = 7;
         }
-        if (state.SchemaVersion < 8)
-        {
-            var migrated = state.VisualPreset ?? VisualPresetSettings.BuiltIn();
-            state.VisualPresets =
-            [
-                new VisualPresetProfile
-                {
-                    Id = VisualPresetProfile.DefaultId,
-                    Name = "Brighter high-clarity",
-                    Settings = migrated
-                }
-            ];
-            state.SelectedVisualPresetId = VisualPresetProfile.DefaultId;
-            state.SchemaVersion = 8;
-        }
     }
 
-    private static void NormalizeVisualPresets(AppState state)
+    private static void NormalizeVisualPresets(AppState state, bool importLegacySelection)
     {
         state.VisualPresets ??= [];
         var identifiers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -208,8 +193,26 @@ public static class StateStore
         {
             state.SelectedVisualPresetId = state.VisualPresets[0].Id;
         }
-        state.VisualPreset = null;
+        var selected = state.VisualPresets.First(item =>
+            item.Id.Equals(state.SelectedVisualPresetId, StringComparison.OrdinalIgnoreCase));
+        if (importLegacySelection && state.VisualPreset is not null)
+        {
+            selected.Settings = CopyPreset(state.VisualPreset).Normalize();
+        }
+        state.VisualPreset = CopyPreset(selected.Settings);
     }
+
+    private static VisualPresetSettings CopyPreset(VisualPresetSettings value) => new()
+    {
+        Opacity = value.Opacity,
+        BlackOverlay = value.BlackOverlay,
+        Brightness = value.Brightness,
+        Contrast = value.Contrast,
+        Saturation = value.Saturation,
+        PanelOpacity = value.PanelOpacity,
+        Blur = value.Blur,
+        SceneResolutionScale = value.SceneResolutionScale
+    };
 
     private static string Limit(string? value, int maximumLength, string fallback)
     {

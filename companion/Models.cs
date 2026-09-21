@@ -233,7 +233,7 @@ public sealed class PaletteResult
 
 public sealed class AppState
 {
-    public const int CurrentSchema = 8;
+    public const int CurrentSchema = 7;
     public int SchemaVersion { get; set; } = CurrentSchema;
     public string CdpBaseUrl { get; set; } = CdpEndpoint.CreateUnusedLoopbackUrl();
     public string? Aumid { get; set; }
@@ -245,9 +245,8 @@ public sealed class AppState
     public bool AutoRestoreOnLaunch { get; set; } = true;
     public List<WallpaperEntry> Wallpapers { get; set; } = [];
     public WallpaperSettings Settings { get; set; } = new();
-    // Schema 7 stored one unnamed preset here. Schema 8 migrates it into the
-    // named preset library and then writes this compatibility field as null.
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    // Keep the selected profile mirrored here so v0.4.4 can still open and
+    // update the state after someone evaluates the multi-preset build.
     public VisualPresetSettings? VisualPreset { get; set; } = VisualPresetSettings.BuiltIn();
     public List<VisualPresetProfile> VisualPresets { get; set; } = [VisualPresetProfile.BuiltIn()];
     public string? SelectedVisualPresetId { get; set; } = VisualPresetProfile.DefaultId;
