@@ -65,15 +65,33 @@ public static class DeferredRestoreLauncher
     public static async Task<int> RunAsync(CancellationToken cancellationToken = default)
     {
         using var stopEvent = OpenStopEvent();
+        using var workerCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var stopRegistration = ThreadPool.RegisterWaitForSingleObject(
+            stopEvent,
+            static (state, timedOut) =>
+            {
+                if (!timedOut) ((CancellationTokenSource)state!).Cancel();
+            },
+            workerCancellation,
+            Timeout.InfiniteTimeSpan,
+            executeOnlyOnce: true);
+        var workerToken = workerCancellation.Token;
         using var mutex = new Mutex(false, WorkerMutexName);
         var ownsMutex = false;
         try
         {
-            try { ownsMutex = mutex.WaitOne(TimeSpan.FromSeconds(15)); }
-            catch (AbandonedMutexException) { ownsMutex = true; }
+            try
+            {
+                var waitResult = WaitHandle.WaitAny([mutex, stopEvent], TimeSpan.FromSeconds(15));
+                ownsMutex = waitResult == 0;
+            }
+            catch (AbandonedMutexException exception) when (exception.MutexIndex == 0)
+            {
+                ownsMutex = true;
+            }
             if (!ownsMutex) return 0;
 
-            while (!cancellationToken.IsCancellationRequested && !stopEvent.WaitOne(0))
+            while (!workerToken.IsCancellationRequested && !stopEvent.WaitOne(0))
             {
                 var state = StateStore.Load();
                 if (AutoRestoreService.ResolveLastWallpaper(state) is null) return 0;
@@ -81,7 +99,7 @@ public static class DeferredRestoreLauncher
                 var running = CdpProcessIdentity.FindRunningOfficialCodexProcessIds();
                 if (running.Count > 0 && !CdpEndpoint.IsAvailableForActivation(state.CdpBaseUrl))
                 {
-                    if (await DelayOrStopAsync(stopEvent, TimeSpan.FromSeconds(2), cancellationToken)) return 0;
+                    if (await DelayOrStopAsync(stopEvent, TimeSpan.FromSeconds(2), workerToken)) return 0;
                     continue;
                 }
 
@@ -89,7 +107,7 @@ public static class DeferredRestoreLauncher
                 try
                 {
                     var restored = await AutoRestoreService.RestoreAsync(
-                        state, injection, activateIfNeeded: true, cancellationToken: cancellationToken);
+                        state, injection, activateIfNeeded: true, cancellationToken: workerToken);
                     StateStore.Save(state);
                     Console.WriteLine($"Restored {restored.Wallpaper.DisplayTitle} ({restored.ApplyResult.Mode}).");
                     if (injection.HasActiveCapture)
@@ -97,10 +115,10 @@ public static class DeferredRestoreLauncher
                         var completion = injection.ActiveCaptureCompletion;
                         while (!completion.IsCompleted && !stopEvent.WaitOne(0))
                         {
-                            await Task.WhenAny(completion, Task.Delay(250, cancellationToken));
+                            await Task.WhenAny(completion, Task.Delay(250, workerToken));
                         }
                         if (stopEvent.WaitOne(0)) return 0;
-                        await completion.WaitAsync(cancellationToken);
+                        await completion.WaitAsync(workerToken);
                         // Keep the last confirmed browser frame while a private
                         // Wallpaper Engine renderer is being recovered. Do not
                         // reopen Codex after the user intentionally closes it.
@@ -110,20 +128,20 @@ public static class DeferredRestoreLauncher
                             if (await DelayOrStopAsync(
                                     stopEvent,
                                     recoveryAttempt == 1 ? TimeSpan.FromSeconds(1) : TimeSpan.FromSeconds(3),
-                                    cancellationToken)) return 0;
+                                    workerToken)) return 0;
                             if (CdpProcessIdentity.FindRunningOfficialCodexProcessIds().Count == 0) return 0;
                             try
                             {
                                 restored = await AutoRestoreService.RestoreAsync(
-                                    state, injection, activateIfNeeded: false, cancellationToken: cancellationToken);
+                                    state, injection, activateIfNeeded: false, cancellationToken: workerToken);
                                 StateStore.Save(state);
                                 completion = injection.ActiveCaptureCompletion;
                                 while (!completion.IsCompleted && !stopEvent.WaitOne(0))
                                 {
-                                    await Task.WhenAny(completion, Task.Delay(250, cancellationToken));
+                                    await Task.WhenAny(completion, Task.Delay(250, workerToken));
                                 }
                                 if (stopEvent.WaitOne(0)) return 0;
-                                await completion.WaitAsync(cancellationToken);
+                                await completion.WaitAsync(workerToken);
                                 if (CdpProcessIdentity.FindRunningOfficialCodexProcessIds().Count == 0) return 0;
                             }
                             catch when (recoveryAttempt < 2)
@@ -140,17 +158,22 @@ public static class DeferredRestoreLauncher
                 }
                 catch (CodexAlreadyRunningWithoutCdpException)
                 {
-                    if (await DelayOrStopAsync(stopEvent, TimeSpan.FromSeconds(2), cancellationToken)) return 0;
+                    if (await DelayOrStopAsync(stopEvent, TimeSpan.FromSeconds(2), workerToken)) return 0;
                 }
                 catch (TimeoutException) when (CdpProcessIdentity.FindRunningOfficialCodexProcessIds().Count > 0)
                 {
-                    if (await DelayOrStopAsync(stopEvent, TimeSpan.FromSeconds(2), cancellationToken)) return 0;
+                    if (await DelayOrStopAsync(stopEvent, TimeSpan.FromSeconds(2), workerToken)) return 0;
                 }
             }
             return 0;
         }
+        catch (OperationCanceledException) when (stopEvent.WaitOne(0) && !cancellationToken.IsCancellationRequested)
+        {
+            return 0;
+        }
         finally
         {
+            stopRegistration.Unregister(null);
             if (ownsMutex) mutex.ReleaseMutex();
         }
     }

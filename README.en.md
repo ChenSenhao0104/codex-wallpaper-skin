@@ -29,11 +29,10 @@ Complex and interactive Scenes are rendered by Wallpaper Engine itself. Codex po
 
 Download `CodexWallpaperSkin-win-x64.zip` and its `.sha256` file from Releases, verify the hash, extract the complete archive, and run `CodexWallpaperSkin.exe`. The portable application is self-contained and needs no Python, PyYAML, Node.js, or .NET installation.
 
-1. Run the application and choose **Detect app**, then **Activate with CDP**.
-2. If Codex is already running normally, select a wallpaper and choose **Apply selected**. It is queued without closing Codex. For immediate use, save active work and choose **Restart Codex normally and apply now**; otherwise keep working and let the queue handle the next natural exit.
-3. After Codex reopens, choose **Connect**.
-4. Choose **Scan Wallpaper Engine**, select a wallpaper, and review the controls.
-5. Choose **Apply selected**. Use **Restore Codex background** when finished.
+1. Run the application and choose **Start / reconnect Codex**. Detection, controlled startup, and reconnection are automatic; normal use does not require entering a CDP endpoint or AUMID.
+2. If Codex is already running normally, select a wallpaper and choose **Apply selected**. It is queued without closing Codex. For immediate use, save active work and choose **Restart Codex normally and apply now**.
+3. Choose **Scan Wallpaper Engine**, select a wallpaper, and review the controls.
+4. Choose **Apply selected**. Use **Restore Codex background** when finished. Endpoint and package-identity controls remain available only inside the collapsed advanced section.
 
 A fresh state enables palette coordination, inherited-text coordination, mute, and pause-when-hidden. Opacity, brightness, contrast, and saturation start at their original values; the black veil and blur start at `0`. **Original color / clarity** restores all image-affecting controls to neutral values.
 

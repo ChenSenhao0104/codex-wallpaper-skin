@@ -141,6 +141,19 @@ public static class SelfTests
             legacy.VisualPresets[1].Id = legacy.VisualPresets[0].Id.ToUpperInvariant();
             Throws<InvalidDataException>(() => StateStore.ValidateStateForSave(legacy));
         });
+        Check("startup registration ownership is exact", () =>
+        {
+            True(StartupRegistration.IsOwnedCommand(
+                "\"E:\\portable\\CodexWallpaperSkin.exe\" --wait-and-restore"));
+            True(StartupRegistration.IsOwnedCommand(
+                "\"E:\\portable\\CodexWallpaperSkin.exe\" --auto-restore"));
+            True(!StartupRegistration.IsOwnedCommand(
+                "\"E:\\portable\\Other.exe\" --wait-and-restore"));
+            True(!StartupRegistration.IsOwnedCommand(
+                "\"E:\\portable\\CodexWallpaperSkin.exe\" --restore"));
+            True(!StartupRegistration.IsOwnedCommand(
+                "E:\\portable\\CodexWallpaperSkin.exe --wait-and-restore"));
+        });
         Check("Steam workshop scan intersects subscribed and downloaded items", () =>
         {
             const string manifest = """

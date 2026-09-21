@@ -29,11 +29,10 @@
 
 详细步骤见 [具体操作流程](usage-process.md)。普通用户从 Release 下载 `CodexWallpaperSkin-win-x64.zip` 和对应 `.sha256`，校验后完整解压并运行 `CodexWallpaperSkin.exe`。便携版是自包含程序，不需要安装 Python、PyYAML、Node.js 或 .NET。
 
-1. 运行软件，依次点击 **Detect app** 和 **Activate with CDP**。
-2. 如果 Codex 已普通启动，选择壁纸并点击 **Apply selected**；软件会安全排队。需要立即生效时，保存工作后点击 **Restart Codex normally and apply now**，否则保持队列并继续当前任务。
-3. Codex 重新打开后点击 **Connect**。
-4. 点击 **Scan Wallpaper Engine**，选择壁纸并检查右侧参数。
-5. 点击 **Apply selected**；不再使用时点击 **Restore Codex background**。
+1. 运行软件，点击 **Start / reconnect Codex**；程序会自动检测、启动或重新连接，普通使用无需填写 CDP 或 AUMID。
+2. 如果 Codex 已普通启动，选择壁纸并点击 **Apply selected**；软件会安全排队。需要立即生效时，保存工作后点击 **Restart Codex normally and apply now**。
+3. 点击 **Scan Wallpaper Engine**，选择壁纸并检查右侧参数。
+4. 点击 **Apply selected**；不再使用时点击 **Restore Codex background**。端口和应用身份只放在折叠的高级设置中。
 
 首次状态默认开启自动配色、文字协调、静音和隐藏暂停；背景不透明度、亮度、对比度、饱和度均为原值，黑色遮罩和模糊为 `0`。点击 **Original color / clarity** 可把影响画面色彩和清晰度的参数恢复为中性值。
 

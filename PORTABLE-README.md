@@ -7,7 +7,7 @@
 ## 使用 Wallpaper Engine 壁纸
 
 1. 在 Wallpaper Engine 中订阅或选择壁纸，等待素材下载完成。
-2. 运行 `CodexWallpaperSkin.exe`，依次点击 **Detect app**、**Activate with CDP**，等待 Codex 打开后点击 **Connect**。
+2. 运行 `CodexWallpaperSkin.exe`，点击 **Start / reconnect Codex**；软件会自动检测、启动或重新连接 Codex。
 3. 若 Codex 已经普通启动，直接选择壁纸并点击 **Apply selected**：软件会安全排队。需要立即生效时，先保存或暂停工作，再点击 **Restart Codex normally and apply now**；软件只请求正常关闭并自动重开，绝不会强制结束进程。
 4. 点击 **Scan Wallpaper Engine**，选择列表中的同名项目，确认自动配色、模糊、静音等参数，然后点击 **Apply selected**。
 5. 点击 **Restore Codex background** 可移除本项目的页面层。恢复不会关闭 CDP 端口；完全退出该 Codex 进程才会关闭端口。

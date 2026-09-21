@@ -49,6 +49,28 @@ public static class StartupRegistration
         }
     }
 
+    public static bool TryRepairOwnedRegistration()
+    {
+        if (!OperatingSystem.IsWindows()) return false;
+        using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
+        var saved = key?.GetValue(ValueName) as string;
+        if (key is null || !IsOwnedCommand(saved)) return false;
+        key.SetValue(ValueName, BuildCommand(), RegistryValueKind.String);
+        return true;
+    }
+
+    internal static bool IsOwnedCommand(string? command)
+    {
+        if (string.IsNullOrWhiteSpace(command) || command[0] != '"') return false;
+        var closingQuote = command.IndexOf('"', 1);
+        if (closingQuote <= 1) return false;
+        var executable = command[1..closingQuote];
+        var arguments = command[(closingQuote + 1)..].Trim();
+        return Path.GetFileName(executable).Equals("CodexWallpaperSkin.exe", StringComparison.OrdinalIgnoreCase)
+            && (arguments.Equals("--wait-and-restore", StringComparison.OrdinalIgnoreCase)
+                || arguments.Equals("--auto-restore", StringComparison.OrdinalIgnoreCase));
+    }
+
     internal static string BuildCommand()
     {
         var executable = Environment.ProcessPath;

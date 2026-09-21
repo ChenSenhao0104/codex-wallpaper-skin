@@ -161,7 +161,7 @@ public static class AutoRestoreService
             }
         }
         throw new TimeoutException(
-            "Codex started, but its verified local wallpaper channel did not become ready within the expected time. Use Doctor for technical details, then try Connect again.",
+            "Codex started, but its local wallpaper channel was not ready in time. Wait a moment, then click Start / reconnect Codex. Doctor can provide technical details if it still fails.",
             lastError);
     }
 

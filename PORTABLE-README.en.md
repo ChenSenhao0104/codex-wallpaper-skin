@@ -5,7 +5,7 @@ This is a self-contained Windows 11 x64 companion. It needs no Python, PyYAML, o
 ## Use a Wallpaper Engine wallpaper
 
 1. Subscribe to or select a wallpaper in Wallpaper Engine and let its local files finish downloading.
-2. Run `CodexWallpaperSkin.exe`; choose **Detect app**, then **Activate with CDP**, wait for Codex to open, and choose **Connect**.
+2. Run `CodexWallpaperSkin.exe` and choose **Start / reconnect Codex**. Detection, controlled startup, and reconnection are automatic.
 3. If Codex is already running normally, select a wallpaper and choose **Apply selected**. The app queues it without terminating the active task. For immediate use, save or pause active work and choose **Restart Codex normally and apply now**; the app requests a normal shutdown and never force-terminates Codex.
 4. Choose **Scan Wallpaper Engine**, select the matching project, review automatic palette, blur, mute, and other controls, then choose **Apply selected**.
 5. Use **Restore Codex background** to remove this project's page layer. Restore does not close the CDP port; fully exit that Codex process to close it.

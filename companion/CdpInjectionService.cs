@@ -166,7 +166,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
 
     public async Task<CdpTarget> ConnectAsync(string endpoint, CancellationToken cancellationToken = default)
     {
-        await StopCaptureAsync();
+        await StopCaptureAsync(cancellationToken);
         if (_client is not null)
         {
             await _client.DisposeAsync();
@@ -259,7 +259,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
         }
 
         settings.Normalize();
-        await StopCaptureAsync();
+        await StopCaptureAsync(operationToken);
         await client.EvaluateAsync(BootstrapScript, operationToken);
         Exception? nativeCaptureFailure = null;
         try
@@ -556,13 +556,13 @@ public sealed class CdpInjectionService : IAsyncDisposable
 
     public async Task CleanupAsync(CancellationToken cancellationToken = default)
     {
-        await StopCaptureAsync();
+        await StopCaptureAsync(cancellationToken);
         _ = await CleanupClientAsync(RequireClient(), cancellationToken);
     }
 
     public async Task<int> CleanupAllAsync(string endpoint, CancellationToken cancellationToken = default)
     {
-        await StopCaptureAsync();
+        await StopCaptureAsync(cancellationToken);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(30));
         var operationToken = timeout.Token;
@@ -857,20 +857,14 @@ public sealed class CdpInjectionService : IAsyncDisposable
         }
     }
 
-    private async Task StopCaptureAsync()
+    private async Task StopCaptureAsync(CancellationToken cancellationToken = default)
     {
         var lease = Interlocked.Exchange(ref _captureLease, null);
         if (lease is not null)
         {
-            await lease.Session.DisposeAsync();
-            if (lease.MediaStream is not null)
-            {
-                await lease.MediaStream.DisposeAsync();
-            }
-            if (lease.H264Publisher is not null)
-            {
-                await lease.H264Publisher.DisposeAsync();
-            }
+            // The caller may stop waiting, but the detached local cleanup must
+            // still release every renderer/stream resource in the background.
+            await DisposeCaptureLeaseAsync(lease).WaitAsync(cancellationToken);
             var client = _client;
             if (client is { IsConnected: true })
             {
@@ -878,7 +872,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
                 {
                     await client.EvaluateAsync(
                         $"(() => {{ const s = window.__codexWallpaperSkin; if (!s || s.captureToken !== {Js(lease.Token)}) return false; s.captureToken = null; s.captureFrameBusy = false; s.capturePendingPacket = null; if (s.captureSocket) {{ try {{ s.captureSocket.close(1000, 'replaced'); }} catch (_) {{}} s.captureSocket = null; }} if (s.h264Decoder) {{ try {{ s.h264Decoder.close(); }} catch (_) {{}} s.h264Decoder = null; s.h264Generation = (s.h264Generation || 0) + 1; }} if (s.captureStaging) {{ try {{ s.captureStaging.src = ''; }} catch (_) {{}} s.captureStaging = null; }} return true; }})()",
-                        CancellationToken.None);
+                        cancellationToken);
                 }
                 catch
                 {
@@ -886,6 +880,19 @@ public sealed class CdpInjectionService : IAsyncDisposable
                     // disconnected page does not need a best-effort invalidation.
                 }
             }
+        }
+    }
+
+    private static async Task DisposeCaptureLeaseAsync(CaptureLease lease)
+    {
+        try { await lease.Session.DisposeAsync(); } catch { }
+        if (lease.MediaStream is not null)
+        {
+            try { await lease.MediaStream.DisposeAsync(); } catch { }
+        }
+        if (lease.H264Publisher is not null)
+        {
+            try { await lease.H264Publisher.DisposeAsync(); } catch { }
         }
     }
 
@@ -2177,7 +2184,8 @@ public sealed class CdpInjectionService : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await StopCaptureAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        try { await StopCaptureAsync(timeout.Token); } catch { }
         if (_client is not null)
         {
             await _client.DisposeAsync();

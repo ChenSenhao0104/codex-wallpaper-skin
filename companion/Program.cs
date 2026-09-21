@@ -47,7 +47,10 @@ public static class Program
 
             // A hidden handoff worker from the previous GUI session must yield
             // before this interactive controller can become authoritative.
-            DeferredRestoreLauncher.RequestStop();
+            // A sign-in worker from an older build can still be restoring the
+            // remembered wallpaper. Wait until it yields before the interactive
+            // controller starts using the same state and CDP endpoint.
+            DeferredRestoreLauncher.RequestStopAndWait(TimeSpan.FromSeconds(12));
 
             var application = new Application
             {

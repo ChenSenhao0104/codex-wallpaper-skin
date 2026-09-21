@@ -33,6 +33,7 @@ public partial class MainWindow : Window
     private System.Windows.Forms.NotifyIcon? _trayIcon;
     private bool _allowExit;
     private bool _trayTipShown;
+    private bool _exitSequenceRunning;
 
     private sealed record WallpaperTypeFilterOption(string Label, WallpaperKind? Kind);
     private sealed record WallpaperCollectionFilterOption(string Label, string? Collection, bool Ungrouped = false);
@@ -86,9 +87,16 @@ public partial class MainWindow : Window
         RefreshWallpaperView();
         LoadSettings(_state.Settings);
         AutoRestoreCheck.IsChecked = _state.AutoRestoreOnLaunch;
+        var startupRegistrationRepaired = false;
         try
         {
             var startupStatus = StartupRegistration.GetStatus();
+            if (startupStatus == StartupRegistrationStatus.StaleExecutable
+                && StartupRegistration.TryRepairOwnedRegistration())
+            {
+                startupStatus = StartupRegistrationStatus.CurrentExecutable;
+                startupRegistrationRepaired = true;
+            }
             StartupRestoreCheck.IsChecked = startupStatus == StartupRegistrationStatus.CurrentExecutable;
             if (startupStatus == StartupRegistrationStatus.StaleExecutable)
             {
@@ -121,6 +129,10 @@ public partial class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(_stateWarning))
         {
             SetStatus("Startup/state recovery needs attention.");
+        }
+        else if (startupRegistrationRepaired)
+        {
+            SetStatus("Windows sign-in restore was updated from the older controller to this version.");
         }
         Closing += MainWindow_Closing;
         Closed += MainWindow_Closed;
@@ -158,7 +170,7 @@ public partial class MainWindow : Window
             UploadProgress.Visibility = Visibility.Collapsed;
             EndpointTextBox.Text = _state.CdpBaseUrl;
             AumidTextBox.Text = _state.Aumid ?? string.Empty;
-            ConnectButton.Content = "Reconnect";
+            ConnectButton.Content = "Reconnect Codex";
             var listed = _wallpapers.FirstOrDefault(item => item.Id.Equals(restored.Wallpaper.Id, StringComparison.OrdinalIgnoreCase));
             if (listed is not null)
             {
@@ -196,14 +208,14 @@ public partial class MainWindow : Window
                 }
                 else
                 {
-                    SetStatus("Codex is open without the wallpaper channel. Its Chromium process can enable this channel only at startup. Your current task was left untouched; select a wallpaper and click Apply to queue it, or close Codex normally and click Connect again.");
+                    SetStatus("Codex is open without the wallpaper channel. Your current task was left untouched; select a wallpaper and click Apply to queue it, or close Codex normally and click Start / reconnect Codex.");
                 }
                 return;
             }
             SaveState();
             EndpointTextBox.Text = _state.CdpBaseUrl;
             AumidTextBox.Text = _state.Aumid ?? string.Empty;
-            ConnectButton.Content = "Reconnect";
+            ConnectButton.Content = "Reconnect Codex";
             if (_state.AutoRestoreOnLaunch)
             {
                 _state.Wallpapers = _wallpapers.ToList();
@@ -539,7 +551,7 @@ public partial class MainWindow : Window
                         _state, _injection, activateIfNeeded: true, progress, cancellationToken);
                     applyResult = restored.ApplyResult;
                     EndpointTextBox.Text = _state.CdpBaseUrl;
-                    ConnectButton.Content = "Reconnect";
+                    ConnectButton.Content = "Reconnect Codex";
                 }
                 catch (CodexAlreadyRunningWithoutCdpException)
                 {
@@ -614,7 +626,7 @@ public partial class MainWindow : Window
                     _state, _injection, activateIfNeeded: true, progress, cancellationToken);
                 EndpointTextBox.Text = _state.CdpBaseUrl;
                 AumidTextBox.Text = _state.Aumid ?? string.Empty;
-                ConnectButton.Content = "Reconnect";
+                ConnectButton.Content = "Reconnect Codex";
                 CompleteSuccessfulApply(selected, settings, restored.ApplyResult, "Restarted Codex normally and applied");
             }
             catch
@@ -1044,7 +1056,7 @@ public partial class MainWindow : Window
                 try
                 {
                     await _injection.ConnectAsync(_state.CdpBaseUrl, cancellationToken);
-                    ConnectButton.Content = "Reconnect";
+                    ConnectButton.Content = "Reconnect Codex";
                 }
                 catch
                 {
@@ -1149,14 +1161,14 @@ public partial class MainWindow : Window
             UploadProgress.Visibility = Visibility.Collapsed;
             if (!_closeRequested)
             {
-                ShowError(exception.Message);
+                ShowError(ToUserFacingError(exception));
             }
         }
         finally
         {
             _operationCancellation = null;
             _busy = false;
-            RootGrid.IsEnabled = true;
+            if (!_exitSequenceRunning) RootGrid.IsEnabled = true;
             if (_closeRequested)
             {
                 _ = Dispatcher.BeginInvoke(new Action(Close));
@@ -1415,6 +1427,21 @@ public partial class MainWindow : Window
         MessageBox.Show(this, message, "Codex Wallpaper Skin", MessageBoxButton.OK, MessageBoxImage.Warning);
     }
 
+    private static string ToUserFacingError(Exception exception)
+    {
+        var message = exception.Message;
+        if (message.Contains("HttpClient.Timeout", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("configured timeout", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Codex did not answer the local connection request in time. Wait a moment, then click Start / reconnect Codex.";
+        }
+        if (message.StartsWith("No Windows listener process owns CDP port", StringComparison.OrdinalIgnoreCase))
+        {
+            return "The previous Codex wallpaper channel is no longer running. Click Start / reconnect Codex to create a fresh connection.";
+        }
+        return message;
+    }
+
     private static bool IsWpfPreviewImage(string path)
     {
         return Path.GetExtension(path).ToLowerInvariant() is ".png" or ".jpg" or ".jpeg" or ".gif";
@@ -1444,7 +1471,7 @@ public partial class MainWindow : Window
             }
             return;
         }
-        if (_busy)
+        if (_busy && !_exitSequenceRunning)
         {
             e.Cancel = true;
             if (!_closeRequested)
@@ -1477,7 +1504,9 @@ public partial class MainWindow : Window
 
     private async void MainWindow_Closed(object? sender, EventArgs e)
     {
-        if (_injection.HasActiveCapture && !string.IsNullOrWhiteSpace(_state.LastAppliedWallpaperId))
+        if (!_exitSequenceRunning
+            && _injection.HasActiveCapture
+            && !string.IsNullOrWhiteSpace(_state.LastAppliedWallpaperId))
         {
             try
             {
@@ -1582,7 +1611,7 @@ public partial class MainWindow : Window
 
     private async void RestoreAndExitFromTray()
     {
-        if (_busy || _allowExit) return;
+        if (_allowExit || _exitSequenceRunning) return;
         ShowFromTray();
         var choice = MessageBox.Show(
             this,
@@ -1593,56 +1622,55 @@ public partial class MainWindow : Window
             MessageBoxResult.No);
         if (choice != MessageBoxResult.Yes) return;
 
-        var exitReady = false;
-        string? cleanupWarning = null;
-        await RunBusyAsync(async cancellationToken =>
+        _exitSequenceRunning = true;
+        RootGrid.IsEnabled = false;
+        SetStatus("Stopping the current operation, restoring Codex, and exiting…");
+        _operationCancellation?.Cancel();
+        var stopDeadline = DateTimeOffset.UtcNow.AddSeconds(6);
+        while (_busy && DateTimeOffset.UtcNow < stopDeadline)
         {
-            try
+            await Task.Delay(50);
+        }
+
+        string? cleanupWarning = null;
+        try
+        {
+            var endpoint = EndpointTextBox.Text.Trim();
+            if (_busy)
             {
-                var endpoint = EndpointTextBox.Text.Trim();
-                if (CdpEndpoint.IsLoopbackHttp(endpoint))
+                cleanupWarning = "The previous operation did not stop promptly, so remote page cleanup was skipped. Local renderer resources will still be released.";
+            }
+            else if (CdpEndpoint.IsLoopbackHttp(endpoint))
+            {
+                _state.CdpBaseUrl = endpoint;
+                // A free port means Codex has already closed, so there is no
+                // page process left to clean. Otherwise keep exit cleanup short.
+                if (!CdpEndpoint.IsAvailableForActivation(endpoint))
                 {
-                    _state.CdpBaseUrl = endpoint;
-                    // If the port is free, Codex has already closed and its
-                    // injected page layer no longer exists. That is already a
-                    // successful page cleanup, not a reason to block exit.
-                    if (!CdpEndpoint.IsAvailableForActivation(endpoint))
-                    {
-                        await _injection.CleanupAllAsync(endpoint, cancellationToken);
-                    }
+                    using var cleanupTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+                    await _injection.CleanupAllAsync(endpoint, cleanupTimeout.Token);
                 }
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                cleanupWarning = "The page cleanup was cancelled; local renderer resources will still be released while exiting.";
-            }
-            catch (Exception exception)
-            {
-                cleanupWarning = "Codex was unavailable for page cleanup; local renderer resources will still be released while exiting ("
-                    + exception.Message + ").";
-            }
-            finally
-            {
-                _state.LastAppliedWallpaperId = null;
-                _state.PendingWallpaperId = null;
-                _state.PendingActivation = false;
-                SaveState();
-                DeferredRestoreLauncher.RequestStop();
-                exitReady = true;
-            }
-        });
-        if (!exitReady) return;
-        if (!string.IsNullOrWhiteSpace(cleanupWarning))
-        {
-            MessageBox.Show(
-                this,
-                cleanupWarning + "\n\nThe controller will now exit.",
-                "Restore and exit",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
         }
-        _allowExit = true;
-        _closeRequested = true;
-        Close();
+        catch (Exception exception)
+        {
+            cleanupWarning = "Codex was unavailable for page cleanup; local renderer resources will still be released ("
+                + exception.Message + ").";
+        }
+        finally
+        {
+            _state.LastAppliedWallpaperId = null;
+            _state.PendingWallpaperId = null;
+            _state.PendingActivation = false;
+            SaveState();
+            DeferredRestoreLauncher.RequestStop();
+            if (!string.IsNullOrWhiteSpace(cleanupWarning))
+            {
+                SetStatus(cleanupWarning + " The controller is exiting now.");
+            }
+            _allowExit = true;
+            _closeRequested = true;
+            Close();
+        }
     }
 }
