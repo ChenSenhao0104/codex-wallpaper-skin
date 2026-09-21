@@ -18,9 +18,12 @@ public partial class NumericInputDialog : Window
         _minimum = minimum;
         _maximum = maximum;
         _decimals = decimals;
-        PromptText.Text = label;
-        RangeText.Text = $"Allowed range: {Format(minimum)}–{Format(maximum)}{unit}";
+        PromptText.Text = UiLanguage.Text(label);
+        RangeText.Text = UiLanguage.IsChinese
+            ? $"允许范围：{Format(minimum)}–{Format(maximum)}{unit}"
+            : $"Allowed range: {Format(minimum)}–{Format(maximum)}{unit}";
         ValueTextBox.Text = Format(current);
+        UiLanguage.Apply(this);
         Loaded += (_, _) =>
         {
             ValueTextBox.Focus();
@@ -41,12 +44,14 @@ public partial class NumericInputDialog : Window
         if (!double.TryParse(text, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var value)
             || !double.IsFinite(value))
         {
-            ShowValidation("Enter a valid number.");
+            ShowValidation(UiLanguage.Text("Enter a valid number."));
             return;
         }
         if (value < _minimum || value > _maximum)
         {
-            ShowValidation($"Enter a value from {Format(_minimum)} to {Format(_maximum)}.");
+            ShowValidation(UiLanguage.IsChinese
+                ? $"请输入 {Format(_minimum)} 到 {Format(_maximum)} 之间的数值。"
+                : $"Enter a value from {Format(_minimum)} to {Format(_maximum)}.");
             return;
         }
         Value = Math.Round(value, _decimals, MidpointRounding.AwayFromZero);
@@ -57,7 +62,7 @@ public partial class NumericInputDialog : Window
 
     private void ShowValidation(string message)
     {
-        MessageBox.Show(this, message, "Exact value", MessageBoxButton.OK, MessageBoxImage.Information);
+        MessageBox.Show(this, message, UiLanguage.Text("Exact value"), MessageBoxButton.OK, MessageBoxImage.Information);
         ValueTextBox.Focus();
         ValueTextBox.SelectAll();
     }

@@ -192,6 +192,8 @@
                 </Grid.RowDefinitions>
                 <DockPanel>
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <Button x:Name="LanguageButton" Content="中文" Click="Language_Click"
+                                Background="#3B4351" ToolTip="Switch between English and Chinese / 切换中英文"/>
                         <Button x:Name="ConnectButton" Content="Start / reconnect Codex" Click="Connect_Click"
                                 ToolTip="Automatically connects to Codex or starts it with the local wallpaper channel."/>
                         <Button Content="Doctor" Click="Doctor_Click" Background="#3B4351" Margin="0"/>
@@ -324,7 +326,7 @@
                         </DockPanel>
 
                         <TextBlock Text="Fit" Foreground="{StaticResource MutedBrush}"/>
-                        <ComboBox x:Name="FitCombo" SelectionChanged="SettingsChanged" Margin="0,3,0,10"/>
+                        <ComboBox x:Name="FitCombo" DisplayMemberPath="Label" SelectionChanged="SettingsChanged" Margin="0,3,0,10"/>
                         <Button Content="Show the complete wallpaper (may add margins)"
                                 Click="ShowCompleteWallpaper_Click" Background="#3B4351"
                                 HorizontalAlignment="Left" Margin="0,0,0,10"
@@ -401,15 +403,9 @@
                                     ToolTip="Create, name, edit, delete, or restore visual presets."/>
                         </StackPanel>
 
-                        <StackPanel>
-                            <StackPanel Orientation="Horizontal">
-                                <Button x:Name="ApplyButton" Content="Apply selected" Click="Apply_Click" IsEnabled="False"/>
-                                <Button Content="Restore Codex background" Click="Restore_Click" Background="#9A3944" Margin="0"/>
-                            </StackPanel>
-                            <Button x:Name="RestartApplyButton" Content="Restart Codex normally and apply now"
-                                    Click="RestartCodexAndApply_Click" Background="#8A5B18" Margin="0,8,0,0"
-                                    Visibility="Collapsed"
-                                    ToolTip="Requests a normal Codex close; never force-terminates it. Your queued wallpaper remains safe if Codex does not exit."/>
+                        <StackPanel Orientation="Horizontal">
+                            <Button x:Name="ApplyButton" Content="Apply selected" Click="Apply_Click" IsEnabled="False"/>
+                            <Button Content="Restore Codex background" Click="Restore_Click" Background="#9A3944" Margin="0"/>
                         </StackPanel>
                         <ProgressBar x:Name="UploadProgress" Height="4" Minimum="0" Maximum="100" Margin="0,12,0,0" Visibility="Collapsed"/>
                     </StackPanel>

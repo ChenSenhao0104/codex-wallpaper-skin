@@ -141,6 +141,20 @@ public static class SelfTests
             legacy.VisualPresets[1].Id = legacy.VisualPresets[0].Id.ToUpperInvariant();
             Throws<InvalidDataException>(() => StateStore.ValidateStateForSave(legacy));
         });
+        Check("English and Chinese interface selection is normalized", () =>
+        {
+            var state = new AppState { UiLanguage = "zh-Hans" };
+            StateStore.NormalizeState(state);
+            Equal("zh-CN", state.UiLanguage);
+            UiLanguage.Set(state.UiLanguage);
+            Equal("壁纸", UiLanguage.Text("Wallpapers"));
+            UiLanguage.Set("en-US");
+            Equal("Wallpapers", UiLanguage.Text("壁纸"));
+
+            state.UiLanguage = "unsupported";
+            StateStore.NormalizeState(state);
+            Equal("en-US", state.UiLanguage);
+        });
         Check("startup registration ownership is exact", () =>
         {
             True(StartupRegistration.IsOwnedCommand(
@@ -367,8 +381,6 @@ public static class SelfTests
             True(exception.Message.Contains("not interrupted", StringComparison.OrdinalIgnoreCase));
             True(!exception.Message.Contains("listener process", StringComparison.OrdinalIgnoreCase));
             Equal(42, exception.ProcessIds.Single());
-            Throws<ArgumentOutOfRangeException>(() => CodexRestartService
-                .RequestNormalCloseAsync(TimeSpan.Zero).GetAwaiter().GetResult());
         });
         Check("fit mapping", () =>
         {

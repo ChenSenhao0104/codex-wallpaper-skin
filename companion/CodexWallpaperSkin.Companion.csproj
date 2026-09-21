@@ -8,7 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>CodexWallpaperSkin</AssemblyName>
     <RootNamespace>CodexWallpaperSkin</RootNamespace>
-    <Version>0.4.5</Version>
+    <Version>0.4.6</Version>
     <Authors>Codex Wallpaper Skin contributors</Authors>
     <Description>Reversible local and Wallpaper Engine backgrounds for Codex Desktop.</Description>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>

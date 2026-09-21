@@ -128,6 +128,9 @@ public static class StateStore
         state.PendingWallpaperId = state.PendingWallpaperId is { Length: <= 2048 }
             ? state.PendingWallpaperId
             : null;
+        state.UiLanguage = state.UiLanguage?.StartsWith("zh", StringComparison.OrdinalIgnoreCase) == true
+            ? "zh-CN"
+            : "en-US";
         if (string.IsNullOrWhiteSpace(state.PendingWallpaperId)) state.PendingActivation = false;
         return state;
     }
@@ -240,6 +243,10 @@ public static class StateStore
         if (!CdpEndpoint.IsLoopbackHttp(state.CdpBaseUrl))
         {
             throw new InvalidDataException("The saved CDP endpoint is not a canonical loopback URL.");
+        }
+        if (state.UiLanguage is not "en-US" and not "zh-CN")
+        {
+            throw new InvalidDataException("The interface language is not supported.");
         }
         if (state.Aumid is { Length: > 256 }
             || state.WallpaperEngineRoot is { Length: > 2048 }

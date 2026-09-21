@@ -17,6 +17,7 @@ public partial class VisualPresetDialog : Window
     public VisualPresetDialog(IEnumerable<VisualPresetProfile> profiles, string? selectedProfileId)
     {
         InitializeComponent();
+        UiLanguage.Apply(this);
         _profiles = profiles.Select(item => item.Copy().Normalize()).ToList();
         if (_profiles.Count == 0) _profiles.Add(VisualPresetProfile.BuiltIn());
         SelectedProfileId = _profiles.Any(item => item.Id.Equals(selectedProfileId, StringComparison.OrdinalIgnoreCase))
@@ -47,7 +48,7 @@ public partial class VisualPresetDialog : Window
         if (!TryCommitCurrent()) return;
         if (_profiles.Count >= 32)
         {
-            MessageBox.Show(this, "At most 32 visual presets can be saved.", "Manage visual presets",
+            MessageBox.Show(this, UiLanguage.Text("At most 32 visual presets can be saved."), UiLanguage.Text("Manage visual presets"),
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
@@ -71,11 +72,11 @@ public partial class VisualPresetDialog : Window
         if (_editingProfile is null) return;
         if (_profiles.Count == 1)
         {
-            MessageBox.Show(this, "Keep at least one visual preset.", "Manage visual presets",
+            MessageBox.Show(this, UiLanguage.Text("Keep at least one visual preset."), UiLanguage.Text("Manage visual presets"),
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
-        var choice = MessageBox.Show(this, $"Delete preset ‘{_editingProfile.Name}’?", "Delete visual preset",
+        var choice = MessageBox.Show(this, UiLanguage.IsChinese ? $"删除预设“{_editingProfile.Name}”？" : $"Delete preset ‘{_editingProfile.Name}’?", UiLanguage.Text("Delete visual preset"),
             MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
         if (choice != MessageBoxResult.Yes) return;
 
@@ -128,7 +129,7 @@ public partial class VisualPresetDialog : Window
         }
         catch (InvalidDataException exception)
         {
-            MessageBox.Show(this, exception.Message, "Manage visual presets", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, UiLanguage.Text(exception.Message), UiLanguage.Text("Manage visual presets"), MessageBoxButton.OK, MessageBoxImage.Information);
             return false;
         }
     }
@@ -161,11 +162,11 @@ public partial class VisualPresetDialog : Window
     {
         for (var index = 1; index <= 32; index++)
         {
-            var candidate = $"Preset {index}";
+            var candidate = UiLanguage.IsChinese ? $"预设 {index}" : $"Preset {index}";
             if (_profiles.All(item => !item.Name.Equals(candidate, StringComparison.CurrentCultureIgnoreCase)))
                 return candidate;
         }
-        return "New preset";
+        return UiLanguage.IsChinese ? "新预设" : "New preset";
     }
 
     private static double ReadPercent(WpfTextBox textBox, string label, double minimum, double maximum) =>
@@ -179,7 +180,9 @@ public partial class VisualPresetDialog : Window
         {
             textBox.Focus();
             textBox.SelectAll();
-            throw new InvalidDataException($"{label} must be from {minimum:0.##} to {maximum:0.##}.");
+            throw new InvalidDataException(UiLanguage.IsChinese
+                ? $"{UiLanguage.Text(label)} 必须在 {minimum:0.##} 到 {maximum:0.##} 之间。"
+                : $"{label} must be from {minimum:0.##} to {maximum:0.##}.");
         }
         return value;
     }

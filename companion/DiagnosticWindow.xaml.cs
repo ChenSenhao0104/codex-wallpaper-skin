@@ -7,6 +7,7 @@ public partial class DiagnosticWindow : Window
     public DiagnosticWindow(string report)
     {
         InitializeComponent();
+        UiLanguage.Apply(this);
         ReportTextBox.Text = report;
     }
 

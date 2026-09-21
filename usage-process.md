@@ -6,7 +6,7 @@
 
 1. 解压 `CodexWallpaperSkin-win-x64.zip`，运行 `CodexWallpaperSkin.exe`。
 2. 点击 **Start / reconnect Codex**；检测、受控启动和重新连接均自动完成。
-3. 如果 Codex 已普通启动且当前不能退出，直接选择壁纸并点击 **Apply selected**；软件会排队等待你日后自然关闭，不会中断任务。
+3. 如果 Codex 已普通启动，请先手动关闭 Codex，再点击 **Start / reconnect Codex**；软件不会自动关闭或重启 Codex。
 4. 点击 **Scan Wallpaper Engine**，选择壁纸，检查参数后点击 **Apply selected**。
 5. 不再使用时点击 **Restore Codex background**；若还要关闭 CDP 端口，请完全退出该 Codex 进程。
 
@@ -57,11 +57,10 @@ Codex 必须带有仅监听 `127.0.0.1` 的 CDP 参数，调节器才能添加�
 
 1. 点击 **Start / reconnect Codex**。调节器只接受官方 `OpenAI.Codex` 包身份，并会自动连接或用回环 CDP 启动它。
 2. 如果普通 Codex 已经运行，调节器会立即识别，不会等待 30 秒、强制退出或干扰当前任务。
-3. 此时选择壁纸并点击 **Apply selected** 即可加入等待队列。需要立即生效时，先保存或暂停正在进行的工作，再点击 **Restart Codex normally and apply now**；软件只请求 Codex 正常关闭，绝不强制结束进程，随后自动重新打开并应用壁纸。
-4. 如果不希望现在重启，可继续使用 Codex；日后自然关闭后，后台等待器会自动完成下一次受控启动与恢复。
-5. 普通使用不需要手动输入端口或 AUMID；这些项目仅保留在折叠的 **Advanced connection settings** 中用于诊断。
+3. 若普通 Codex 已运行，调节器会明确提示“请手动关闭 Codex，然后点击 Start / reconnect Codex”。已选壁纸会保留，但不启动自动关闭、超时等待或自动重开流程。
+4. 普通使用不需要手动输入端口或 AUMID；这些项目仅保留在折叠的 **Advanced connection settings** 中用于诊断。
 
-Windows 无法把 Chromium 调试参数动态补到已经运行的进程，因此真正的即时安全注入在这种状态下不可行。软件提供“用户确认的正常重启”和“不中断任务的等待队列”两条路径；如果 Codex 未在 45 秒内正常退出，软件会停止即时重启，不会强制终止，并继续保留等待队列。建议启用 **Restore at Windows sign-in**，让后台组件在登录后先准备控制通道并在需要时启动 Codex，从源头减少启动顺序问题。
+Windows 无法把 Chromium 调试参数动态补到已经运行的进程，因此真正的即时安全注入在这种状态下不可行。为避免卡顿和误操作，软件不再请求关闭 Codex；用户手动关闭后，统一通过 **Start / reconnect Codex** 重新打开。Windows 登录自动恢复仍为可选项。
 
 ## 4. 应用 Wallpaper Engine 壁纸
 

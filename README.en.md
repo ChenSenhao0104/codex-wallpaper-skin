@@ -2,7 +2,7 @@
 
 English | [简体中文](README.md)
 
-An independent Windows 11 x64 desktop application that adds local images, videos, and installed Wallpaper Engine projects as Codex Desktop backgrounds. The current GUI release is `0.4.5` and requires the official x64 `OpenAI.Codex` Store/MSIX package.
+An independent Windows 11 x64 desktop application that adds local images, videos, and installed Wallpaper Engine projects as Codex Desktop backgrounds. The current GUI release is `0.4.6` and requires the official x64 `OpenAI.Codex` Store/MSIX package.
 
 The application uses a loopback-only Chrome DevTools Protocol (CDP) session to add a reversible background layer to the real Codex page. Codex loads Image/Video media independently; complex Scene projects are rendered natively by a private local Wallpaper Engine window and transferred to Codex. The application does not patch `WindowsApps`, `app.asar`, the official signature, chats, or authentication data.
 
@@ -18,9 +18,9 @@ The application uses a loopback-only Chrome DevTools Protocol (CDP) session to a
 - Web code is never executed; only validated animated/static previews are allowed. Application projects are always rejected.
 - One-time 32×32 palette sampling for translucent surfaces, accents, and inherited interface text while code, terminal, warning, and status colors remain intact.
 - Fit, focal point, opacity, readability veil, brightness, contrast, saturation, palette strength, panel opacity, inherited-text coordination, blur, animation speed, Scene FPS, and Scene render-scale controls. Click a displayed numeric value for exact entry. Create, name, edit, and delete multiple visual presets for wallpapers with different brightness and color; every value remains editable after applying one.
-- Remembers the last successfully applied wallpaper and restores it on reconnect or Windows sign-in. If Codex is already running normally, restoration is queued until the user closes it naturally, without interrupting the active task.
+- Remembers the last successfully applied wallpaper and restores it on reconnect or Windows sign-in. If Codex is already running normally, the app asks the user to close Codex manually and then choose **Start / reconnect Codex**; it never closes the user's task.
 - Personal collections, technical-type filters, instant search, and app-only renaming. Rescanning preserves the organization and never renames Workshop or local files.
-- When Codex was started normally first, **Restart Codex normally and apply now** requests an orderly close and completes the controlled restart after explicit confirmation. It never force-terminates Codex; on timeout the queued wallpaper remains safe.
+- A top-level English/Chinese button switches the interface immediately and remembers the choice. **Start / reconnect Codex** is the only Codex startup and reconnection entry point.
 - Decode-before-swap, preservation of the old background on failure, pause when hidden, bounded cleanup, and **Restore Codex background**.
 
 Complex and interactive Scenes are rendered by Wallpaper Engine itself. Codex pointer movement and button state are mapped to the private render window, so water feedback, parallax, and similar interactions remain the wallpaper's own implementation. Wallpaper Engine must be installed and remain available in the background; closing the visible controller hands playback to a hidden restore worker. The built-in renderer remains only as an explicitly labeled fallback.
@@ -30,13 +30,13 @@ Complex and interactive Scenes are rendered by Wallpaper Engine itself. Codex po
 Download `CodexWallpaperSkin-win-x64.zip` and its `.sha256` file from Releases, verify the hash, extract the complete archive, and run `CodexWallpaperSkin.exe`. The portable application is self-contained and needs no Python, PyYAML, Node.js, or .NET installation.
 
 1. Run the application and choose **Start / reconnect Codex**. Detection, controlled startup, and reconnection are automatic; normal use does not require entering a CDP endpoint or AUMID.
-2. If Codex is already running normally, select a wallpaper and choose **Apply selected**. It is queued without closing Codex. For immediate use, save active work and choose **Restart Codex normally and apply now**.
+2. If Codex is already running normally, close Codex manually and then choose **Start / reconnect Codex**. The controller never closes or restarts Codex automatically.
 3. Choose **Scan Wallpaper Engine**, select a wallpaper, and review the controls.
 4. Choose **Apply selected**. Use **Restore Codex background** when finished. Endpoint and package-identity controls remain available only inside the collapsed advanced section.
 
 A fresh state enables palette coordination, inherited-text coordination, mute, and pause-when-hidden. Opacity, brightness, contrast, and saturation start at their original values; the black veil and blur start at `0`. **Original color / clarity** restores all image-affecting controls to neutral values.
 
-After the first successful Apply, the controller remembers that wallpaper. Windows cannot dynamically add Chromium debugging flags to an existing Codex process, so safe in-place injection is impossible in that state. The app detects it immediately, stores a pending selection, and waits for the user's natural Codex exit before the next controlled start. Windows sign-in restore is optional.
+After the first successful Apply, the controller remembers that wallpaper. Windows cannot dynamically add Chromium debugging flags to an existing Codex process, so safe in-place injection is impossible in that state. The app detects it immediately and stores the selection, but does not close Codex. Close Codex manually and choose **Start / reconnect Codex**. Windows sign-in restore is optional.
 
 ## Wallpaper Engine labels
 

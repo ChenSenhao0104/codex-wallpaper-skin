@@ -243,6 +243,7 @@ public sealed class AppState
     public string? PendingWallpaperId { get; set; }
     public bool PendingActivation { get; set; }
     public bool AutoRestoreOnLaunch { get; set; } = true;
+    public string UiLanguage { get; set; } = CodexWallpaperSkin.UiLanguage.DefaultCode;
     public List<WallpaperEntry> Wallpapers { get; set; } = [];
     public WallpaperSettings Settings { get; set; } = new();
     // Keep the selected profile mirrored here so v0.4.4 can still open and

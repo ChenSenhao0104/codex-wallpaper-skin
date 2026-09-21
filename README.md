@@ -2,7 +2,7 @@
 
 [English](README.en.md) | 简体中文
 
-一个独立运行的 Windows 11 x64 桌面程序，用本地图片、视频和已安装的 Wallpaper Engine 项目为 Codex Desktop 更换背景。当前 GUI 版本为 `0.4.5`，要求官方 x64 `OpenAI.Codex` Store/MSIX 桌面包。
+一个独立运行的 Windows 11 x64 桌面程序，用本地图片、视频和已安装的 Wallpaper Engine 项目为 Codex Desktop 更换背景。当前 GUI 版本为 `0.4.6`，要求官方 x64 `OpenAI.Codex` Store/MSIX 桌面包。
 
 程序通过仅绑定 `127.0.0.1` 的 Chrome DevTools Protocol（CDP），在真实 Codex 页面中添加可逆的背景层。Image/Video 由 Codex 独立加载；复杂 Scene 由本机 Wallpaper Engine 在隔离窗口中原生渲染后传给 Codex。程序不修改 `WindowsApps`、`app.asar`、官方签名、聊天内容或登录数据。
 
@@ -18,25 +18,25 @@
 - Web 项目不执行网页代码，只允许使用安全的 GIF 或静态预览；Application 项目始终拒绝。
 - 一次性 32×32 取色可协调半透明面板、强调色和继承文字；代码、终端、警告和状态色保持原样。
 - 可调填充、焦点、不透明度、黑色遮罩、亮度、对比度、饱和度、取色强度、面板透明度、文字协调、模糊、动画速度、Scene FPS 和渲染比例；点击参数右侧数字可精确输入。可创建、命名、修改和删除多组视觉预设，一键应对不同亮度与色调的壁纸；应用后所有参数仍能继续微调。
-- 记住最后一次成功应用的壁纸；调节器下次打开、重新 Connect 或 Windows 登录时可自动恢复。若 Codex 已普通启动，软件会排队等待用户自然关闭，不中断当前任务。点击 **Restore Codex background** 会同时清除记忆与等待队列。
+- 记住最后一次成功应用的壁纸；调节器下次打开、重新连接或 Windows 登录时可自动恢复。若 Codex 已普通启动，软件会提示用户手动关闭 Codex，再点击 **Start / reconnect Codex**，绝不自动关闭用户任务。点击 **Restore Codex background** 会清除壁纸和待应用状态。
 - 提供个人收藏夹、技术类型筛选、即时搜索和仅限本软件的重命名；重新扫描不会清除整理结果，也不会改动工坊文件。
-- 如果用户先普通启动了 Codex，可在保存工作后使用 **Restart Codex normally and apply now** 一次完成正常关闭、带控制通道重开和壁纸应用；超时绝不强制结束进程，原等待队列继续保留。
+- 顶部提供中英文一键切换并记住选择；**Start / reconnect Codex** 是唯一的 Codex 启动与重连入口。
 - 媒体解码成功后原子切换；失败保留旧背景；支持隐藏暂停、异常清理和 **Restore Codex background** 一键恢复。
 
-复杂 Scene 不再由本项目猜测其私有格式，而由 Wallpaper Engine 自身渲染。此模式要求 Wallpaper Engine 已安装并在播放期间保持后台运行；关闭窗口会隐藏到托盘并继续播放，使用托盘中的 **Restore Codex background and exit** 才会恢复并彻底退出。当前 H.264 路径为稳定性不复刻鼠标互动；内置 2D 渲染器只作为明确标注的兼容后备。
+复杂 Scene 不再由本项目猜测其私有格式，而由 Wallpaper Engine 自身渲染。此模式要求 Wallpaper Engine 已安装并在播放期间保持后台运行；关闭窗口会隐藏到托盘并继续播放，使用托盘中的 **Remove wallpaper and exit** 会快速尝试移除壁纸并彻底退出，Codex 已关闭或不可用时也不会阻塞退出。当前 H.264 路径为稳定性不复刻鼠标互动；内置 2D 渲染器只作为明确标注的兼容后备。
 
 ## 快速开始
 
 详细步骤见 [具体操作流程](usage-process.md)。普通用户从 Release 下载 `CodexWallpaperSkin-win-x64.zip` 和对应 `.sha256`，校验后完整解压并运行 `CodexWallpaperSkin.exe`。便携版是自包含程序，不需要安装 Python、PyYAML、Node.js 或 .NET。
 
 1. 运行软件，点击 **Start / reconnect Codex**；程序会自动检测、启动或重新连接，普通使用无需填写 CDP 或 AUMID。
-2. 如果 Codex 已普通启动，选择壁纸并点击 **Apply selected**；软件会安全排队。需要立即生效时，保存工作后点击 **Restart Codex normally and apply now**。
+2. 如果 Codex 已普通启动，请先手动关闭 Codex，再点击 **Start / reconnect Codex**；软件不会自动关闭或重启 Codex。
 3. 点击 **Scan Wallpaper Engine**，选择壁纸并检查右侧参数。
 4. 点击 **Apply selected**；不再使用时点击 **Restore Codex background**。端口和应用身份只放在折叠的高级设置中。
 
 首次状态默认开启自动配色、文字协调、静音和隐藏暂停；背景不透明度、亮度、对比度、饱和度均为原值，黑色遮罩和模糊为 `0`。点击 **Original color / clarity** 可把影响画面色彩和清晰度的参数恢复为中性值。
 
-首次成功应用后，软件默认记住该壁纸。Windows 不允许把 Chromium 调试参数动态补到已运行的 Codex 进程，因此无法在不重启的前提下安全注入背景；本程序会立刻识别这种情况并保存待应用壁纸，由后台等待器在用户自然关闭后完成带控制通道的下次启动与恢复。Windows 登录自动恢复为可选项。
+首次成功应用后，软件默认记住该壁纸。Windows 不允许把 Chromium 调试参数动态补到已运行的 Codex 进程，因此无法在不重启的前提下安全注入背景；本程序会保存所选壁纸，但不会替用户关闭 Codex。请手动关闭后点击 **Start / reconnect Codex**。Windows 登录自动恢复为可选项。
 
 ## Wallpaper Engine 标签
 

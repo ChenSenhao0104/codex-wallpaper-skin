@@ -8,11 +8,11 @@
 
 1. 在 Wallpaper Engine 中订阅或选择壁纸，等待素材下载完成。
 2. 运行 `CodexWallpaperSkin.exe`，点击 **Start / reconnect Codex**；软件会自动检测、启动或重新连接 Codex。
-3. 若 Codex 已经普通启动，直接选择壁纸并点击 **Apply selected**：软件会安全排队。需要立即生效时，先保存或暂停工作，再点击 **Restart Codex normally and apply now**；软件只请求正常关闭并自动重开，绝不会强制结束进程。
+3. 若 Codex 已经普通启动，请先手动关闭 Codex，再点击 **Start / reconnect Codex**。软件不会自动关闭或重启 Codex。
 4. 点击 **Scan Wallpaper Engine**，选择列表中的同名项目，确认自动配色、模糊、静音等参数，然后点击 **Apply selected**。
 5. 点击 **Restore Codex background** 可移除本项目的页面层。恢复不会关闭 CDP 端口；完全退出该 Codex 进程才会关闭端口。
 
-成功 Apply 后会记住最后一张壁纸。以后需要使用壁纸时请从本调节器启动或连接 Codex；若 Codex 已普通启动，可保存工作后使用 **Restart Codex normally and apply now**。旧版创建的 `Codex with remembered wallpaper` 桌面快捷方式会在本版首次启动时安全清除，官方 Codex 图标不受影响。点击参数右侧数字可输入精确值。**Restore Codex background** 会清除已记住的壁纸与等待队列。
+成功 Apply 后会记住最后一张壁纸。以后需要使用壁纸时请从本调节器启动或连接 Codex；若 Codex 已普通启动，请手动关闭后点击 **Start / reconnect Codex**。旧版创建的 `Codex with remembered wallpaper` 桌面快捷方式会在本版首次启动时安全清除，官方 Codex 图标不受影响。点击顶部语言按钮可切换中英文，选择会自动记忆。**Restore Codex background** 会清除已记住的壁纸与待应用状态。
 
 列表上方的 **Search**、类型和收藏夹筛选可快速缩小结果。选择壁纸后，**Rename** 只修改本软件中的显示名称，**Set collection** 可建立“治愈”“动漫”“风景”等个人收藏夹；重新扫描不会丢失这些整理信息，也不会改动 Steam 或本地素材。
 

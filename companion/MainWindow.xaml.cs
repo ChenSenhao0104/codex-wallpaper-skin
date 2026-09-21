@@ -37,11 +37,15 @@ public partial class MainWindow : Window
 
     private sealed record WallpaperTypeFilterOption(string Label, WallpaperKind? Kind);
     private sealed record WallpaperCollectionFilterOption(string Label, string? Collection, bool Ungrouped = false);
+    private sealed record WallpaperFitOption(string Label, WallpaperFit Value);
 
     public MainWindow()
     {
         InitializeComponent();
         _state = StateStore.Load();
+        UiLanguage.Set(_state.UiLanguage);
+        UiLanguage.Apply(this);
+        UpdateLanguageButton();
         _libraryPersonalizations = WallpaperLibraryStore.Load();
         _settingsTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(180) };
         _settingsTimer.Tick += SettingsTimer_Tick;
@@ -49,18 +53,8 @@ public partial class MainWindow : Window
         _wallpaperView = CollectionViewSource.GetDefaultView(_wallpapers);
         _wallpaperView.Filter = WallpaperMatchesActiveFilters;
         WallpaperList.ItemsSource = _wallpaperView;
-        WallpaperTypeFilter.ItemsSource = new[]
-        {
-            new WallpaperTypeFilterOption("All types", null),
-            new WallpaperTypeFilterOption("Scenes", WallpaperKind.Scene),
-            new WallpaperTypeFilterOption("Videos", WallpaperKind.Video),
-            new WallpaperTypeFilterOption("Images", WallpaperKind.Image),
-            new WallpaperTypeFilterOption("Web", WallpaperKind.Web),
-            new WallpaperTypeFilterOption("Applications", WallpaperKind.Application),
-            new WallpaperTypeFilterOption("Unknown", WallpaperKind.Unknown)
-        };
-        WallpaperTypeFilter.SelectedIndex = 0;
-        FitCombo.ItemsSource = Enum.GetValues<WallpaperFit>();
+        LoadLocalizedTypeFilter();
+        LoadLocalizedFitOptions(_state.Settings.Fit);
         SceneFpsCombo.ItemsSource = new[] { 30, 60 };
         foreach (var profile in _state.VisualPresets) _visualPresets.Add(profile);
         VisualPresetCombo.ItemsSource = _visualPresets;
@@ -140,6 +134,64 @@ public partial class MainWindow : Window
         InitializeTrayIcon();
     }
 
+    private void Language_Click(object sender, RoutedEventArgs e)
+    {
+        UiLanguage.Set(UiLanguage.IsChinese ? "en-US" : "zh-CN");
+        _state.UiLanguage = UiLanguage.Code;
+        UiLanguage.Apply(this);
+        UpdateLanguageButton();
+        LoadLocalizedTypeFilter();
+        LoadLocalizedFitOptions(ReadSettings().Fit);
+        RefreshCollectionFilter();
+        RefreshWallpaperView();
+        InitializeTrayIcon();
+        SaveState();
+        SetStatus(UiLanguage.Text("Language changed to English."));
+    }
+
+    private void UpdateLanguageButton()
+    {
+        LanguageButton.Content = UiLanguage.IsChinese ? "English" : "中文";
+        LanguageButton.ToolTip = UiLanguage.IsChinese
+            ? "Switch interface to English"
+            : "将界面切换为中文";
+    }
+
+    private void LoadLocalizedTypeFilter()
+    {
+        var selectedKind = (WallpaperTypeFilter.SelectedItem as WallpaperTypeFilterOption)?.Kind;
+        WallpaperTypeFilter.ItemsSource = new[]
+        {
+            new WallpaperTypeFilterOption(UiLanguage.Text("All types"), null),
+            new WallpaperTypeFilterOption(UiLanguage.Text("Scenes"), WallpaperKind.Scene),
+            new WallpaperTypeFilterOption(UiLanguage.Text("Videos"), WallpaperKind.Video),
+            new WallpaperTypeFilterOption(UiLanguage.Text("Images"), WallpaperKind.Image),
+            new WallpaperTypeFilterOption(UiLanguage.Text("Web"), WallpaperKind.Web),
+            new WallpaperTypeFilterOption(UiLanguage.Text("Applications"), WallpaperKind.Application),
+            new WallpaperTypeFilterOption(UiLanguage.Text("Unknown"), WallpaperKind.Unknown)
+        };
+        WallpaperTypeFilter.SelectedItem = WallpaperTypeFilter.Items
+            .Cast<WallpaperTypeFilterOption>()
+            .First(item => item.Kind == selectedKind);
+    }
+
+    private void LoadLocalizedFitOptions(WallpaperFit selected)
+    {
+        FitCombo.ItemsSource = Enum.GetValues<WallpaperFit>()
+            .Select(value => new WallpaperFitOption(value switch
+            {
+                WallpaperFit.Cover => UiLanguage.IsChinese ? "覆盖（填满窗口）" : "Cover",
+                WallpaperFit.Contain => UiLanguage.IsChinese ? "完整显示" : "Contain",
+                WallpaperFit.Fill => UiLanguage.IsChinese ? "拉伸填满" : "Fill",
+                WallpaperFit.None => UiLanguage.IsChinese ? "原始尺寸" : "Original size",
+                WallpaperFit.ScaleDown => UiLanguage.IsChinese ? "仅缩小" : "Scale down",
+                _ => value.ToString()
+            }, value))
+            .ToArray();
+        FitCombo.SelectedItem = FitCombo.Items.Cast<WallpaperFitOption>()
+            .First(item => item.Value == selected);
+    }
+
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
         Loaded -= MainWindow_Loaded;
@@ -164,21 +216,24 @@ public partial class MainWindow : Window
             {
                 UploadProgress.Visibility = Visibility.Collapsed;
                 var remembered = AutoRestoreService.ResolveLastWallpaper(_state);
-                if (remembered is not null) QueueDeferredRestore(remembered);
+                if (remembered is not null) RememberPendingApply(remembered);
                 return;
             }
             UploadProgress.Visibility = Visibility.Collapsed;
             EndpointTextBox.Text = _state.CdpBaseUrl;
             AumidTextBox.Text = _state.Aumid ?? string.Empty;
-            ConnectButton.Content = "Reconnect Codex";
+            ConnectButton.Content = UiLanguage.Text("Reconnect Codex");
             var listed = _wallpapers.FirstOrDefault(item => item.Id.Equals(restored.Wallpaper.Id, StringComparison.OrdinalIgnoreCase));
             if (listed is not null)
             {
                 WallpaperList.SelectedItem = listed;
             }
             SaveState();
-            SetStatus($"Restored {restored.Wallpaper.DisplayTitle} from the previous session."
-                + (restored.ActivatedCodex ? " Codex was started with its verified local CDP endpoint." : string.Empty));
+            SetStatus(UiLanguage.IsChinese
+                ? $"已从上次会话恢复 {restored.Wallpaper.DisplayTitle}。"
+                    + (restored.ActivatedCodex ? " Codex 已使用已验证的本地壁纸通道启动。" : string.Empty)
+                : $"Restored {restored.Wallpaper.DisplayTitle} from the previous session."
+                    + (restored.ActivatedCodex ? " Codex was started with its verified local CDP endpoint." : string.Empty));
         });
     }
 
@@ -201,21 +256,13 @@ public partial class MainWindow : Window
             }
             catch (CodexAlreadyRunningWithoutCdpException)
             {
-                if (_state.PendingActivation && AutoRestoreService.ResolveLastWallpaper(_state) is not null)
-                {
-                    try { DeferredRestoreLauncher.EnsureRunning(); } catch { }
-                    SetQueuedStatus();
-                }
-                else
-                {
-                    SetStatus("Codex is open without the wallpaper channel. Your current task was left untouched; select a wallpaper and click Apply to queue it, or close Codex normally and click Start / reconnect Codex.");
-                }
+                SetManualReconnectStatus();
                 return;
             }
             SaveState();
             EndpointTextBox.Text = _state.CdpBaseUrl;
             AumidTextBox.Text = _state.Aumid ?? string.Empty;
-            ConnectButton.Content = "Reconnect Codex";
+            ConnectButton.Content = UiLanguage.Text("Reconnect Codex");
             if (_state.AutoRestoreOnLaunch)
             {
                 _state.Wallpapers = _wallpapers.ToList();
@@ -224,17 +271,25 @@ public partial class MainWindow : Window
                 {
                     UploadProgress.Value = 0;
                     UploadProgress.Visibility = Visibility.Visible;
-                    SetStatus($"Connected. Restoring {remembered.DisplayTitle}…");
+                    SetStatus(UiLanguage.IsChinese
+                        ? $"已连接，正在恢复 {remembered.DisplayTitle}…"
+                        : $"Connected. Restoring {remembered.DisplayTitle}…");
                     var progress = new Progress<double>(value => UploadProgress.Value = value * 100);
                     await _injection.ApplyAsync(remembered, _state.Settings, progress, cancellationToken);
                     UploadProgress.Visibility = Visibility.Collapsed;
-                    SetStatus($"Connected and restored {remembered.DisplayTitle} from the previous session.");
+                    SetStatus(UiLanguage.IsChinese
+                        ? $"已连接并恢复上次会话的 {remembered.DisplayTitle}。"
+                        : $"Connected and restored {remembered.DisplayTitle} from the previous session.");
                     return;
                 }
             }
-            SetStatus(connection.ActivatedCodex
-                ? $"Codex was started with the verified wallpaper channel and connected: {connection.Target.Title}."
-                : $"Connected: {connection.Target.Title} — {connection.Target.Url}");
+            SetStatus(UiLanguage.IsChinese
+                ? connection.ActivatedCodex
+                    ? $"Codex 已通过验证的壁纸通道启动并连接：{connection.Target.Title}。"
+                    : $"已连接：{connection.Target.Title} — {connection.Target.Url}"
+                : connection.ActivatedCodex
+                    ? $"Codex was started with the verified wallpaper channel and connected: {connection.Target.Title}."
+                    : $"Connected: {connection.Target.Title} — {connection.Target.Url}");
         });
     }
 
@@ -247,9 +302,13 @@ public partial class MainWindow : Window
             var text = JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true });
             var dialog = new DiagnosticWindow(text) { Owner = this };
             dialog.ShowDialog();
-            SetStatus(report.CdpReachable
-                ? $"Doctor: CDP reachable with {report.Targets.Count} target(s)."
-                : "Doctor: CDP not reachable. See the report for safe startup guidance.");
+            SetStatus(UiLanguage.IsChinese
+                ? report.CdpReachable
+                    ? $"诊断：CDP 可访问，找到 {report.Targets.Count} 个目标。"
+                    : "诊断：CDP 不可访问。请查看报告中的安全启动建议。"
+                : report.CdpReachable
+                    ? $"Doctor: CDP reachable with {report.Targets.Count} target(s)."
+                    : "Doctor: CDP not reachable. See the report for safe startup guidance.");
         });
     }
 
@@ -287,11 +346,11 @@ public partial class MainWindow : Window
                 if (queued?.CanApply == true)
                 {
                     _state.Settings = ReadSettings();
-                    QueueDeferredRestore(queued);
+                    RememberPendingApply(queued);
                 }
                 else
                 {
-                    SetStatus("Codex is already open without its local wallpaper channel. Select a wallpaper and click Apply; it will be queued without interrupting the current task.");
+                    SetManualReconnectStatus();
                 }
                 return;
             }
@@ -551,97 +610,24 @@ public partial class MainWindow : Window
                         _state, _injection, activateIfNeeded: true, progress, cancellationToken);
                     applyResult = restored.ApplyResult;
                     EndpointTextBox.Text = _state.CdpBaseUrl;
-                    ConnectButton.Content = "Reconnect Codex";
+                    ConnectButton.Content = UiLanguage.Text("Reconnect Codex");
                 }
                 catch (CodexAlreadyRunningWithoutCdpException)
                 {
                     UploadProgress.Visibility = Visibility.Collapsed;
-                    QueueDeferredRestore(selected);
+                    RememberPendingApply(selected);
                     return;
                 }
             }
             else
             {
-                SetStatus($"Uploading {Path.GetFileName(selected.EffectivePath)} to the Codex renderer…");
+                SetStatus(UiLanguage.IsChinese
+                    ? $"正在将 {Path.GetFileName(selected.EffectivePath)} 传送到 Codex 渲染器…"
+                    : $"Uploading {Path.GetFileName(selected.EffectivePath)} to the Codex renderer…");
                 applyResult = await _injection.ApplyAsync(selected, settings, progress, cancellationToken);
             }
             UploadProgress.Visibility = Visibility.Collapsed;
             CompleteSuccessfulApply(selected, settings, applyResult, "Applied");
-        });
-    }
-
-    private async void RestartCodexAndApply_Click(object sender, RoutedEventArgs e)
-    {
-        var selected = _state.PendingActivation
-            ? AutoRestoreService.ResolveLastWallpaper(_state)
-            : WallpaperList.SelectedItem as WallpaperEntry ?? AutoRestoreService.ResolveLastWallpaper(_state);
-        if (selected?.CanApply != true)
-        {
-            ShowError("Select an applicable wallpaper first.");
-            return;
-        }
-
-        var choice = MessageBox.Show(
-            this,
-            "Codex is already open without its wallpaper channel.\n\n"
-            + "This will request a normal Codex shutdown, wait for it to finish, then reopen Codex and apply the queued wallpaper. "
-            + "The process is never force-terminated. Save or pause any active work before continuing.\n\n"
-            + "Restart Codex now?",
-            "Restart Codex and apply wallpaper",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Warning,
-            MessageBoxResult.No);
-        if (choice != MessageBoxResult.Yes) return;
-
-        await RunBusyAsync(async cancellationToken =>
-        {
-            _settingsTimer.Stop();
-            var settings = ReadSettings();
-            _state.Settings = settings;
-            _state.Wallpapers = _wallpapers.ToList();
-            _state.SelectedWallpaperId = selected.Id;
-            _state.PendingWallpaperId = selected.Id;
-            _state.PendingActivation = true;
-            SaveState();
-
-            UploadProgress.Value = 0;
-            UploadProgress.Visibility = Visibility.Visible;
-            var progress = new Progress<double>(value => UploadProgress.Value = value * 100);
-            try
-            {
-                SetStatus("Stopping the background waiter before the controlled restart…");
-                var workerStopped = await Task.Run(
-                    () => DeferredRestoreLauncher.RequestStopAndWait(TimeSpan.FromSeconds(8)),
-                    cancellationToken);
-                if (!workerStopped)
-                {
-                    throw new InvalidOperationException(
-                        "The background wallpaper waiter did not stop, so Codex was left untouched. Close the older controller build and retry.");
-                }
-
-                SetStatus("Requesting a normal Codex shutdown. No process will be force-terminated…");
-                await CodexRestartService.RequestNormalCloseAsync(TimeSpan.FromSeconds(45), cancellationToken);
-                SetStatus("Codex closed normally. Reopening it with the verified local wallpaper channel…");
-                var restored = await AutoRestoreService.RestoreAsync(
-                    _state, _injection, activateIfNeeded: true, progress, cancellationToken);
-                EndpointTextBox.Text = _state.CdpBaseUrl;
-                AumidTextBox.Text = _state.Aumid ?? string.Empty;
-                ConnectButton.Content = "Reconnect Codex";
-                CompleteSuccessfulApply(selected, settings, restored.ApplyResult, "Restarted Codex normally and applied");
-            }
-            catch
-            {
-                // The selected wallpaper remains queued. If Codex stayed open or
-                // the controlled restart could not finish, the waiter resumes and
-                // applies it after the user's next natural exit.
-                try { DeferredRestoreLauncher.EnsureRunning(); } catch { }
-                SetQueuedStatus();
-                throw;
-            }
-            finally
-            {
-                UploadProgress.Visibility = Visibility.Collapsed;
-            }
         });
     }
 
@@ -662,25 +648,47 @@ public partial class MainWindow : Window
         SaveState();
         var paletteStatus = settings.AutoPalette
             ? applyResult.Palette is null
-                ? " Palette sampling was unavailable, so the neutral fallback remains active."
-                : $" Palette: surface {applyResult.Palette.Surface}, accent {applyResult.Palette.Accent}, text contrast {applyResult.Palette.TextContrast:0.0}:1."
-            : " Automatic palette is off.";
-        var modeStatus = applyResult.Mode switch
-        {
-            "live-scene" => " Live 2D scene rendering is active.",
-            "scene-partial" => " Live 2D scene rendering is active with unsupported layers omitted.",
-            "scene-static" => " The renderer used the full-resolution scene texture fallback.",
-            "wallpaper-engine-h264" => " Wallpaper Engine native rendering is active through Windows hardware H.264 and Codex WebCodecs.",
-            "wallpaper-engine-loopback-jpeg" => " Wallpaper Engine native rendering is active through the local binary compatibility stream.",
-            "wallpaper-engine-capture" => " Wallpaper Engine native rendering and pointer forwarding are active through a reduced-frame-rate capture stream.",
-            "animated-preview" => " The low-resolution animated Workshop preview is active.",
-            "static-preview" => " The static Workshop preview fallback is active.",
-            "video" => " Direct video playback is active.",
-            _ => " Direct image playback is active."
-        };
-        var warningStatus = string.IsNullOrWhiteSpace(applyResult.Warning) ? string.Empty : " Note: " + applyResult.Warning;
-        RestartApplyButton.Visibility = Visibility.Collapsed;
-        SetStatus($"{action} {selected.DisplayTitle}.{modeStatus}{paletteStatus}{warningStatus} No Codex file was changed; Restore removes the whole layer.");
+                ? UiLanguage.IsChinese ? " 无法取样配色，已保持中性后备方案。" : " Palette sampling was unavailable, so the neutral fallback remains active."
+                : UiLanguage.IsChinese
+                    ? $" 配色：表面 {applyResult.Palette.Surface}，强调色 {applyResult.Palette.Accent}，文字对比度 {applyResult.Palette.TextContrast:0.0}:1。"
+                    : $" Palette: surface {applyResult.Palette.Surface}, accent {applyResult.Palette.Accent}, text contrast {applyResult.Palette.TextContrast:0.0}:1."
+            : UiLanguage.IsChinese ? " 自动配色已关闭。" : " Automatic palette is off.";
+        var modeStatus = UiLanguage.IsChinese
+            ? applyResult.Mode switch
+            {
+                "live-scene" => " 动态 2D 场景渲染已启用。",
+                "scene-partial" => " 动态 2D 场景渲染已启用，不支持的图层已省略。",
+                "scene-static" => " 渲染器已使用全分辨率场景纹理后备。",
+                "wallpaper-engine-h264" => " Wallpaper Engine 原生渲染已通过 Windows 硬件 H.264 和 Codex WebCodecs 启用。",
+                "wallpaper-engine-loopback-jpeg" => " Wallpaper Engine 原生渲染已通过本地二进制兼容流启用。",
+                "wallpaper-engine-capture" => " Wallpaper Engine 原生渲染和指针转发已通过低帧率捕获流启用。",
+                "animated-preview" => " 低分辨率动态工坊预览已启用。",
+                "static-preview" => " 静态工坊预览后备已启用。",
+                "video" => " 直接视频播放已启用。",
+                _ => " 直接图片显示已启用。"
+            }
+            : applyResult.Mode switch
+            {
+                "live-scene" => " Live 2D scene rendering is active.",
+                "scene-partial" => " Live 2D scene rendering is active with unsupported layers omitted.",
+                "scene-static" => " The renderer used the full-resolution scene texture fallback.",
+                "wallpaper-engine-h264" => " Wallpaper Engine native rendering is active through Windows hardware H.264 and Codex WebCodecs.",
+                "wallpaper-engine-loopback-jpeg" => " Wallpaper Engine native rendering is active through the local binary compatibility stream.",
+                "wallpaper-engine-capture" => " Wallpaper Engine native rendering and pointer forwarding are active through a reduced-frame-rate capture stream.",
+                "animated-preview" => " The low-resolution animated Workshop preview is active.",
+                "static-preview" => " The static Workshop preview fallback is active.",
+                "video" => " Direct video playback is active.",
+                _ => " Direct image playback is active."
+            };
+        var warningStatus = string.IsNullOrWhiteSpace(applyResult.Warning)
+            ? string.Empty
+            : (UiLanguage.IsChinese ? " 注意：" : " Note: ") + applyResult.Warning;
+        var actionStatus = UiLanguage.IsChinese
+            ? action.Equals("Recovered", StringComparison.Ordinal) ? "已恢复" : "已应用"
+            : action;
+        SetStatus(UiLanguage.IsChinese
+            ? $"{actionStatus} {selected.DisplayTitle}。{modeStatus}{paletteStatus}{warningStatus} 未修改任何 Codex 文件；Restore 可移除整个壁纸层。"
+            : $"{actionStatus} {selected.DisplayTitle}.{modeStatus}{paletteStatus}{warningStatus} No Codex file was changed; Restore removes the whole layer.");
         if (applyResult.Mode is "wallpaper-engine-h264" or "wallpaper-engine-loopback-jpeg" or "wallpaper-engine-capture")
         {
             _ = MonitorCaptureAsync(selected.Id, selected.DisplayTitle, _injection.ActiveCaptureCompletion);
@@ -807,7 +815,6 @@ public partial class MainWindow : Window
                 _state.PendingActivation = false;
                 SaveState();
                 DeferredRestoreLauncher.RequestStop();
-                RestartApplyButton.Visibility = Visibility.Collapsed;
                 SetStatus("Cancelled the queued wallpaper restore. No running Codex process was changed.");
                 return;
             }
@@ -817,8 +824,9 @@ public partial class MainWindow : Window
             _state.PendingActivation = false;
             SaveState();
             DeferredRestoreLauncher.RequestStop();
-            RestartApplyButton.Visibility = Visibility.Collapsed;
-            SetStatus($"Restored the original Codex background on {cleanedPages} app page(s). Temporary layers, style changes and Blob URLs were removed.");
+            SetStatus(UiLanguage.IsChinese
+                ? $"已在 {cleanedPages} 个 Codex 应用页面上恢复原始背景，并移除临时图层、样式修改和 Blob URL。"
+                : $"Restored the original Codex background on {cleanedPages} app page(s). Temporary layers, style changes and Blob URLs were removed.");
         });
     }
 
@@ -934,7 +942,7 @@ public partial class MainWindow : Window
     {
         return new WallpaperSettings
         {
-            Fit = FitCombo.SelectedItem is WallpaperFit fit ? fit : WallpaperFit.Cover,
+            Fit = FitCombo.SelectedItem is WallpaperFitOption fit ? fit.Value : WallpaperFit.Cover,
             FocusX = FocusXSlider.Value,
             FocusY = FocusYSlider.Value,
             Opacity = OpacitySlider.Value / 100,
@@ -957,7 +965,8 @@ public partial class MainWindow : Window
 
     private void LoadSettings(WallpaperSettings settings)
     {
-        FitCombo.SelectedItem = settings.Fit;
+        FitCombo.SelectedItem = FitCombo.Items.Cast<WallpaperFitOption>()
+            .FirstOrDefault(item => item.Value == settings.Fit);
         FocusXSlider.Value = settings.FocusX;
         FocusYSlider.Value = settings.FocusY;
         OpacitySlider.Value = settings.Opacity * 100;
@@ -1056,7 +1065,7 @@ public partial class MainWindow : Window
                 try
                 {
                     await _injection.ConnectAsync(_state.CdpBaseUrl, cancellationToken);
-                    ConnectButton.Content = "Reconnect Codex";
+                    ConnectButton.Content = UiLanguage.Text("Reconnect Codex");
                 }
                 catch
                 {
@@ -1102,7 +1111,8 @@ public partial class MainWindow : Window
 
     private void ShowCompleteWallpaper_Click(object sender, RoutedEventArgs e)
     {
-        FitCombo.SelectedItem = WallpaperFit.Contain;
+        FitCombo.SelectedItem = FitCombo.Items.Cast<WallpaperFitOption>()
+            .First(item => item.Value == WallpaperFit.Contain);
         FocusXSlider.Value = 50;
         FocusYSlider.Value = 50;
         UpdateSettingLabels();
@@ -1140,20 +1150,12 @@ public partial class MainWindow : Window
                 SetStatus("Operation cancelled.");
             }
         }
-        catch (CodexAlreadyRunningWithoutCdpException exception)
+        catch (CodexAlreadyRunningWithoutCdpException)
         {
             UploadProgress.Visibility = Visibility.Collapsed;
             if (!_closeRequested)
             {
-                if (_state.PendingActivation && AutoRestoreService.ResolveLastWallpaper(_state) is not null)
-                {
-                    try { DeferredRestoreLauncher.EnsureRunning(); } catch { }
-                    SetQueuedStatus();
-                }
-                else
-                {
-                    SetStatus(exception.Message);
-                }
+                SetManualReconnectStatus();
             }
         }
         catch (Exception exception)
@@ -1176,21 +1178,20 @@ public partial class MainWindow : Window
         }
     }
 
-    private void QueueDeferredRestore(WallpaperEntry wallpaper)
+    private void RememberPendingApply(WallpaperEntry wallpaper)
     {
         _state.Wallpapers = _wallpapers.ToList();
         _state.SelectedWallpaperId = wallpaper.Id;
         _state.PendingWallpaperId = wallpaper.Id;
         _state.PendingActivation = true;
         SaveState();
-        DeferredRestoreLauncher.EnsureRunning();
-        SetQueuedStatus();
+        DeferredRestoreLauncher.RequestStop();
+        SetManualReconnectStatus();
     }
 
-    private void SetQueuedStatus()
+    private void SetManualReconnectStatus()
     {
-        RestartApplyButton.Visibility = Visibility.Visible;
-        SetStatus("Queued — Codex is open without its startup-only wallpaper channel, so the current task was left untouched. Choose 'Restart Codex normally and apply now' for immediate use, or keep working: the background waiter will apply it after your next natural Codex exit. Enable Windows sign-in restore to prevent this on future restarts.");
+        SetStatus(UiLanguage.Text("Codex is already open without the wallpaper channel. Please close Codex manually, then click Start / reconnect Codex. The controller will never close Codex for you."));
     }
 
     private void WallpaperSearch_TextChanged(object sender, TextChangedEventArgs e)
@@ -1220,9 +1221,13 @@ public partial class MainWindow : Window
     {
         _wallpaperView.Refresh();
         var visible = _wallpaperView.Cast<object>().Count();
-        WallpaperLibrarySummary.Text = visible == _wallpapers.Count
-            ? $"{visible:N0} wallpaper{(visible == 1 ? string.Empty : "s")}"
-            : $"{visible:N0} of {_wallpapers.Count:N0}";
+        WallpaperLibrarySummary.Text = UiLanguage.IsChinese
+            ? visible == _wallpapers.Count
+                ? $"{visible:N0} 张壁纸"
+                : $"已显示 {visible:N0} / {_wallpapers.Count:N0}"
+            : visible == _wallpapers.Count
+                ? $"{visible:N0} wallpaper{(visible == 1 ? string.Empty : "s")}"
+                : $"{visible:N0} of {_wallpapers.Count:N0}";
     }
 
     private void RefreshCollectionFilter()
@@ -1230,8 +1235,8 @@ public partial class MainWindow : Window
         var previous = WallpaperCollectionFilter.SelectedItem as WallpaperCollectionFilterOption;
         var options = new List<WallpaperCollectionFilterOption>
         {
-            new("All collections", null),
-            new("Ungrouped", null, Ungrouped: true)
+            new(UiLanguage.Text("All collections"), null),
+            new(UiLanguage.Text("Ungrouped"), null, Ungrouped: true)
         };
         options.AddRange(_wallpapers
             .Select(item => item.Collection)
@@ -1416,6 +1421,7 @@ public partial class MainWindow : Window
 
     private void SetStatus(string text)
     {
+        text = UiLanguage.Text(text);
         StatusText.Text = string.IsNullOrWhiteSpace(_stateWarning)
             ? text
             : text + Environment.NewLine + "⚠ " + _stateWarning;
@@ -1464,8 +1470,8 @@ public partial class MainWindow : Window
                     _trayTipShown = true;
                     _trayIcon.ShowBalloonTip(
                         4000,
-                        "Codex Wallpaper Skin is still running",
-                        "The adjustment window is hidden, while the animated wallpaper continues. Double-click the tray icon to reopen it.",
+                        UiLanguage.Text("Codex Wallpaper Skin is still running"),
+                        UiLanguage.Text("The adjustment window is hidden, while the animated wallpaper continues. Double-click the tray icon to reopen it."),
                         System.Windows.Forms.ToolTipIcon.Info);
                 }
             }
@@ -1524,7 +1530,8 @@ public partial class MainWindow : Window
         }
         try
         {
-            await _injection.DisposeAsync();
+            var disposal = _injection.DisposeAsync().AsTask();
+            await disposal.WaitAsync(TimeSpan.FromSeconds(_exitSequenceRunning ? 2 : 8));
         }
         catch
         {
@@ -1551,12 +1558,18 @@ public partial class MainWindow : Window
 
     private void InitializeTrayIcon()
     {
+        var wasVisible = _trayIcon?.Visible == true;
+        if (_trayIcon is not null)
+        {
+            _trayIcon.Visible = false;
+            _trayIcon.Dispose();
+        }
         var menu = new System.Windows.Forms.ContextMenuStrip();
-        var openItem = new System.Windows.Forms.ToolStripMenuItem("Open adjustment window");
+        var openItem = new System.Windows.Forms.ToolStripMenuItem(UiLanguage.Text("Open adjustment window"));
         openItem.Click += (_, _) => Dispatcher.BeginInvoke(ShowFromTray);
-        var backgroundItem = new System.Windows.Forms.ToolStripMenuItem("Keep wallpaper running and hide this icon");
+        var backgroundItem = new System.Windows.Forms.ToolStripMenuItem(UiLanguage.Text("Keep wallpaper running and hide this icon"));
         backgroundItem.Click += (_, _) => Dispatcher.BeginInvoke(new Action(KeepRunningWithoutTray));
-        var exitItem = new System.Windows.Forms.ToolStripMenuItem("Restore Codex background and exit");
+        var exitItem = new System.Windows.Forms.ToolStripMenuItem(UiLanguage.Text("Remove wallpaper and exit"));
         exitItem.Click += (_, _) => Dispatcher.BeginInvoke(new Action(RestoreAndExitFromTray));
         menu.Items.Add(openItem);
         menu.Items.Add(backgroundItem);
@@ -1567,7 +1580,7 @@ public partial class MainWindow : Window
             Text = "Codex Wallpaper Skin",
             Icon = System.Drawing.SystemIcons.Application,
             ContextMenuStrip = menu,
-            Visible = false
+            Visible = wasVisible
         };
         _trayIcon.DoubleClick += (_, _) => Dispatcher.BeginInvoke(ShowFromTray);
     }
@@ -1615,8 +1628,8 @@ public partial class MainWindow : Window
         ShowFromTray();
         var choice = MessageBox.Show(
             this,
-            "This will restore the original Codex background, stop the live wallpaper stream, and exit the controller. Continue?",
-            "Restore and exit",
+            UiLanguage.Text("The controller will make one quick cleanup attempt, then exit even if Codex is already closed or unavailable."),
+            UiLanguage.Text("Remove wallpaper and exit?"),
             MessageBoxButton.YesNo,
             MessageBoxImage.Question,
             MessageBoxResult.No);
@@ -1624,13 +1637,7 @@ public partial class MainWindow : Window
 
         _exitSequenceRunning = true;
         RootGrid.IsEnabled = false;
-        SetStatus("Stopping the current operation, restoring Codex, and exiting…");
         _operationCancellation?.Cancel();
-        var stopDeadline = DateTimeOffset.UtcNow.AddSeconds(6);
-        while (_busy && DateTimeOffset.UtcNow < stopDeadline)
-        {
-            await Task.Delay(50);
-        }
 
         string? cleanupWarning = null;
         try
@@ -1647,8 +1654,12 @@ public partial class MainWindow : Window
                 // page process left to clean. Otherwise keep exit cleanup short.
                 if (!CdpEndpoint.IsAvailableForActivation(endpoint))
                 {
-                    using var cleanupTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+                    using var cleanupTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
                     await _injection.CleanupAllAsync(endpoint, cleanupTimeout.Token);
+                }
+                else
+                {
+                    cleanupWarning = UiLanguage.Text("No wallpaper was removed because Codex is already closed or its wallpaper channel is unavailable. The controller will exit now.");
                 }
             }
         }
@@ -1662,6 +1673,7 @@ public partial class MainWindow : Window
             _state.LastAppliedWallpaperId = null;
             _state.PendingWallpaperId = null;
             _state.PendingActivation = false;
+            _saveFailureShown = true;
             SaveState();
             DeferredRestoreLauncher.RequestStop();
             if (!string.IsNullOrWhiteSpace(cleanupWarning))

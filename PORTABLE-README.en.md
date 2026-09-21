@@ -6,11 +6,11 @@ This is a self-contained Windows 11 x64 companion. It needs no Python, PyYAML, o
 
 1. Subscribe to or select a wallpaper in Wallpaper Engine and let its local files finish downloading.
 2. Run `CodexWallpaperSkin.exe` and choose **Start / reconnect Codex**. Detection, controlled startup, and reconnection are automatic.
-3. If Codex is already running normally, select a wallpaper and choose **Apply selected**. The app queues it without terminating the active task. For immediate use, save or pause active work and choose **Restart Codex normally and apply now**; the app requests a normal shutdown and never force-terminates Codex.
+3. If Codex is already running normally, close Codex manually and then choose **Start / reconnect Codex**. The controller never closes or restarts Codex automatically.
 4. Choose **Scan Wallpaper Engine**, select the matching project, review automatic palette, blur, mute, and other controls, then choose **Apply selected**.
 5. Use **Restore Codex background** to remove this project's page layer. Restore does not close the CDP port; fully exit that Codex process to close it.
 
-The last successful Apply is remembered. Start or connect Codex through this controller whenever you want the wallpaper channel. If Codex is already running normally, save active work and use **Restart Codex normally and apply now**. This release safely removes the legacy `Codex with remembered wallpaper` desktop shortcut created by older builds and never changes the official Codex shortcut. Click any displayed setting value for exact numeric entry. **Restore Codex background** clears both remembered and queued state.
+The last successful Apply is remembered. Start or connect Codex through this controller whenever you want the wallpaper channel. If Codex is already running normally, close it manually and choose **Start / reconnect Codex**. This release safely removes the legacy `Codex with remembered wallpaper` desktop shortcut created by older builds and never changes the official Codex shortcut. The top language button switches between English and Chinese and remembers the choice. Click any displayed setting value for exact numeric entry. **Restore Codex background** clears both remembered and pending state.
 
 Use **Search**, the type filter, and the collection filter above the list to narrow a large library. After selecting a wallpaper, **Rename** changes only its display name in this app and **Set collection** creates personal groups such as Relaxing, Anime, Landscape, or Work. Rescanning preserves this organization and never renames Steam Workshop projects or local files.
 

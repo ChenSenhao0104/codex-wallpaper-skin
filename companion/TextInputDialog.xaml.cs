@@ -23,6 +23,7 @@ public partial class TextInputDialog : Window
         ValueTextBox.Text = currentValue;
         ValueTextBox.MaxLength = maximumLength;
         SecondaryButton.Content = secondaryButtonText;
+        UiLanguage.Apply(this);
         Loaded += (_, _) =>
         {
             ValueTextBox.Focus();
