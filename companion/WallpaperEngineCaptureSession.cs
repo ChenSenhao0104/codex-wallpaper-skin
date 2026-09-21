@@ -25,7 +25,8 @@ public sealed record NativeStreamMetrics(
     double ElapsedSeconds);
 
 /// <summary>
-/// Uses Wallpaper Engine itself as the renderer for Scene projects. Frames are
+/// Uses Wallpaper Engine itself as the renderer for Scene projects and large
+/// Wallpaper Engine videos. Frames are
 /// captured from a private off-screen play-in-window surface, while pointer
 /// coordinates received from the Codex page are forwarded to that surface.
 /// </summary>
@@ -133,7 +134,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     }
 
     public static bool CanUse(WallpaperEntry wallpaper) =>
-        wallpaper.IsWallpaperEngineScene
+        wallpaper.UsesWallpaperEngineCapture
         && !string.IsNullOrWhiteSpace(wallpaper.ProjectPath)
         && TryResolveEngine(wallpaper.ProjectPath, out _, out _);
 
@@ -156,9 +157,9 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(wallpaper);
         ArgumentNullException.ThrowIfNull(settings);
-        if (!wallpaper.IsWallpaperEngineScene || string.IsNullOrWhiteSpace(wallpaper.ProjectPath))
+        if (!wallpaper.UsesWallpaperEngineCapture || string.IsNullOrWhiteSpace(wallpaper.ProjectPath))
         {
-            throw new InvalidDataException("Wallpaper Engine capture requires a contained Scene project.");
+            throw new InvalidDataException("Wallpaper Engine capture requires a contained Scene or native-video project.");
         }
         if (!TryResolveEngine(wallpaper.ProjectPath, out var engineRoot, out var executable))
         {
@@ -170,6 +171,10 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         if (!projectInfo.Exists || (projectInfo.Attributes & FileAttributes.ReparsePoint) != 0)
         {
             throw new FileNotFoundException("The Wallpaper Engine project.json is unavailable or unsafe.", projectPath);
+        }
+        if (wallpaper.Kind == WallpaperKind.Video)
+        {
+            WallpaperCatalog.ValidateNativeWallpaperEngineVideo(wallpaper);
         }
 
         var (width, height) = CalculateCaptureSize(

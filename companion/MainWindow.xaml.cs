@@ -14,7 +14,6 @@ namespace CodexWallpaperSkin;
 public partial class MainWindow : Window
 {
     private const string StaleStartupWarning = "Windows sign-in restore points to another copy of this controller. Turn the sign-in restore option on to update it to this executable.";
-    private const string StaleDesktopLauncherWarning = "The wallpaper-aware desktop shortcut points to another copy of this controller. Turn its option on to update it to this executable.";
     private readonly ObservableCollection<WallpaperEntry> _wallpapers = [];
     private readonly ICollectionView _wallpaperView;
     private readonly Dictionary<string, WallpaperPersonalization> _libraryPersonalizations;
@@ -28,7 +27,6 @@ public partial class MainWindow : Window
     private bool _saveFailureShown;
     private string? _stateWarning;
     private bool _startupChangeGuard;
-    private bool _desktopLauncherChangeGuard;
     private string? _streamRecoveryWallpaperId;
     private int _streamRecoveryAttempts;
     private System.Windows.Forms.NotifyIcon? _trayIcon;
@@ -96,22 +94,6 @@ public partial class MainWindow : Window
         {
             StartupRestoreCheck.IsChecked = false;
         }
-        try
-        {
-            var launcherStatus = DesktopCodexLauncher.GetStatus();
-            DesktopLauncherCheck.IsChecked = launcherStatus == DesktopLauncherStatus.CurrentExecutable;
-            if (launcherStatus == DesktopLauncherStatus.StaleExecutable)
-            {
-                _stateWarning = string.IsNullOrWhiteSpace(_stateWarning)
-                    ? StaleDesktopLauncherWarning
-                    : _stateWarning + Environment.NewLine + StaleDesktopLauncherWarning;
-            }
-        }
-        catch
-        {
-            DesktopLauncherCheck.IsChecked = false;
-        }
-
         var selected = _wallpapers.FirstOrDefault(item => item.Id == _state.SelectedWallpaperId);
         if (selected is not null)
         {
@@ -418,6 +400,10 @@ public partial class MainWindow : Window
             var previousEntries = _wallpapers
                 .Where(item => item.Source.Equals("Wallpaper Engine", StringComparison.OrdinalIgnoreCase))
                 .ToDictionary(item => item.Id, StringComparer.OrdinalIgnoreCase);
+            var foundIds = found.Select(item => item.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var added = found.Count(item => !previousEntries.ContainsKey(item.Id));
+            var removed = previousEntries.Keys.Count(id => !foundIds.Contains(id));
+            var updated = found.Length - added;
             foreach (var existing in previousEntries.Values)
             {
                 _wallpapers.Remove(existing);
@@ -431,15 +417,28 @@ public partial class MainWindow : Window
                 WallpaperLibraryStore.Apply(entry, _libraryPersonalizations);
                 Upsert(entry);
             }
+            var allIds = _wallpapers.Select(item => item.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (_state.SelectedWallpaperId is not null && !allIds.Contains(_state.SelectedWallpaperId))
+                _state.SelectedWallpaperId = null;
+            if (_state.LastAppliedWallpaperId is not null && !allIds.Contains(_state.LastAppliedWallpaperId))
+                _state.LastAppliedWallpaperId = null;
+            if (_state.PendingWallpaperId is not null && !allIds.Contains(_state.PendingWallpaperId))
+            {
+                _state.PendingWallpaperId = null;
+                _state.PendingActivation = false;
+            }
             RefreshCollectionFilter();
             RefreshWallpaperView();
             SaveState();
-            var direct = found.Count(item => item.Support == WallpaperSupport.Direct);
+            var nativeVideo = found.Count(item => item.Kind == WallpaperKind.Video && item.PreferNativeCapture);
+            var direct = found.Count(item => item.Support == WallpaperSupport.Direct && !item.PreferNativeCapture);
             var liveScene = found.Count(item => item.Support == WallpaperSupport.LiveScene);
             var animatedPreview = found.Count(item => item.Support == WallpaperSupport.AnimatedPreview);
             var fallback = found.Count(item => item.Support == WallpaperSupport.StaticPreview);
             var rejected = found.Count(item => item.Support == WallpaperSupport.Rejected);
-            SetStatus($"Wallpaper Engine scan: {direct} direct, {liveScene} live 2D scene, {animatedPreview} animated preview, {fallback} static preview, {rejected} rejected.");
+            SetStatus($"Wallpaper Engine scan synchronized current downloaded subscriptions: {added} added, {updated} updated, {removed} removed. "
+                + $"Available modes: {direct} direct, {nativeVideo} native large-video, {liveScene} native/live Scene, "
+                + $"{animatedPreview} animated preview, {fallback} static preview, {rejected} rejected.");
         });
     }
 
@@ -883,45 +882,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private void DesktopLauncherChanged(object sender, RoutedEventArgs e)
-    {
-        if (_loading || _desktopLauncherChangeGuard)
-        {
-            return;
-        }
-        var enabled = DesktopLauncherCheck.IsChecked == true;
-        try
-        {
-            if (enabled)
-            {
-                DesktopCodexLauncher.InstallOrUpdate();
-                if (!string.IsNullOrWhiteSpace(_stateWarning))
-                {
-                    var remainingWarnings = _stateWarning
-                        .Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries)
-                        .Where(line => !line.Equals(StaleDesktopLauncherWarning, StringComparison.Ordinal))
-                        .ToArray();
-                    _stateWarning = remainingWarnings.Length == 0
-                        ? null
-                        : string.Join(Environment.NewLine, remainingWarnings);
-                }
-                SetStatus("Desktop launcher installed. Open ‘Codex with remembered wallpaper’ next time; keep this portable folder in its current location.");
-            }
-            else
-            {
-                DesktopCodexLauncher.Remove();
-                SetStatus("The wallpaper-aware desktop launcher was removed. The official Codex shortcut was not changed.");
-            }
-        }
-        catch (Exception exception)
-        {
-            _desktopLauncherChangeGuard = true;
-            DesktopLauncherCheck.IsChecked = !enabled;
-            _desktopLauncherChangeGuard = false;
-            ShowError("The wallpaper-aware desktop launcher could not be changed: " + exception.Message);
-        }
-    }
-
     private void SettingsChanged(object sender, RoutedEventArgs e)
     {
         if (_loading || !IsLoaded)
@@ -1044,20 +1004,21 @@ public partial class MainWindow : Window
         SetStatus("Original media color/clarity restored. Interface palette and panel opacity were left unchanged.");
     }
 
-    private void BrighterFidelity_Click(object sender, RoutedEventArgs e)
+    private async void BrighterFidelity_Click(object sender, RoutedEventArgs e)
     {
+        var preset = _state.VisualPreset.Normalize();
         var wasLoading = _loading;
         _loading = true;
         try
         {
-            OpacitySlider.Value = 100;
-            OverlaySlider.Value = 0;
-            BrightnessSlider.Value = 106;
-            ContrastSlider.Value = 102;
-            SaturationSlider.Value = 103;
-            BlurSlider.Value = 0;
-            SceneScaleSlider.Value = 100;
-            PanelOpacitySlider.Value = 55;
+            OpacitySlider.Value = preset.Opacity * 100;
+            OverlaySlider.Value = preset.BlackOverlay * 100;
+            BrightnessSlider.Value = preset.Brightness * 100;
+            ContrastSlider.Value = preset.Contrast * 100;
+            SaturationSlider.Value = preset.Saturation * 100;
+            BlurSlider.Value = preset.Blur;
+            SceneScaleSlider.Value = preset.SceneResolutionScale * 100;
+            PanelOpacitySlider.Value = preset.PanelOpacity * 100;
         }
         finally
         {
@@ -1066,8 +1027,45 @@ public partial class MainWindow : Window
         UpdateSettingLabels();
         _state.Settings = ReadSettings();
         _settingsTimer.Stop();
-        _settingsTimer.Start();
-        SetStatus("Brighter high-clarity preset selected: full capture scale, neutral veil/blur, mild display compensation and less panel dimming. You can fine-tune every value below.");
+        SaveState();
+
+        await RunBusyAsync(async cancellationToken =>
+        {
+            if (!_injection.IsConnected
+                && CdpEndpoint.IsLoopbackHttp(_state.CdpBaseUrl)
+                && !CdpEndpoint.IsAvailableForActivation(_state.CdpBaseUrl))
+            {
+                try
+                {
+                    await _injection.ConnectAsync(_state.CdpBaseUrl, cancellationToken);
+                    ConnectButton.Content = "Reconnect";
+                }
+                catch
+                {
+                    // The preset remains saved and will be applied by the next
+                    // successful Apply. Do not misreport it as live.
+                }
+            }
+
+            if (_injection.IsConnected)
+            {
+                await _injection.UpdateSettingsAsync(_state.Settings, cancellationToken);
+                SetStatus("Visual preset applied to Codex now. The capture-scale value takes full effect on the next wallpaper Apply; every control remains editable.");
+            }
+            else
+            {
+                SetStatus("Visual preset saved but not applied: this window is not connected to the current Codex wallpaper channel. It will be used on the next successful Apply.");
+            }
+        });
+    }
+
+    private void VisualPresetSettings_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new VisualPresetDialog(_state.VisualPreset) { Owner = this };
+        if (dialog.ShowDialog() != true) return;
+        _state.VisualPreset = dialog.Preset.Normalize();
+        SaveState();
+        SetStatus("Custom visual preset saved. Click ‘Brighter high-clarity preset’ to apply it; the right-side controls remain editable afterward.");
     }
 
     private void ShowCompleteWallpaper_Click(object sender, RoutedEventArgs e)
@@ -1575,19 +1573,54 @@ public partial class MainWindow : Window
             MessageBoxResult.No);
         if (choice != MessageBoxResult.Yes) return;
 
-        var restored = false;
+        var exitReady = false;
+        string? cleanupWarning = null;
         await RunBusyAsync(async cancellationToken =>
         {
-            SyncConnectionState();
-            await _injection.CleanupAllAsync(_state.CdpBaseUrl, cancellationToken);
-            _state.LastAppliedWallpaperId = null;
-            _state.PendingWallpaperId = null;
-            _state.PendingActivation = false;
-            SaveState();
-            DeferredRestoreLauncher.RequestStop();
-            restored = true;
+            try
+            {
+                var endpoint = EndpointTextBox.Text.Trim();
+                if (CdpEndpoint.IsLoopbackHttp(endpoint))
+                {
+                    _state.CdpBaseUrl = endpoint;
+                    // If the port is free, Codex has already closed and its
+                    // injected page layer no longer exists. That is already a
+                    // successful page cleanup, not a reason to block exit.
+                    if (!CdpEndpoint.IsAvailableForActivation(endpoint))
+                    {
+                        await _injection.CleanupAllAsync(endpoint, cancellationToken);
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                cleanupWarning = "The page cleanup was cancelled; local renderer resources will still be released while exiting.";
+            }
+            catch (Exception exception)
+            {
+                cleanupWarning = "Codex was unavailable for page cleanup; local renderer resources will still be released while exiting ("
+                    + exception.Message + ").";
+            }
+            finally
+            {
+                _state.LastAppliedWallpaperId = null;
+                _state.PendingWallpaperId = null;
+                _state.PendingActivation = false;
+                SaveState();
+                DeferredRestoreLauncher.RequestStop();
+                exitReady = true;
+            }
         });
-        if (!restored) return;
+        if (!exitReady) return;
+        if (!string.IsNullOrWhiteSpace(cleanupWarning))
+        {
+            MessageBox.Show(
+                this,
+                cleanupWarning + "\n\nThe controller will now exit.",
+                "Restore and exit",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
         _allowExit = true;
         _closeRequested = true;
         Close();

@@ -264,7 +264,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
         Exception? nativeCaptureFailure = null;
         try
         {
-            if (wallpaper.IsWallpaperEngineScene)
+            if (wallpaper.UsesWallpaperEngineCapture)
             {
                 if (WallpaperEngineCaptureSession.CanUse(wallpaper))
                 {
@@ -305,7 +305,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
                                         Warning = "Rendered by Wallpaper Engine, encoded by the Windows hardware H.264 encoder, and decoded by Codex WebCodecs on one persistent surface. "
                                             + "Compressed frames are coalesced into bounded control batches because Codex blocks additional local media ports. "
                                             + (session.ConfiguredWallpaperEngineFrameRateLimit is int engineFps && engineFps < settings.SceneFrameRate
-                                                ? $"Wallpaper Engine currently limits Scene rendering to {engineFps} FPS, below this app's {settings.SceneFrameRate} FPS target. "
+                                                ? $"Wallpaper Engine currently limits rendering to {engineFps} FPS, below this app's {settings.SceneFrameRate} FPS target. "
                                                 : string.Empty)
                                             + "Closing the adjustment window keeps the controller running in the notification area."
                                     };
@@ -453,7 +453,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
                     };
                 }
                 throw new InvalidOperationException(
-                    "Native Wallpaper Engine rendering failed and this Scene has no safe fallback.",
+                    "Native Wallpaper Engine rendering failed and this wallpaper has no safe fallback.",
                     nativeCaptureFailure);
             }
 

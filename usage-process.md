@@ -8,7 +8,7 @@
 2. 点击 **Detect app** 检测官方 Codex。
 3. 点击 **Activate with CDP**，等待 Codex 打开，然后点击 **Connect**。
 4. 如果 Codex 已普通启动且当前不能退出，直接选择壁纸并点击 **Apply selected**；软件会排队等待你日后自然关闭，不会中断任务。
-5. 点击 **Scan Wallpaper Engine**，选择 `[IMAGE]`、`[VIDEO]` 或 `[WE LIVE SCENE]` 壁纸。
+5. 点击 **Scan Wallpaper Engine**，选择 `[IMAGE]`、`[VIDEO]`、`[WE NATIVE VIDEO]` 或 `[WE LIVE SCENE]` 壁纸。
 6. 检查自动配色、模糊、静音和隐藏暂停等参数，点击 **Apply selected**。
 7. 不再使用时点击 **Restore Codex background**；若还要关闭 CDP 端口，请完全退出该 Codex 进程。
 
@@ -74,12 +74,14 @@ Windows 无法把 Chromium 调试参数动态补到已经运行的进程，因�
 
 1. 在 Wallpaper Engine 中订阅或选择喜欢的壁纸，等待本地文件下载完成。
 2. 回到 Codex Wallpaper Skin，点击 **Scan Wallpaper Engine**。
+   扫描会以 Steam 当前“已订阅且已下载”的清单为准；取消订阅后遗留在磁盘上的旧目录会从列表移除，**Add local** 加入的项目不受影响。
 3. 在左侧列表找到对应项目并查看类型标签：
 
    | 标签 | 行为 |
    |---|---|
    | `[IMAGE]` | 将项目的本地图片独立加载到 Codex。 |
    | `[VIDEO]` | 将本地 MP4/WebM 独立加载并循环播放。 |
+   | `[WE NATIVE VIDEO]` | 由 Wallpaper Engine 播放大型视频，再经 WGC/硬件 H.264 链路显示，避免把整个文件上传到 Codex。 |
    | `[WE LIVE SCENE]` | 优先由 Wallpaper Engine 原生渲染，并桥接动画和鼠标交互。 |
    | `[ANIMATED PREVIEW]` | Scene/Web 的包或原始媒体不可用时，使用经过验证的 GIF 预览。 |
    | `[STATIC FALLBACK]` | 使用经过验证的静态预览。 |
@@ -99,7 +101,14 @@ Image/Video 项目直接使用已经下载到本机的素材。Scene 项目会�
 
 选择后同样点击 **Apply selected**。
 
-Video 项目在 256 MiB 安全上限内会直接使用原始 MP4/WebM；超过上限才会按可用预览安全降级。扫描过旧版本目录后，请用当前版本重新点击 **Scan Wallpaper Engine**，让已有条目重新识别。
+Video 项目在 256 MiB 安全上限内会直接使用原始 MP4/WebM；更大的 Wallpaper Engine 视频会改走 `[WE NATIVE VIDEO]` 原生窗口捕获路径。只有该路径也不可用时才会按可用预览安全降级。扫描过旧版本目录后，请用当前版本重新点击 **Scan Wallpaper Engine**，让已有条目重新识别。
+
+### 一键预设与自定义预设
+
+- **Brighter high-clarity preset** 会立即套用当前保存的一键预设；首次使用时是软件内置的高亮清晰度数值。
+- **Preset settings…** 可修改并保存这组一键预设，包括亮度、对比度、饱和度、面板透明度、遮罩、模糊和 Scene 捕获比例。
+- 套用预设后，右侧每一项仍可继续手动微调。手动微调只影响当前参数，不会反向覆盖保存的预设；需要改变以后的一键效果时再进入 **Preset settings…** 保存。
+- 若当前已经连接 Codex，点击一键预设会立即应用；若未连接，状态栏会明确提示“已保存、尚未应用”，并在下一次成功 Apply 时生效。
 
 ### 整理、重命名和查找壁纸
 

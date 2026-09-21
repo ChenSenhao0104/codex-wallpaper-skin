@@ -48,6 +48,7 @@ public sealed class WallpaperEntry
     public WallpaperKind Kind { get; set; }
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public WallpaperSupport Support { get; set; }
+    public bool PreferNativeCapture { get; set; }
     public string Note { get; set; } = string.Empty;
     // Personal catalog metadata is deliberately separate from the source title.
     // Rescanning a Workshop project can refresh its technical metadata without
@@ -69,7 +70,11 @@ public sealed class WallpaperEntry
     public bool IsWallpaperEngineScene => IsWallpaperEngineProject && Kind == WallpaperKind.Scene;
 
     [JsonIgnore]
-    public bool CanApply => IsWallpaperEngineScene
+    public bool UsesWallpaperEngineCapture => IsWallpaperEngineScene
+        || (IsWallpaperEngineProject && Kind == WallpaperKind.Video && PreferNativeCapture);
+
+    [JsonIgnore]
+    public bool CanApply => UsesWallpaperEngineCapture
         || (Support != WallpaperSupport.Rejected && !string.IsNullOrWhiteSpace(EffectivePath));
 
     [JsonIgnore]
@@ -91,7 +96,8 @@ public sealed class WallpaperEntry
     {
         get
         {
-            var badge = IsWallpaperEngineScene ? "WE SCENE" : Support switch
+            var badge = IsWallpaperEngineScene ? "WE SCENE"
+                : UsesWallpaperEngineCapture ? "WE NATIVE VIDEO" : Support switch
             {
                 WallpaperSupport.Direct => Kind == WallpaperKind.Video ? "VIDEO" : "IMAGE",
                 WallpaperSupport.LiveScene => "WE LIVE SCENE",
@@ -102,6 +108,33 @@ public sealed class WallpaperEntry
             var collection = string.IsNullOrWhiteSpace(Collection) ? string.Empty : $"[{Collection}] ";
             return $"{collection}{DisplayTitle}  [{badge}]";
         }
+    }
+}
+
+public sealed class VisualPresetSettings
+{
+    public double Opacity { get; set; } = 1;
+    public double BlackOverlay { get; set; }
+    public double Brightness { get; set; } = 1.12;
+    public double Contrast { get; set; } = 1.04;
+    public double Saturation { get; set; } = 1.06;
+    public double PanelOpacity { get; set; } = 0.45;
+    public double Blur { get; set; }
+    public double SceneResolutionScale { get; set; } = 1;
+
+    public static VisualPresetSettings BuiltIn() => new();
+
+    public VisualPresetSettings Normalize()
+    {
+        Opacity = Math.Clamp(Opacity, 0, 1);
+        BlackOverlay = Math.Clamp(BlackOverlay, 0, 0.8);
+        Brightness = Math.Clamp(Brightness, 0.5, 1.5);
+        Contrast = Math.Clamp(Contrast, 0.5, 1.5);
+        Saturation = Math.Clamp(Saturation, 0, 2);
+        PanelOpacity = Math.Clamp(PanelOpacity, 0.2, 0.95);
+        Blur = Math.Clamp(Blur, 0, 30);
+        SceneResolutionScale = Math.Clamp(SceneResolutionScale, 0.5, 1);
+        return this;
     }
 }
 
@@ -158,7 +191,7 @@ public sealed class PaletteResult
 
 public sealed class AppState
 {
-    public const int CurrentSchema = 6;
+    public const int CurrentSchema = 7;
     public int SchemaVersion { get; set; } = CurrentSchema;
     public string CdpBaseUrl { get; set; } = CdpEndpoint.CreateUnusedLoopbackUrl();
     public string? Aumid { get; set; }
@@ -170,6 +203,7 @@ public sealed class AppState
     public bool AutoRestoreOnLaunch { get; set; } = true;
     public List<WallpaperEntry> Wallpapers { get; set; } = [];
     public WallpaperSettings Settings { get; set; } = new();
+    public VisualPresetSettings VisualPreset { get; set; } = VisualPresetSettings.BuiltIn();
 
     // Preview branches may add schema-6 queue metadata independently. Preserve
     // fields this branch does not interpret so alternating builds cannot erase

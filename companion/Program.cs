@@ -12,6 +12,14 @@ public static class Program
     [STAThread]
     public static int Main(string[] args)
     {
+        if (args.Length == 0
+            || args.Any(value => value.Equals(LegacyDesktopLauncherCleanup.LegacyArgument, StringComparison.OrdinalIgnoreCase)))
+        {
+            LegacyDesktopLauncherCleanup.TryRemove();
+        }
+        args = args
+            .Where(value => !value.Equals(LegacyDesktopLauncherCleanup.LegacyArgument, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
         if (args.Length > 0)
         {
             ConsoleBridge.Attach();
@@ -95,6 +103,19 @@ public static class Program
                 }
                 Console.WriteLine($"Self-test: {result.Passed} passed, {result.Failed} failed.");
                 return result.Success ? 0 : 1;
+            }
+
+            var catalogSmokeIndex = Array.FindIndex(args,
+                value => value.Equals("--catalog-scan-smoke-test", StringComparison.OrdinalIgnoreCase));
+            if (catalogSmokeIndex >= 0)
+            {
+                if (catalogSmokeIndex + 1 >= args.Length)
+                    throw new ArgumentException("--catalog-scan-smoke-test requires a Wallpaper Engine workshop root.");
+                var entries = WallpaperCatalog.ScanWorkshopRoot(args[catalogSmokeIndex + 1])
+                    .Select(item => new { item.Id, item.Title, item.Kind, item.Support, item.PreferNativeCapture })
+                    .ToArray();
+                Console.WriteLine(JsonSerializer.Serialize(entries, new JsonSerializerOptions { WriteIndented = true }));
+                return 0;
             }
 
             if (args.Contains("--wgc-smoke-test", StringComparer.OrdinalIgnoreCase))
@@ -348,6 +369,11 @@ public static class Program
                 if (weH264TestIndex + 1 >= args.Length)
                     throw new ArgumentException("--we-h264-smoke-test requires a project.json path.");
                 var wallpaper = WallpaperCatalog.ParseProject(args[weH264TestIndex + 1]);
+                // The smoke command intentionally exercises the native
+                // play-in-window pipeline even for a small video that normal
+                // product routing would play directly in Codex.
+                if (wallpaper.IsWallpaperEngineProject && wallpaper.Kind == WallpaperKind.Video)
+                    wallpaper.PreferNativeCapture = true;
                 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(35));
                 await using var session = await WallpaperEngineCaptureSession.StartAsync(
                     wallpaper,
@@ -429,12 +455,7 @@ public static class Program
                 return await DeferredRestoreLauncher.RunAsync();
             }
 
-            if (args.Contains(DesktopCodexLauncher.LaunchArgument, StringComparer.OrdinalIgnoreCase))
-            {
-                return await RememberedWallpaperLauncher.RunAsync();
-            }
-
-            Console.Error.WriteLine("Usage: CodexWallpaperSkin [--doctor [--json] | --restore | --auto-restore | --wait-and-restore | --launch-remembered-wallpaper | --self-test | --browser-media-probe | --h264-encoder-probe | --h264-encode-probe | --h264-browser-smoke-test <project.json> | --h264-switch-smoke-test <project1.json> <project2.json> <project3.json> | --wgc-smoke-test | --we-capture-smoke-test <project.json> | --we-capture-soak-test <project.json> | --we-h264-smoke-test <project.json>]");
+            Console.Error.WriteLine("Usage: CodexWallpaperSkin [--doctor [--json] | --restore | --auto-restore | --wait-and-restore | --self-test | --catalog-scan-smoke-test <workshop-root> | --browser-media-probe | --h264-encoder-probe | --h264-encode-probe | --h264-browser-smoke-test <project.json> | --h264-switch-smoke-test <project1.json> <project2.json> <project3.json> | --wgc-smoke-test | --we-capture-smoke-test <project.json> | --we-capture-soak-test <project.json> | --we-h264-smoke-test <project.json>]");
             return 64;
         }
         catch (Exception exception)

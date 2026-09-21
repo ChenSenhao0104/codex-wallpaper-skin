@@ -12,6 +12,7 @@ public static class WallpaperCatalog
     // ceiling, but allow the original H.264 files used by Wallpaper Engine so
     // they are not silently replaced by a low-resolution thumbnail/GIF.
     public const long MaximumVideoBytes = 256L * 1024 * 1024;
+    public const long MaximumNativeVideoBytes = 8L * 1024 * 1024 * 1024;
     public const int MaximumImageDimension = 8192;
     public const long MaximumImagePixels = 33_554_432;
     private const long MaximumProjectJsonBytes = 1024 * 1024;
@@ -199,7 +200,14 @@ public static class WallpaperCatalog
         foreach (var fullRoot in fullRoots)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            foreach (var projectPath in EnumerateProjectFilesSafe(fullRoot, budget, cancellationToken))
+            var projectPaths = TryGetOfficialWorkshopManifest(fullRoot, out var manifestPath)
+                ? EnumerateDownloadedSubscriptionProjects(
+                    fullRoot,
+                    SteamWorkshopManifest.ReadDownloadedSubscriptions(manifestPath),
+                    budget,
+                    cancellationToken)
+                : EnumerateProjectFilesSafe(fullRoot, budget, cancellationToken);
+            foreach (var projectPath in projectPaths)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 try
@@ -223,6 +231,47 @@ public static class WallpaperCatalog
         }
 
         return results.OrderBy(item => item.Title, StringComparer.CurrentCultureIgnoreCase).ToArray();
+    }
+
+    private static bool TryGetOfficialWorkshopManifest(string root, out string manifestPath)
+    {
+        manifestPath = string.Empty;
+        var directory = new DirectoryInfo(Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar));
+        if (!directory.Name.Equals("431960", StringComparison.OrdinalIgnoreCase)
+            || directory.Parent?.Name.Equals("content", StringComparison.OrdinalIgnoreCase) != true
+            || directory.Parent.Parent?.Name.Equals("workshop", StringComparison.OrdinalIgnoreCase) != true)
+        {
+            return false;
+        }
+        manifestPath = Path.Combine(directory.Parent.Parent.FullName, "appworkshop_431960.acf");
+        if (!File.Exists(manifestPath))
+        {
+            throw new FileNotFoundException(
+                "Steam's Wallpaper Engine subscription manifest is unavailable. The existing catalog was left unchanged.",
+                manifestPath);
+        }
+        return true;
+    }
+
+    private static IEnumerable<string> EnumerateDownloadedSubscriptionProjects(
+        string root,
+        IReadOnlySet<string> eligibleIds,
+        CatalogScanBudget budget,
+        CancellationToken cancellationToken)
+    {
+        foreach (var id in eligibleIds.Order(StringComparer.Ordinal))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var directory = Path.Combine(root, id);
+            if (!Directory.Exists(directory)) continue;
+            var info = new DirectoryInfo(directory);
+            if ((info.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+            budget.AddDirectory(directory);
+            var project = Path.Combine(directory, "project.json");
+            if (!File.Exists(project)) continue;
+            budget.AddProject();
+            yield return project;
+        }
     }
 
     public static WallpaperEntry ParseProject(string projectPath)
@@ -283,6 +332,7 @@ public static class WallpaperCatalog
         }
 
         WallpaperSupport support;
+        var preferNativeCapture = false;
         string note;
         switch (kind)
         {
@@ -297,10 +347,14 @@ public static class WallpaperCatalog
                         : "No supported image or preview was found.";
                 break;
             case WallpaperKind.Video:
-                support = IsValidMedia(mediaPath, VideoExtensions, isVideo: true)
+                var directVideo = IsValidMedia(mediaPath, VideoExtensions, isVideo: true);
+                preferNativeCapture = !directVideo && IsValidNativeVideo(mediaPath);
+                support = directVideo || preferNativeCapture
                     ? WallpaperSupport.Direct
                     : PreviewSupportFor(previewPath);
-                note = support == WallpaperSupport.Direct
+                note = preferNativeCapture
+                    ? "Large Wallpaper Engine video will use native play-in-window capture without uploading the whole file into Codex."
+                    : support == WallpaperSupport.Direct
                     ? "Wallpaper Engine video loaded directly."
                     : support is WallpaperSupport.StaticPreview or WallpaperSupport.AnimatedPreview
                         ? "Video source was unavailable; using its validated preview."
@@ -354,6 +408,7 @@ public static class WallpaperCatalog
             PreviewPath = previewPath,
             Kind = kind,
             Support = support,
+            PreferNativeCapture = preferNativeCapture,
             Note = note
         };
     }
@@ -424,6 +479,22 @@ public static class WallpaperCatalog
     }
 
     public static FileStream OpenValidatedMediaFile(string path, bool isVideo)
+        => OpenValidatedMediaFile(path, isVideo, isVideo ? MaximumVideoBytes : MaximumImageBytes);
+
+    public static void ValidateNativeWallpaperEngineVideo(WallpaperEntry wallpaper)
+    {
+        ArgumentNullException.ThrowIfNull(wallpaper);
+        if (!wallpaper.IsWallpaperEngineProject
+            || wallpaper.Kind != WallpaperKind.Video
+            || string.IsNullOrWhiteSpace(wallpaper.MediaPath))
+        {
+            throw new InvalidDataException("The selected item is not a contained Wallpaper Engine video.");
+        }
+        EnsureWallpaperEngineMediaStillContained(wallpaper.ProjectPath, wallpaper.MediaPath);
+        using var stream = OpenValidatedMediaFile(wallpaper.MediaPath, isVideo: true, MaximumNativeVideoBytes);
+    }
+
+    private static FileStream OpenValidatedMediaFile(string path, bool isVideo, long maximumBytes)
     {
         var fullPath = Path.GetFullPath(path);
         var file = new FileInfo(fullPath);
@@ -445,7 +516,7 @@ public static class WallpaperCatalog
         });
         try
         {
-            ValidateMediaStream(stream, file.Extension.ToLowerInvariant(), isVideo);
+            ValidateMediaStream(stream, file.Extension.ToLowerInvariant(), isVideo, maximumBytes);
             stream.Position = 0;
             return stream;
         }
@@ -456,9 +527,8 @@ public static class WallpaperCatalog
         }
     }
 
-    private static void ValidateMediaStream(Stream stream, string extension, bool isVideo)
+    private static void ValidateMediaStream(Stream stream, string extension, bool isVideo, long maximum)
     {
-        var maximum = isVideo ? MaximumVideoBytes : MaximumImageBytes;
         if (stream.Length <= 0 || stream.Length > maximum)
         {
             throw new InvalidDataException($"Wallpaper media must be between 1 byte and {maximum / (1024 * 1024)} MiB.");
@@ -491,6 +561,25 @@ public static class WallpaperCatalog
                 throw new InvalidDataException(
                     $"Wallpaper images are limited to {MaximumImageDimension:N0} pixels per side and {MaximumImagePixels:N0} total pixels; found {width:N0}×{height:N0}.");
             }
+        }
+    }
+
+    internal static bool ShouldUseNativeVideoCapture(long fileLength) =>
+        fileLength > MaximumVideoBytes && fileLength <= MaximumNativeVideoBytes;
+
+    private static bool IsValidNativeVideo(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return false;
+        try
+        {
+            var file = new FileInfo(path);
+            if (!ShouldUseNativeVideoCapture(file.Length)) return false;
+            using var stream = OpenValidatedMediaFile(path, isVideo: true, MaximumNativeVideoBytes);
+            return true;
+        }
+        catch
+        {
+            return false;
         }
     }
 

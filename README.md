@@ -2,7 +2,7 @@
 
 [English](README.en.md) | 简体中文
 
-一个独立运行的 Windows 11 x64 桌面程序，用本地图片、视频和已安装的 Wallpaper Engine 项目为 Codex Desktop 更换背景。当前 GUI 版本为 `0.3.0`，要求官方 x64 `OpenAI.Codex` Store/MSIX 桌面包。
+一个独立运行的 Windows 11 x64 桌面程序，用本地图片、视频和已安装的 Wallpaper Engine 项目为 Codex Desktop 更换背景。当前 GUI 版本为 `0.4.4`，要求官方 x64 `OpenAI.Codex` Store/MSIX 桌面包。
 
 程序通过仅绑定 `127.0.0.1` 的 Chrome DevTools Protocol（CDP），在真实 Codex 页面中添加可逆的背景层。Image/Video 由 Codex 独立加载；复杂 Scene 由本机 Wallpaper Engine 在隔离窗口中原生渲染后传给 Codex。程序不修改 `WindowsApps`、`app.asar`、官方签名、聊天内容或登录数据。
 
@@ -11,19 +11,19 @@
 ## GUI 当前能力
 
 - 加载 PNG、JPEG、WebP、GIF、MP4 和 WebM。
-- 扫描本机 Steam 库中的 Wallpaper Engine Image、Video、Scene 和 Web 项目。
-- Image/Video 使用项目中的原始本地媒体；直接视频安全上限为 256 MiB，避免把常见 2K/4K 视频误降级成方形预览或低清 GIF。
+- 扫描本机 Steam 当前仍订阅且已下载的 Wallpaper Engine Image、Video、Scene 和 Web 项目；重新扫描会移除已取消订阅的残留目录条目，但不影响 **Add local** 壁纸。
+- Image/Video 使用项目中的原始本地媒体；不超过 256 MiB 的视频直接传给 Codex，较大的 Wallpaper Engine 视频改由官方 `playInWindow` 播放并走原生捕获链路，避免整文件上传和巨额内存副本。
 - Scene 优先通过本机已安装的 Wallpaper Engine 官方 `playInWindow` 后端渲染，再把离屏画面与 Codex 鼠标坐标安全桥接；Puppet Warp、粒子、作者脚本、水面反馈和音频响应因此保持原生语义。
 - 官方高保真后端不可用时才使用受限内置 2D 渲染器，并明确提示兼容性降级；最终还可安全回退到包内原始纹理或经过验证的 Workshop 预览。
 - Web 项目不执行网页代码，只允许使用安全的 GIF 或静态预览；Application 项目始终拒绝。
 - 一次性 32×32 取色可协调半透明面板、强调色和继承文字；代码、终端、警告和状态色保持原样。
-- 可调填充、焦点、不透明度、黑色遮罩、亮度、对比度、饱和度、取色强度、面板透明度、文字协调、模糊、动画速度、Scene FPS 和渲染比例；点击参数右侧数字可精确输入。
+- 可调填充、焦点、不透明度、黑色遮罩、亮度、对比度、饱和度、取色强度、面板透明度、文字协调、模糊、动画速度、Scene FPS 和渲染比例；点击参数右侧数字可精确输入。内置高亮清晰度一键预设，也可通过 **Preset settings…** 保存用户自己的预设；应用后所有参数仍能继续微调。
 - 记住最后一次成功应用的壁纸；调节器下次打开、重新 Connect 或 Windows 登录时可自动恢复。若 Codex 已普通启动，软件会排队等待用户自然关闭，不中断当前任务。点击 **Restore Codex background** 会同时清除记忆与等待队列。
 - 提供个人收藏夹、技术类型筛选、即时搜索和仅限本软件的重命名；重新扫描不会清除整理结果，也不会改动工坊文件。
 - 如果用户先普通启动了 Codex，可在保存工作后使用 **Restart Codex normally and apply now** 一次完成正常关闭、带控制通道重开和壁纸应用；超时绝不强制结束进程，原等待队列继续保留。
 - 媒体解码成功后原子切换；失败保留旧背景；支持隐藏暂停、异常清理和 **Restore Codex background** 一键恢复。
 
-复杂或可交互的 Scene 不再由本项目猜测其私有格式，而由 Wallpaper Engine 自身渲染。Codex 中的鼠标移动与按压会映射到私有渲染窗口，因此水波、视差等交互仍由原壁纸实现。此模式要求 Wallpaper Engine 已安装并在播放期间保持后台运行；调节器关闭时会把会话交给隐藏恢复进程。内置 2D 渲染器只作为明确标注的兼容后备。
+复杂 Scene 不再由本项目猜测其私有格式，而由 Wallpaper Engine 自身渲染。此模式要求 Wallpaper Engine 已安装并在播放期间保持后台运行；关闭窗口会隐藏到托盘并继续播放，使用托盘中的 **Restore Codex background and exit** 才会恢复并彻底退出。当前 H.264 路径为稳定性不复刻鼠标互动；内置 2D 渲染器只作为明确标注的兼容后备。
 
 ## 快速开始
 
@@ -45,6 +45,7 @@
 |---|---|
 | `[IMAGE]` | 独立加载项目原始图片。 |
 | `[VIDEO]` | 独立循环播放项目 MP4/WebM。 |
+| `[WE NATIVE VIDEO]` | 由 Wallpaper Engine 播放大型 MP4/WebM，再经原生捕获与硬件 H.264 链路显示。 |
 | `[WE LIVE SCENE]` | 优先由 Wallpaper Engine 原生渲染并桥接动画/鼠标交互；失败时明确降级。 |
 | `[ANIMATED PREVIEW]` | 包不可用时使用经过验证的 GIF 预览。 |
 | `[STATIC FALLBACK]` | 使用安全静态预览。 |

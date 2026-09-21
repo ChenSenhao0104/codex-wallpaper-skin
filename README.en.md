@@ -2,7 +2,7 @@
 
 English | [简体中文](README.md)
 
-An independent Windows 11 x64 desktop application that adds local images, videos, and installed Wallpaper Engine projects as Codex Desktop backgrounds. The current GUI release is `0.3.0` and requires the official x64 `OpenAI.Codex` Store/MSIX package.
+An independent Windows 11 x64 desktop application that adds local images, videos, and installed Wallpaper Engine projects as Codex Desktop backgrounds. The current GUI release is `0.4.4` and requires the official x64 `OpenAI.Codex` Store/MSIX package.
 
 The application uses a loopback-only Chrome DevTools Protocol (CDP) session to add a reversible background layer to the real Codex page. Codex loads Image/Video media independently; complex Scene projects are rendered natively by a private local Wallpaper Engine window and transferred to Codex. The application does not patch `WindowsApps`, `app.asar`, the official signature, chats, or authentication data.
 
@@ -11,8 +11,8 @@ The application uses a loopback-only Chrome DevTools Protocol (CDP) session to a
 ## Current GUI capabilities
 
 - PNG, JPEG, WebP, GIF, MP4, and WebM media.
-- Discovery of Wallpaper Engine Image, Video, Scene, and Web projects across local Steam libraries.
-- Original local media for Image and Video projects. The direct-video safety limit is 256 MiB so common 2K/4K videos are not incorrectly replaced with square thumbnails or low-resolution GIFs.
+- Discovery of currently subscribed and downloaded Wallpaper Engine Image, Video, Scene, and Web projects across local Steam libraries. A rescan removes unsubscribed stale Workshop folders without affecting **Add local** entries.
+- Original local media for Image and Video projects. Videos up to 256 MiB play directly in Codex; larger Wallpaper Engine videos use official `playInWindow` rendering and the native capture path instead of uploading the whole file.
 - Scene projects prefer Wallpaper Engine's official `playInWindow` renderer and bridge its off-screen output plus Codex pointer coordinates. Puppet Warp, particles, author scripts, feedback effects, and audio response therefore keep their native semantics.
 - If the native renderer is unavailable, the bounded built-in 2D renderer is used with an explicit compatibility warning, followed by an original package texture or validated Workshop preview when necessary.
 - Web code is never executed; only validated animated/static previews are allowed. Application projects are always rejected.
@@ -45,6 +45,7 @@ After the first successful Apply, the controller remembers that wallpaper. Windo
 |---|---|
 | `[IMAGE]` | Loads the project's original image independently. |
 | `[VIDEO]` | Loops the project's MP4/WebM independently. |
+| `[WE NATIVE VIDEO]` | Lets Wallpaper Engine play a large MP4/WebM and presents it through native capture and hardware H.264. |
 | `[WE LIVE SCENE]` | Uses native Wallpaper Engine rendering and bridges animation/pointer interaction, with an explicit fallback if unavailable. |
 | `[ANIMATED PREVIEW]` | Uses a validated GIF preview if the package is unavailable. |
 | `[STATIC FALLBACK]` | Uses a validated static preview. |

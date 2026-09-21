@@ -86,12 +86,71 @@ public static class SelfTests
             Equal(30, settings.SceneFrameRate);
             Equal(0.5d, settings.SceneResolutionScale);
         });
-        Check("wallpaper-aware desktop launcher contract", () =>
+        Check("visual preset normalization", () =>
         {
-            True(DesktopCodexLauncher.IsExpectedLaunchArgument("--launch-remembered-wallpaper"));
-            True(DesktopCodexLauncher.IsExpectedLaunchArgument("  --LAUNCH-REMEMBERED-WALLPAPER  "));
-            True(!DesktopCodexLauncher.IsExpectedLaunchArgument("--wait-and-restore"));
-            Equal("Codex with remembered wallpaper.lnk", DesktopCodexLauncher.FileName);
+            var preset = new VisualPresetSettings
+            {
+                Opacity = 2,
+                BlackOverlay = -1,
+                Brightness = 4,
+                Contrast = 0,
+                Saturation = 5,
+                PanelOpacity = .1,
+                Blur = 80,
+                SceneResolutionScale = .1
+            }.Normalize();
+            Equal(1d, preset.Opacity);
+            Equal(0d, preset.BlackOverlay);
+            Equal(1.5d, preset.Brightness);
+            Equal(.5d, preset.Contrast);
+            Equal(2d, preset.Saturation);
+            Equal(.2d, preset.PanelOpacity);
+            Equal(30d, preset.Blur);
+            Equal(.5d, preset.SceneResolutionScale);
+            Equal("--launch-remembered-wallpaper", LegacyDesktopLauncherCleanup.LegacyArgument);
+        });
+        Check("Steam workshop scan intersects subscribed and downloaded items", () =>
+        {
+            const string manifest = """
+                "AppWorkshop"
+                {
+                    "appid" "431960"
+                    "WorkshopItemsInstalled"
+                    {
+                        "3596725214" { "size" "968600" }
+                        "3718972568" { "size" "3426784" }
+                    }
+                    "WorkshopItemDetails"
+                    {
+                        "3718972568" { "manifest" "3257423810985589306" }
+                        "9999999999" { "manifest" "not-downloaded" }
+                    }
+                }
+                """;
+            var eligible = SteamWorkshopManifest.ParseDownloadedSubscriptions(manifest);
+            Equal(1, eligible.Count);
+            True(eligible.Contains("3718972568"));
+            True(!eligible.Contains("3596725214"));
+            True(!eligible.Contains("9999999999"));
+        });
+        Check("large Wallpaper Engine videos use bounded native capture", () =>
+        {
+            True(!WallpaperCatalog.ShouldUseNativeVideoCapture(WallpaperCatalog.MaximumVideoBytes));
+            True(WallpaperCatalog.ShouldUseNativeVideoCapture(WallpaperCatalog.MaximumVideoBytes + 1));
+            True(WallpaperCatalog.ShouldUseNativeVideoCapture(379_737_294));
+            True(!WallpaperCatalog.ShouldUseNativeVideoCapture(WallpaperCatalog.MaximumNativeVideoBytes + 1));
+            var entry = new WallpaperEntry
+            {
+                Source = "Wallpaper Engine",
+                ProjectPath = "C:\\workshop\\3507712876\\project.json",
+                MediaPath = "C:\\workshop\\3507712876\\wallpaper.mp4",
+                Kind = WallpaperKind.Video,
+                Support = WallpaperSupport.Direct,
+                PreferNativeCapture = true
+            };
+            True(entry.UsesWallpaperEngineCapture);
+            True(entry.CanApply);
+            True(entry.DisplayLabel.Contains("WE NATIVE VIDEO", StringComparison.Ordinal));
         });
         Check("BGRA to NV12 conversion is bounded and deterministic", () =>
         {

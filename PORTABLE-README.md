@@ -12,11 +12,11 @@
 4. 点击 **Scan Wallpaper Engine**，选择列表中的同名项目，确认自动配色、模糊、静音等参数，然后点击 **Apply selected**。
 5. 点击 **Restore Codex background** 可移除本项目的页面层。恢复不会关闭 CDP 端口；完全退出该 Codex 进程才会关闭端口。
 
-成功 Apply 后会记住最后一张壁纸。勾选 **Install ‘Codex with remembered wallpaper’ on the Desktop** 后，桌面会新增一个独立入口；以后从该入口打开 Codex，会先准备启动时壁纸通道、自动恢复上一次壁纸，并在后台维持动态播放，无需先打开调节窗口。官方 Codex 图标不会被替换，因为 Chromium 不能在进程已经启动后补加这条通道；若误先用官方图标打开，再点击新入口，软件会询问是否正常关闭并重开，绝不会强制结束进程。建议同时启用 Windows 登录恢复。移动便携版文件夹后，应重新勾选一次以更新桌面入口。点击参数右侧数字可输入精确值。**Restore Codex background** 会清除已记住的壁纸与等待队列。
+成功 Apply 后会记住最后一张壁纸。以后需要使用壁纸时请从本调节器启动或连接 Codex；若 Codex 已普通启动，可保存工作后使用 **Restart Codex normally and apply now**。旧版创建的 `Codex with remembered wallpaper` 桌面快捷方式会在本版首次启动时安全清除，官方 Codex 图标不受影响。点击参数右侧数字可输入精确值。**Restore Codex background** 会清除已记住的壁纸与等待队列。
 
 列表上方的 **Search**、类型和收藏夹筛选可快速缩小结果。选择壁纸后，**Rename** 只修改本软件中的显示名称，**Set collection** 可建立“治愈”“动漫”“风景”等个人收藏夹；重新扫描不会丢失这些整理信息，也不会改动 Steam 或本地素材。
 
-Image/Video 项目直接使用已安装的原始素材（视频安全上限 256 MiB）。Scene 项目优先由 Wallpaper Engine 自身在私有离屏窗口中渲染；该窗口保持可捕获，但不会出现在任务栏或 Alt+Tab，也不会抢占焦点。Wallpaper Engine 需保持后台可用。为保证稳定性，当前 H.264 路径不复刻鼠标互动。原生后端不可用时才明确降级到受限内置渲染器或安全预览。Web 项目只使用安全预览，Application 项目永不执行。
+Image 与不超过 256 MiB 的 Video 项目直接使用已安装的原始素材；更大的 Wallpaper Engine Video 和 Scene 项目由 Wallpaper Engine 在私有离屏窗口中播放，再走原生捕获链路。该窗口不会出现在任务栏或 Alt+Tab，也不会抢占焦点。Wallpaper Engine 需保持后台可用。为保证稳定性，当前 H.264 路径不复刻鼠标互动。原生后端不可用时才明确降级到受限内置渲染器或安全预览。Web 项目只使用安全预览，Application 项目永不执行。
 
 ## 命令行与校验
 
@@ -31,6 +31,6 @@ Get-FileHash ..\CodexWallpaperSkin-win-x64.zip -Algorithm SHA256
 
 将最后一条结果与 Release 页面旁的 `.sha256` 文件比较。不要全局关闭 PowerShell 执行策略或 Windows 安全功能。
 
-动态视频和 Scene 会增加解码、Windows Graphics Capture/D3D11 抓取、GPU、CPU 与电池消耗；Scene 以 60 FPS 为目标，在性能不足或 Wallpaper Engine 全局限制较低时降到 30 FPS 或实际限制，WGC/硬件 H.264 不可用时会明确回退兼容抓取。**Brighter high-clarity preset** 会启用完整捕获比例、移除遮罩与模糊、降低面板压暗并作轻微显示补偿；它无法消除 H.264 4:2:0 相对 Wallpaper Engine 直接桌面合成的全部差距。静态图、`0` 模糊、较低 Scene 比例和隐藏时暂停最省资源。画面只经本机受控通道传入 Codex 渲染器内存，不会由本软件发往互联网；但同一 Windows 用户下的其他进程也可能访问未认证的 CDP 端口，请只在可信环境中使用。
+动态视频和 Scene 会增加解码、Windows Graphics Capture/D3D11 抓取、GPU、CPU 与电池消耗；Scene 以 60 FPS 为目标，在性能不足或 Wallpaper Engine 全局限制较低时降到 30 FPS 或实际限制，WGC/硬件 H.264 不可用时会明确回退兼容抓取。**Brighter high-clarity preset** 是一键应用按钮；旁边的 **Preset settings…** 可保存用户自定义数值，应用后右侧参数仍可继续微调。它无法消除 H.264 4:2:0 相对 Wallpaper Engine 直接桌面合成的全部差距。静态图、`0` 模糊、较低 Scene 比例和隐藏时暂停最省资源。画面只经本机受控通道传入 Codex 渲染器内存，不会由本软件发往互联网；但同一 Windows 用户下的其他进程也可能访问未认证的 CDP 端口，请只在可信环境中使用。
 
 本项目不附带 Wallpaper Engine 素材。你必须拥有 Wallpaper Engine，并遵守壁纸作者的许可。安全问题请按随包 `SECURITY.md` 的私密报告流程处理。

@@ -69,6 +69,8 @@ public static class StateStore
         ValidateStateForSave(state);
         state.Settings ??= new WallpaperSettings();
         state.Settings.Normalize();
+        state.VisualPreset ??= VisualPresetSettings.BuiltIn();
+        state.VisualPreset.Normalize();
         state.SchemaVersion = AppState.CurrentSchema;
         var json = JsonSerializer.Serialize(state, JsonOptions);
         if (Encoding.UTF8.GetByteCount(json) > MaximumStateBytes)
@@ -93,6 +95,8 @@ public static class StateStore
     {
         state.Settings ??= new WallpaperSettings();
         state.Settings.Normalize();
+        state.VisualPreset ??= VisualPresetSettings.BuiltIn();
+        state.VisualPreset.Normalize();
         state.Wallpapers ??= [];
         state.Wallpapers = state.Wallpapers
             .Where(item => item is not null && !string.IsNullOrWhiteSpace(item.Id) && item.Id.Length <= 2048)
@@ -163,6 +167,11 @@ public static class StateStore
             // Schema 6 is shared with the sibling preview branch. Its optional
             // queue metadata is retained through AppState.JsonExtensionData.
             state.SchemaVersion = 6;
+        }
+        if (state.SchemaVersion < 7)
+        {
+            state.VisualPreset ??= VisualPresetSettings.BuiltIn();
+            state.SchemaVersion = 7;
         }
     }
 
