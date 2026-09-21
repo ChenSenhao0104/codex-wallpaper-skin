@@ -2,7 +2,7 @@
 
 English | [简体中文](README.md)
 
-An independent Windows 11 x64 desktop application that adds local images, videos, and installed Wallpaper Engine projects as Codex Desktop backgrounds. The current GUI release is `0.4.4` and requires the official x64 `OpenAI.Codex` Store/MSIX package.
+An independent Windows 11 x64 desktop application that adds local images, videos, and installed Wallpaper Engine projects as Codex Desktop backgrounds. The current GUI release is `0.4.5` and requires the official x64 `OpenAI.Codex` Store/MSIX package.
 
 The application uses a loopback-only Chrome DevTools Protocol (CDP) session to add a reversible background layer to the real Codex page. Codex loads Image/Video media independently; complex Scene projects are rendered natively by a private local Wallpaper Engine window and transferred to Codex. The application does not patch `WindowsApps`, `app.asar`, the official signature, chats, or authentication data.
 
@@ -17,7 +17,7 @@ The application uses a loopback-only Chrome DevTools Protocol (CDP) session to a
 - If the native renderer is unavailable, the bounded built-in 2D renderer is used with an explicit compatibility warning, followed by an original package texture or validated Workshop preview when necessary.
 - Web code is never executed; only validated animated/static previews are allowed. Application projects are always rejected.
 - One-time 32×32 palette sampling for translucent surfaces, accents, and inherited interface text while code, terminal, warning, and status colors remain intact.
-- Fit, focal point, opacity, readability veil, brightness, contrast, saturation, palette strength, panel opacity, inherited-text coordination, blur, animation speed, Scene FPS, and Scene render-scale controls. Click a displayed numeric value for exact entry.
+- Fit, focal point, opacity, readability veil, brightness, contrast, saturation, palette strength, panel opacity, inherited-text coordination, blur, animation speed, Scene FPS, and Scene render-scale controls. Click a displayed numeric value for exact entry. Create, name, edit, and delete multiple visual presets for wallpapers with different brightness and color; every value remains editable after applying one.
 - Remembers the last successfully applied wallpaper and restores it on reconnect or Windows sign-in. If Codex is already running normally, restoration is queued until the user closes it naturally, without interrupting the active task.
 - Personal collections, technical-type filters, instant search, and app-only renaming. Rescanning preserves the organization and never renames Workshop or local files.
 - When Codex was started normally first, **Restart Codex normally and apply now** requests an orderly close and completes the controlled restart after explicit confirmation. It never force-terminates Codex; on timeout the queued wallpaper remains safe.

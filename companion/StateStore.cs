@@ -8,6 +8,7 @@ public static class StateStore
 {
     private const long MaximumStateBytes = 4L * 1024 * 1024;
     private const int MaximumSavedWallpapers = 5_000;
+    private const int MaximumVisualPresets = 32;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
@@ -69,8 +70,7 @@ public static class StateStore
         ValidateStateForSave(state);
         state.Settings ??= new WallpaperSettings();
         state.Settings.Normalize();
-        state.VisualPreset ??= VisualPresetSettings.BuiltIn();
-        state.VisualPreset.Normalize();
+        NormalizeVisualPresets(state);
         state.SchemaVersion = AppState.CurrentSchema;
         var json = JsonSerializer.Serialize(state, JsonOptions);
         if (Encoding.UTF8.GetByteCount(json) > MaximumStateBytes)
@@ -91,12 +91,11 @@ public static class StateStore
         }
     }
 
-    private static AppState NormalizeState(AppState state)
+    internal static AppState NormalizeState(AppState state)
     {
         state.Settings ??= new WallpaperSettings();
         state.Settings.Normalize();
-        state.VisualPreset ??= VisualPresetSettings.BuiltIn();
-        state.VisualPreset.Normalize();
+        NormalizeVisualPresets(state);
         state.Wallpapers ??= [];
         state.Wallpapers = state.Wallpapers
             .Where(item => item is not null && !string.IsNullOrWhiteSpace(item.Id) && item.Id.Length <= 2048)
@@ -133,7 +132,7 @@ public static class StateStore
         return state;
     }
 
-    private static void MigrateState(AppState state)
+    internal static void MigrateState(AppState state)
     {
         if (state.SchemaVersion < 3)
         {
@@ -173,6 +172,43 @@ public static class StateStore
             state.VisualPreset ??= VisualPresetSettings.BuiltIn();
             state.SchemaVersion = 7;
         }
+        if (state.SchemaVersion < 8)
+        {
+            var migrated = state.VisualPreset ?? VisualPresetSettings.BuiltIn();
+            state.VisualPresets =
+            [
+                new VisualPresetProfile
+                {
+                    Id = VisualPresetProfile.DefaultId,
+                    Name = "Brighter high-clarity",
+                    Settings = migrated
+                }
+            ];
+            state.SelectedVisualPresetId = VisualPresetProfile.DefaultId;
+            state.SchemaVersion = 8;
+        }
+    }
+
+    private static void NormalizeVisualPresets(AppState state)
+    {
+        state.VisualPresets ??= [];
+        var identifiers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        state.VisualPresets = state.VisualPresets
+            .Where(item => item is not null)
+            .Take(MaximumVisualPresets)
+            .Select(item => item.Normalize())
+            .Where(item => identifiers.Add(item.Id))
+            .ToList();
+        if (state.VisualPresets.Count == 0)
+        {
+            state.VisualPresets.Add(VisualPresetProfile.BuiltIn());
+        }
+        if (string.IsNullOrWhiteSpace(state.SelectedVisualPresetId)
+            || !state.VisualPresets.Any(item => item.Id.Equals(state.SelectedVisualPresetId, StringComparison.OrdinalIgnoreCase)))
+        {
+            state.SelectedVisualPresetId = state.VisualPresets[0].Id;
+        }
+        state.VisualPreset = null;
     }
 
     private static string Limit(string? value, int maximumLength, string fallback)
@@ -209,6 +245,22 @@ public static class StateStore
             || state.PendingWallpaperId is { Length: > 2048 })
         {
             throw new InvalidDataException("A saved identifier or path exceeds its safety limit.");
+        }
+        if (state.VisualPresets is null || state.VisualPresets.Count is < 1 or > MaximumVisualPresets)
+        {
+            throw new InvalidDataException($"The visual preset library must contain between 1 and {MaximumVisualPresets} presets.");
+        }
+        var presetIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var preset in state.VisualPresets)
+        {
+            if (preset is null
+                || string.IsNullOrWhiteSpace(preset.Id) || preset.Id.Length > 64
+                || string.IsNullOrWhiteSpace(preset.Name) || preset.Name.Length > 64
+                || preset.Settings is null
+                || !presetIds.Add(preset.Id))
+            {
+                throw new InvalidDataException("The visual preset library contains invalid or duplicate entries.");
+            }
         }
 
         var identifiers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

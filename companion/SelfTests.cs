@@ -109,6 +109,38 @@ public static class SelfTests
             Equal(.5d, preset.SceneResolutionScale);
             Equal("--launch-remembered-wallpaper", LegacyDesktopLauncherCleanup.LegacyArgument);
         });
+        Check("named visual preset library migration", () =>
+        {
+            var legacy = new AppState
+            {
+                SchemaVersion = 7,
+                VisualPreset = new VisualPresetSettings
+                {
+                    Brightness = 1.23,
+                    Contrast = 1.08,
+                    Saturation = 1.17
+                },
+                VisualPresets = []
+            };
+            StateStore.MigrateState(legacy);
+            StateStore.NormalizeState(legacy);
+            Equal(AppState.CurrentSchema, legacy.SchemaVersion);
+            Equal(1, legacy.VisualPresets.Count);
+            Equal("Brighter high-clarity", legacy.VisualPresets[0].Name);
+            Equal(1.23d, legacy.VisualPresets[0].Settings.Brightness);
+            Equal(VisualPresetProfile.DefaultId, legacy.SelectedVisualPresetId);
+            True(legacy.VisualPreset is null);
+
+            legacy.VisualPresets.Add(new VisualPresetProfile
+            {
+                Name = "Dark wallpaper",
+                Settings = new VisualPresetSettings { Brightness = .88, Saturation = .92 }
+            });
+            StateStore.ValidateStateForSave(legacy);
+
+            legacy.VisualPresets[1].Id = legacy.VisualPresets[0].Id.ToUpperInvariant();
+            Throws<InvalidDataException>(() => StateStore.ValidateStateForSave(legacy));
+        });
         Check("Steam workshop scan intersects subscribed and downloaded items", () =>
         {
             const string manifest = """

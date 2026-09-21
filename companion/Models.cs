@@ -138,6 +138,48 @@ public sealed class VisualPresetSettings
     }
 }
 
+public sealed class VisualPresetProfile
+{
+    public const string DefaultId = "brighter-high-clarity";
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string Name { get; set; } = "Visual preset";
+    public VisualPresetSettings Settings { get; set; } = VisualPresetSettings.BuiltIn();
+
+    public static VisualPresetProfile BuiltIn() => new()
+    {
+        Id = DefaultId,
+        Name = "Brighter high-clarity",
+        Settings = VisualPresetSettings.BuiltIn()
+    };
+
+    public VisualPresetProfile Normalize()
+    {
+        Id = string.IsNullOrWhiteSpace(Id) || Id.Length > 64 ? Guid.NewGuid().ToString("N") : Id.Trim();
+        Name = string.IsNullOrWhiteSpace(Name) ? "Visual preset" : Name.Trim();
+        if (Name.Length > 64) Name = Name[..64];
+        Settings ??= VisualPresetSettings.BuiltIn();
+        Settings.Normalize();
+        return this;
+    }
+
+    public VisualPresetProfile Copy() => new()
+    {
+        Id = Id,
+        Name = Name,
+        Settings = new VisualPresetSettings
+        {
+            Opacity = Settings.Opacity,
+            BlackOverlay = Settings.BlackOverlay,
+            Brightness = Settings.Brightness,
+            Contrast = Settings.Contrast,
+            Saturation = Settings.Saturation,
+            PanelOpacity = Settings.PanelOpacity,
+            Blur = Settings.Blur,
+            SceneResolutionScale = Settings.SceneResolutionScale
+        }
+    };
+}
+
 public sealed class WallpaperSettings
 {
     [JsonConverter(typeof(JsonStringEnumConverter))]
@@ -191,7 +233,7 @@ public sealed class PaletteResult
 
 public sealed class AppState
 {
-    public const int CurrentSchema = 7;
+    public const int CurrentSchema = 8;
     public int SchemaVersion { get; set; } = CurrentSchema;
     public string CdpBaseUrl { get; set; } = CdpEndpoint.CreateUnusedLoopbackUrl();
     public string? Aumid { get; set; }
@@ -203,7 +245,12 @@ public sealed class AppState
     public bool AutoRestoreOnLaunch { get; set; } = true;
     public List<WallpaperEntry> Wallpapers { get; set; } = [];
     public WallpaperSettings Settings { get; set; } = new();
-    public VisualPresetSettings VisualPreset { get; set; } = VisualPresetSettings.BuiltIn();
+    // Schema 7 stored one unnamed preset here. Schema 8 migrates it into the
+    // named preset library and then writes this compatibility field as null.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public VisualPresetSettings? VisualPreset { get; set; } = VisualPresetSettings.BuiltIn();
+    public List<VisualPresetProfile> VisualPresets { get; set; } = [VisualPresetProfile.BuiltIn()];
+    public string? SelectedVisualPresetId { get; set; } = VisualPresetProfile.DefaultId;
 
     // Preview branches may add schema-6 queue metadata independently. Preserve
     // fields this branch does not interpret so alternating builds cannot erase

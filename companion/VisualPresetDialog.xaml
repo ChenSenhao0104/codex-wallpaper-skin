@@ -1,8 +1,8 @@
 <Window x:Class="CodexWallpaperSkin.VisualPresetDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Visual preset settings" Height="560" Width="470"
-        MinHeight="520" ResizeMode="NoResize" WindowStartupLocation="CenterOwner"
+        Title="Manage visual presets" Height="680" Width="560"
+        MinHeight="620" MinWidth="520" WindowStartupLocation="CenterOwner"
         ShowInTaskbar="False" Background="#111318" Foreground="#F2F4F8">
     <Window.Resources>
         <Style TargetType="TextBox">
@@ -10,7 +10,18 @@
             <Setter Property="Background" Value="#0E1116"/>
             <Setter Property="Foreground" Value="White"/>
             <Setter Property="BorderBrush" Value="#596579"/>
-            <Setter Property="Width" Value="110"/>
+        </Style>
+        <Style TargetType="ComboBox">
+            <Setter Property="Padding" Value="8,6"/>
+            <Setter Property="Background" Value="#0E1116"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderBrush" Value="#596579"/>
+            <Setter Property="MinHeight" Value="34"/>
+        </Style>
+        <Style TargetType="ComboBoxItem">
+            <Setter Property="Padding" Value="8,6"/>
+            <Setter Property="Background" Value="#0E1116"/>
+            <Setter Property="Foreground" Value="White"/>
         </Style>
         <Style TargetType="Button">
             <Setter Property="Padding" Value="14,7"/>
@@ -23,58 +34,91 @@
     <Grid Margin="20">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
+
         <TextBlock TextWrapping="Wrap" Foreground="#B9D4FF"
-                   Text="These values are applied by the one-click high-clarity preset. They remain fully editable in the main window after the preset is applied."/>
-        <Grid Grid.Row="1" Margin="0,16,0,16">
+                   Text="Create named presets for wallpapers with different brightness and colors. Applying a preset never prevents later manual adjustment."/>
+
+        <Grid Grid.Row="1" Margin="0,16,0,10">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="44"/>
+                <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-            </Grid.RowDefinitions>
-            <TextBlock Grid.Row="0" Text="Background opacity" VerticalAlignment="Center"/>
-            <TextBox x:Name="OpacityText" Grid.Row="0" Grid.Column="1"/>
-            <TextBlock Grid.Row="0" Grid.Column="2" Text="%" VerticalAlignment="Center" Margin="8,0,0,0"/>
-            <TextBlock Grid.Row="1" Text="Black readability overlay" VerticalAlignment="Center" Margin="0,10,0,0"/>
-            <TextBox x:Name="OverlayText" Grid.Row="1" Grid.Column="1" Margin="0,10,0,0"/>
-            <TextBlock Grid.Row="1" Grid.Column="2" Text="%" VerticalAlignment="Center" Margin="8,10,0,0"/>
-            <TextBlock Grid.Row="2" Text="Brightness" VerticalAlignment="Center" Margin="0,10,0,0"/>
-            <TextBox x:Name="BrightnessText" Grid.Row="2" Grid.Column="1" Margin="0,10,0,0"/>
-            <TextBlock Grid.Row="2" Grid.Column="2" Text="%" VerticalAlignment="Center" Margin="8,10,0,0"/>
-            <TextBlock Grid.Row="3" Text="Contrast" VerticalAlignment="Center" Margin="0,10,0,0"/>
-            <TextBox x:Name="ContrastText" Grid.Row="3" Grid.Column="1" Margin="0,10,0,0"/>
-            <TextBlock Grid.Row="3" Grid.Column="2" Text="%" VerticalAlignment="Center" Margin="8,10,0,0"/>
-            <TextBlock Grid.Row="4" Text="Saturation" VerticalAlignment="Center" Margin="0,10,0,0"/>
-            <TextBox x:Name="SaturationText" Grid.Row="4" Grid.Column="1" Margin="0,10,0,0"/>
-            <TextBlock Grid.Row="4" Grid.Column="2" Text="%" VerticalAlignment="Center" Margin="8,10,0,0"/>
-            <TextBlock Grid.Row="5" Text="Panel opacity" VerticalAlignment="Center" Margin="0,10,0,0"/>
-            <TextBox x:Name="PanelOpacityText" Grid.Row="5" Grid.Column="1" Margin="0,10,0,0"/>
-            <TextBlock Grid.Row="5" Grid.Column="2" Text="%" VerticalAlignment="Center" Margin="8,10,0,0"/>
-            <TextBlock Grid.Row="6" Text="Blur" VerticalAlignment="Center" Margin="0,10,0,0"/>
-            <TextBox x:Name="BlurText" Grid.Row="6" Grid.Column="1" Margin="0,10,0,0"/>
-            <TextBlock Grid.Row="6" Grid.Column="2" Text="px" VerticalAlignment="Center" Margin="8,10,0,0"/>
-            <TextBlock Grid.Row="7" Text="Scene capture scale" VerticalAlignment="Center" Margin="0,10,0,0"/>
-            <TextBox x:Name="SceneScaleText" Grid.Row="7" Grid.Column="1" Margin="0,10,0,0"/>
-            <TextBlock Grid.Row="7" Grid.Column="2" Text="%" VerticalAlignment="Center" Margin="8,10,0,0"/>
+            <ComboBox x:Name="PresetCombo" DisplayMemberPath="Name"
+                      SelectionChanged="PresetCombo_SelectionChanged"/>
+            <Button Grid.Column="1" Content="New" Click="NewPreset_Click" Background="#3B4351"/>
+            <Button Grid.Column="2" Content="Delete" Click="DeletePreset_Click" Background="#8B3540" Margin="8,0,0,0"/>
         </Grid>
-        <DockPanel Grid.Row="2">
-            <Button Content="Built-in defaults" Click="BuiltInDefaults_Click" Background="#3B4351" DockPanel.Dock="Left" Margin="0"/>
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+
+        <Grid Grid.Row="2" Margin="0,0,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="145"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="Preset name" VerticalAlignment="Center"/>
+            <TextBox x:Name="PresetNameText" Grid.Column="1" MaxLength="64"/>
+        </Grid>
+
+        <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto">
+            <Grid Margin="0,0,8,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="44"/>
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <TextBlock Grid.Row="0" Text="Background opacity" VerticalAlignment="Center"/>
+                <TextBox x:Name="OpacityText" Grid.Row="0" Grid.Column="1" Width="110"/>
+                <TextBlock Grid.Row="0" Grid.Column="2" Text="%" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                <TextBlock Grid.Row="1" Text="Black readability overlay" VerticalAlignment="Center" Margin="0,10,0,0"/>
+                <TextBox x:Name="OverlayText" Grid.Row="1" Grid.Column="1" Width="110" Margin="0,10,0,0"/>
+                <TextBlock Grid.Row="1" Grid.Column="2" Text="%" VerticalAlignment="Center" Margin="8,10,0,0"/>
+                <TextBlock Grid.Row="2" Text="Brightness" VerticalAlignment="Center" Margin="0,10,0,0"/>
+                <TextBox x:Name="BrightnessText" Grid.Row="2" Grid.Column="1" Width="110" Margin="0,10,0,0"/>
+                <TextBlock Grid.Row="2" Grid.Column="2" Text="%" VerticalAlignment="Center" Margin="8,10,0,0"/>
+                <TextBlock Grid.Row="3" Text="Contrast" VerticalAlignment="Center" Margin="0,10,0,0"/>
+                <TextBox x:Name="ContrastText" Grid.Row="3" Grid.Column="1" Width="110" Margin="0,10,0,0"/>
+                <TextBlock Grid.Row="3" Grid.Column="2" Text="%" VerticalAlignment="Center" Margin="8,10,0,0"/>
+                <TextBlock Grid.Row="4" Text="Saturation" VerticalAlignment="Center" Margin="0,10,0,0"/>
+                <TextBox x:Name="SaturationText" Grid.Row="4" Grid.Column="1" Width="110" Margin="0,10,0,0"/>
+                <TextBlock Grid.Row="4" Grid.Column="2" Text="%" VerticalAlignment="Center" Margin="8,10,0,0"/>
+                <TextBlock Grid.Row="5" Text="Panel opacity" VerticalAlignment="Center" Margin="0,10,0,0"/>
+                <TextBox x:Name="PanelOpacityText" Grid.Row="5" Grid.Column="1" Width="110" Margin="0,10,0,0"/>
+                <TextBlock Grid.Row="5" Grid.Column="2" Text="%" VerticalAlignment="Center" Margin="8,10,0,0"/>
+                <TextBlock Grid.Row="6" Text="Blur" VerticalAlignment="Center" Margin="0,10,0,0"/>
+                <TextBox x:Name="BlurText" Grid.Row="6" Grid.Column="1" Width="110" Margin="0,10,0,0"/>
+                <TextBlock Grid.Row="6" Grid.Column="2" Text="px" VerticalAlignment="Center" Margin="8,10,0,0"/>
+                <TextBlock Grid.Row="7" Text="Scene capture scale" VerticalAlignment="Center" Margin="0,10,0,0"/>
+                <TextBox x:Name="SceneScaleText" Grid.Row="7" Grid.Column="1" Width="110" Margin="0,10,0,0"/>
+                <TextBlock Grid.Row="7" Grid.Column="2" Text="%" VerticalAlignment="Center" Margin="8,10,0,0"/>
+            </Grid>
+        </ScrollViewer>
+
+        <Grid Grid.Row="4" Margin="0,16,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <Button Content="Restore built-in values" Click="BuiltInDefaults_Click"
+                    Background="#3B4351" HorizontalAlignment="Left" Margin="0"/>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
                 <Button Content="Cancel" Click="Cancel_Click" IsCancel="True" Background="#3B4351"/>
-                <Button Content="Save preset" Click="Save_Click" IsDefault="True"/>
+                <Button Content="Save preset library" Click="Save_Click" IsDefault="True"/>
             </StackPanel>
-        </DockPanel>
+        </Grid>
     </Grid>
 </Window>

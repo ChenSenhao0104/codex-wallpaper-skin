@@ -31,6 +31,6 @@ Get-FileHash ..\CodexWallpaperSkin-win-x64.zip -Algorithm SHA256
 
 将最后一条结果与 Release 页面旁的 `.sha256` 文件比较。不要全局关闭 PowerShell 执行策略或 Windows 安全功能。
 
-动态视频和 Scene 会增加解码、Windows Graphics Capture/D3D11 抓取、GPU、CPU 与电池消耗；Scene 以 60 FPS 为目标，在性能不足或 Wallpaper Engine 全局限制较低时降到 30 FPS 或实际限制，WGC/硬件 H.264 不可用时会明确回退兼容抓取。**Brighter high-clarity preset** 是一键应用按钮；旁边的 **Preset settings…** 可保存用户自定义数值，应用后右侧参数仍可继续微调。它无法消除 H.264 4:2:0 相对 Wallpaper Engine 直接桌面合成的全部差距。静态图、`0` 模糊、较低 Scene 比例和隐藏时暂停最省资源。画面只经本机受控通道传入 Codex 渲染器内存，不会由本软件发往互联网；但同一 Windows 用户下的其他进程也可能访问未认证的 CDP 端口，请只在可信环境中使用。
+动态视频和 Scene 会增加解码、Windows Graphics Capture/D3D11 抓取、GPU、CPU 与电池消耗；Scene 以 60 FPS 为目标，在性能不足或 Wallpaper Engine 全局限制较低时降到 30 FPS 或实际限制，WGC/硬件 H.264 不可用时会明确回退兼容抓取。可在 **Visual preset** 中选择多组命名方案，用 **Manage presets…** 创建和编辑，再用 **Apply preset** 套用；右侧参数仍可继续微调。预设无法消除 H.264 4:2:0 相对 Wallpaper Engine 直接桌面合成的全部差距。静态图、`0` 模糊、较低 Scene 比例和隐藏时暂停最省资源。画面只经本机受控通道传入 Codex 渲染器内存，不会由本软件发往互联网；但同一 Windows 用户下的其他进程也可能访问未认证的 CDP 端口，请只在可信环境中使用。
 
 本项目不附带 Wallpaper Engine 素材。你必须拥有 Wallpaper Engine，并遵守壁纸作者的许可。安全问题请按随包 `SECURITY.md` 的私密报告流程处理。

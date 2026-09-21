@@ -15,6 +15,7 @@ public partial class MainWindow : Window
 {
     private const string StaleStartupWarning = "Windows sign-in restore points to another copy of this controller. Turn the sign-in restore option on to update it to this executable.";
     private readonly ObservableCollection<WallpaperEntry> _wallpapers = [];
+    private readonly ObservableCollection<VisualPresetProfile> _visualPresets = [];
     private readonly ICollectionView _wallpaperView;
     private readonly Dictionary<string, WallpaperPersonalization> _libraryPersonalizations;
     private readonly CdpInjectionService _injection = new();
@@ -60,6 +61,10 @@ public partial class MainWindow : Window
         WallpaperTypeFilter.SelectedIndex = 0;
         FitCombo.ItemsSource = Enum.GetValues<WallpaperFit>();
         SceneFpsCombo.ItemsSource = new[] { 30, 60 };
+        foreach (var profile in _state.VisualPresets) _visualPresets.Add(profile);
+        VisualPresetCombo.ItemsSource = _visualPresets;
+        VisualPresetCombo.SelectedItem = _visualPresets.FirstOrDefault(item =>
+            item.Id.Equals(_state.SelectedVisualPresetId, StringComparison.OrdinalIgnoreCase)) ?? _visualPresets[0];
         EndpointTextBox.Text = _state.CdpBaseUrl;
         AumidTextBox.Text = _state.Aumid ?? string.Empty;
         foreach (var savedItem in _state.Wallpapers)
@@ -1004,9 +1009,10 @@ public partial class MainWindow : Window
         SetStatus("Original media color/clarity restored. Interface palette and panel opacity were left unchanged.");
     }
 
-    private async void BrighterFidelity_Click(object sender, RoutedEventArgs e)
+    private async void ApplyVisualPreset_Click(object sender, RoutedEventArgs e)
     {
-        var preset = _state.VisualPreset.Normalize();
+        var profile = VisualPresetCombo.SelectedItem as VisualPresetProfile ?? _visualPresets.First();
+        var preset = profile.Settings.Normalize();
         var wasLoading = _loading;
         _loading = true;
         try
@@ -1050,22 +1056,36 @@ public partial class MainWindow : Window
             if (_injection.IsConnected)
             {
                 await _injection.UpdateSettingsAsync(_state.Settings, cancellationToken);
-                SetStatus("Visual preset applied to Codex now. The capture-scale value takes full effect on the next wallpaper Apply; every control remains editable.");
+                SetStatus($"Visual preset ‘{profile.Name}’ applied to Codex now. The capture-scale value takes full effect on the next wallpaper Apply; every control remains editable.");
             }
             else
             {
-                SetStatus("Visual preset saved but not applied: this window is not connected to the current Codex wallpaper channel. It will be used on the next successful Apply.");
+                SetStatus($"Visual preset ‘{profile.Name}’ selected but not applied: this window is not connected to the current Codex wallpaper channel. Its values will be used on the next successful Apply.");
             }
         });
     }
 
+    private void VisualPreset_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loading || VisualPresetCombo.SelectedItem is not VisualPresetProfile profile) return;
+        _state.SelectedVisualPresetId = profile.Id;
+        SaveState();
+        SetStatus($"Visual preset ‘{profile.Name}’ selected. Click Apply preset to use it.");
+    }
+
     private void VisualPresetSettings_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new VisualPresetDialog(_state.VisualPreset) { Owner = this };
+        var dialog = new VisualPresetDialog(_visualPresets, _state.SelectedVisualPresetId) { Owner = this };
         if (dialog.ShowDialog() != true) return;
-        _state.VisualPreset = dialog.Preset.Normalize();
+        _visualPresets.Clear();
+        foreach (var profile in dialog.Profiles.Select(item => item.Copy().Normalize()))
+            _visualPresets.Add(profile);
+        _state.VisualPresets = _visualPresets.ToList();
+        _state.SelectedVisualPresetId = dialog.SelectedProfileId;
+        VisualPresetCombo.SelectedItem = _visualPresets.FirstOrDefault(item =>
+            item.Id.Equals(dialog.SelectedProfileId, StringComparison.OrdinalIgnoreCase)) ?? _visualPresets[0];
         SaveState();
-        SetStatus("Custom visual preset saved. Click ‘Brighter high-clarity preset’ to apply it; the right-side controls remain editable afterward.");
+        SetStatus($"Visual preset library saved ({_visualPresets.Count} presets). Select one and click Apply preset; every right-side control remains editable afterward.");
     }
 
     private void ShowCompleteWallpaper_Click(object sender, RoutedEventArgs e)
