@@ -124,7 +124,7 @@ public sealed class WallpaperSettings
     public double PlaybackRate { get; set; } = 1;
     public bool Muted { get; set; } = true;
     public bool PauseWhenHidden { get; set; } = true;
-    public int SceneFrameRate { get; set; } = 15;
+    public int SceneFrameRate { get; set; } = 60;
     public double SceneResolutionScale { get; set; } = 1;
 
     public WallpaperSettings Normalize()
@@ -140,7 +140,7 @@ public sealed class WallpaperSettings
         Contrast = Math.Clamp(Contrast, 0.5, 1.5);
         Saturation = Math.Clamp(Saturation, 0, 2);
         PlaybackRate = Math.Clamp(PlaybackRate, 0.25, 2);
-        SceneFrameRate = SceneFrameRate <= 10 ? 10 : 15;
+        SceneFrameRate = SceneFrameRate >= 60 ? 60 : 30;
         SceneResolutionScale = Math.Clamp(SceneResolutionScale, 0.5, 1);
         return this;
     }
@@ -198,5 +198,10 @@ public sealed class DiagnosticReport
     public List<string> AumidCandidates { get; set; } = [];
     public string? SavedWallpaper { get; set; }
     public bool SavedWallpaperExists { get; set; }
+    public int RequestedSceneFrameRate { get; set; }
+    public int? WallpaperEngineFrameRateLimit { get; set; }
+    public bool HardwareH264Available { get; set; }
+    public List<string> HardwareH264Encoders { get; set; } = [];
+    public string? HardwareH264ProbeError { get; set; }
     public List<string> Notes { get; set; } = [];
 }

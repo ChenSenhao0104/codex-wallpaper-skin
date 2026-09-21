@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Net.WebSockets;
 
 namespace CodexWallpaperSkin;
 
@@ -82,9 +83,20 @@ public static class SelfTests
             Equal(0.5d, settings.Contrast);
             Equal(2d, settings.Saturation);
             Equal(0.25d, settings.PlaybackRate);
-            Equal(15, settings.SceneFrameRate);
+            Equal(30, settings.SceneFrameRate);
             Equal(0.5d, settings.SceneResolutionScale);
         });
+        Check("BGRA to NV12 conversion is bounded and deterministic", () =>
+        {
+            var black = new byte[4 * 4 * 4];
+            for (var index = 3; index < black.Length; index += 4) black[index] = 255;
+            var nv12 = MediaFoundationH264Encoder.ConvertBgraToNv12(black, 4, 4, 16);
+            Equal(24, nv12.Length);
+            True(nv12.Take(16).All(value => value == 16));
+            True(nv12.Skip(16).All(value => value == 128));
+        });
+        Check("bounded loopback binary media protocol", () =>
+            TestLoopbackMediaProtocolAsync().GetAwaiter().GetResult());
         Check("private render window task-switcher style", () =>
         {
             const long ordinaryApplicationWindow = 0x00040000L;
@@ -456,7 +468,7 @@ public static class SelfTests
             True(!CdpInjectionService.BootstrapScript.Contains("body > :not", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("canvas.width = 32", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("cws-palette", StringComparison.Ordinal));
-            True(CdpInjectionService.BootstrapScript.Contains("existing.version === 15", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("existing.version === 17", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinBeginCapturedStream", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinSetCapturedFrame", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("decode-timeout", StringComparison.Ordinal));
@@ -489,6 +501,12 @@ public static class SelfTests
             True(CdpInjectionService.BootstrapScript.Contains("HTMLCanvasElement", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("capturePointer.buttons", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("capturePointer.wheel", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinBeginLoopbackStream", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinBeginH264Stream", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinPushH264Batch", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("new VideoDecoder", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("new EncodedVideoChunk", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("createImageBitmap", StringComparison.Ordinal));
         });
 
         return new SelfTestResult(passed, failed, messages);
@@ -536,6 +554,46 @@ public static class SelfTests
             return;
         }
         throw new InvalidOperationException($"Expected {typeof(TException).Name}.");
+    }
+
+    private static async Task TestLoopbackMediaProtocolAsync()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        await using var server = LoopbackMediaStreamServer.Start();
+        using var socket = new ClientWebSocket();
+        socket.Options.Proxy = null;
+        await socket.ConnectAsync(server.Endpoint, timeout.Token);
+        await server.WaitForConnectionAsync(timeout.Token);
+
+        byte[] payload = [0xFF, 0xD8, 0x01, 0x02, 0xFF, 0xD9];
+        var publish = server.PublishAsync(
+            LoopbackMediaPacketKind.Jpeg,
+            payload,
+            waitForPresentation: true,
+            timeout.Token);
+        using var received = new MemoryStream();
+        var buffer = new byte[128];
+        WebSocketReceiveResult result;
+        do
+        {
+            result = await socket.ReceiveAsync(buffer, timeout.Token);
+            received.Write(buffer, 0, result.Count);
+        } while (!result.EndOfMessage);
+        var packet = received.ToArray();
+        True(result.MessageType == WebSocketMessageType.Binary);
+        True(packet.Length == payload.Length + 24);
+        True(packet.AsSpan(0, 4).SequenceEqual("CWS4"u8));
+        Equal((byte)LoopbackMediaPacketKind.Jpeg, packet[4]);
+        True(packet.AsSpan(24).SequenceEqual(payload));
+        var sequence = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(packet.AsSpan(8, 8));
+        var acknowledgement = System.Text.Encoding.UTF8.GetBytes($"presented:{sequence}");
+        await socket.SendAsync(acknowledgement, WebSocketMessageType.Text, true, timeout.Token);
+        Equal(sequence, await publish);
+        var metrics = server.GetMetrics();
+        Equal(1L, metrics.Sent);
+        Equal(1L, metrics.Presented);
+        Equal(sequence, metrics.LastPresentedSequence);
+        await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "test-complete", timeout.Token);
     }
 
     private static byte[] CreatePngHeader(int width, int height) =>

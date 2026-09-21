@@ -11,6 +11,17 @@ using WinRT;
 
 namespace CodexWallpaperSkin;
 
+internal sealed record CapturedBgraFrame(byte[] Pixels, int Width, int Height, int Stride)
+{
+    public BitmapSource ToBitmapSource()
+    {
+        var bitmap = BitmapSource.Create(
+            Width, Height, 96, 96, PixelFormats.Bgra32, null, Pixels, Stride);
+        bitmap.Freeze();
+        return bitmap;
+    }
+}
+
 /// <summary>
 /// Captures an HWND through Windows Graphics Capture and copies the newest
 /// D3D11 surface into a CPU-readable bitmap. The frame channel has capacity one
@@ -31,7 +42,7 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
     private static readonly Guid D3D11Texture2DGuid = new("6F15AAF2-D208-4E89-9AB4-489535D34F9C");
 
     private readonly object _gate = new();
-    private readonly Channel<BitmapSource> _frames = Channel.CreateBounded<BitmapSource>(
+    private readonly Channel<CapturedBgraFrame> _frames = Channel.CreateBounded<CapturedBgraFrame>(
         new BoundedChannelOptions(1)
         {
             FullMode = BoundedChannelFullMode.DropOldest,
@@ -89,8 +100,11 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
         }
     }
 
-    public ValueTask<BitmapSource> ReadFrameAsync(CancellationToken cancellationToken) =>
+    public ValueTask<CapturedBgraFrame> ReadFrameAsync(CancellationToken cancellationToken) =>
         _frames.Reader.ReadAsync(cancellationToken);
+
+    public int CaptureWidth => _item.Size.Width;
+    public int CaptureHeight => _item.Size.Height;
 
     private void FramePool_FrameArrived(Direct3D11CaptureFramePool sender, object args)
     {
@@ -114,7 +128,7 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
     private void Item_Closed(GraphicsCaptureItem sender, object args) =>
         _frames.Writer.TryComplete(new IOException("The Wallpaper Engine capture window was closed."));
 
-    private BitmapSource CopySurface(IDirect3DSurface surface)
+    private CapturedBgraFrame CopySurface(IDirect3DSurface surface)
     {
         var access = surface.As<IDirect3DDxgiInterfaceAccess>();
         var textureGuid = D3D11Texture2DGuid;
@@ -149,10 +163,7 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
                 {
                     Marshal.Copy(IntPtr.Add(mapped.Data, checked((int)(row * mapped.RowPitch))), pixels, row * stride, stride);
                 }
-                var bitmap = BitmapSource.Create(
-                    width, height, 96, 96, PixelFormats.Bgra32, null, pixels, stride);
-                bitmap.Freeze();
-                return bitmap;
+                return new CapturedBgraFrame(pixels, width, height, stride);
             }
             finally
             {

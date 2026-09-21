@@ -37,12 +37,12 @@ internal static class WgcSmokeTest
             await using var source = WindowsGraphicsCaptureSource.TryStart(window)
                 ?? throw new PlatformNotSupportedException("Windows Graphics Capture is unavailable on this system.");
             var frame = await source.ReadFrameAsync(cancellationToken);
-            if (frame.PixelWidth < 600 || frame.PixelHeight < 300)
+            if (frame.Width < 600 || frame.Height < 300)
             {
                 throw new InvalidDataException(
-                    $"WGC returned an implausible frame size ({frame.PixelWidth}x{frame.PixelHeight}).");
+                    $"WGC returned an implausible frame size ({frame.Width}x{frame.Height}).");
             }
-            return $"PASS WGC/D3D11 window capture ({frame.PixelWidth}x{frame.PixelHeight}, {frame.Format})";
+            return $"PASS WGC/D3D11 window capture ({frame.Width}x{frame.Height}, BGRA32, {frame.Pixels.Length} bytes)";
         }
         finally
         {

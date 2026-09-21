@@ -8,12 +8,39 @@ public static class DiagnosticsService
         {
             StateFileExists = File.Exists(StateStore.StatePath),
             CdpEndpoint = state.CdpBaseUrl,
-            CdpEndpointIsLoopback = CdpEndpoint.IsLoopbackHttp(state.CdpBaseUrl)
+            CdpEndpointIsLoopback = CdpEndpoint.IsLoopbackHttp(state.CdpBaseUrl),
+            RequestedSceneFrameRate = state.Settings.SceneFrameRate >= 60 ? 60 : 30
         };
 
         var selected = state.Wallpapers.FirstOrDefault(item => item.Id == state.SelectedWallpaperId);
         report.SavedWallpaper = selected?.EffectivePath;
         report.SavedWallpaperExists = selected?.EffectivePath is { } selectedPath && File.Exists(selectedPath);
+        if (selected?.IsWallpaperEngineScene == true)
+        {
+            report.WallpaperEngineFrameRateLimit = WallpaperEngineCaptureSession.GetConfiguredFrameRateLimit(selected);
+        }
+
+        var encoderProbe = MediaFoundationH264Probe.Run();
+        report.HardwareH264Encoders = encoderProbe.Encoders
+            .Where(candidate => candidate.Hardware)
+            .Select(candidate => candidate.Name)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        report.HardwareH264Available = report.HardwareH264Encoders.Count > 0;
+        report.HardwareH264ProbeError = encoderProbe.Error;
+        if (!report.HardwareH264Available)
+        {
+            report.Notes.Add(encoderProbe.Error is null
+                ? "No Windows hardware H.264 encoder was detected. Dynamic Scenes will use a clearly labeled compatibility backend."
+                : "The Windows hardware H.264 encoder probe failed: " + encoderProbe.Error);
+        }
+        if (report.WallpaperEngineFrameRateLimit is int engineFps
+            && engineFps < report.RequestedSceneFrameRate)
+        {
+            report.Notes.Add(
+                $"Wallpaper Engine is configured for {engineFps} FPS, below the controller's {report.RequestedSceneFrameRate} FPS target. "
+                + "The controller will report the source limit and will not fabricate duplicate frames.");
+        }
 
         if (report.CdpEndpointIsLoopback)
         {

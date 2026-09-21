@@ -1,6 +1,33 @@
 using System.Text.Json;
+using System.Threading.Channels;
 
 namespace CodexWallpaperSkin;
+
+public sealed record BrowserMediaCapabilityReport(
+    bool SecureContext,
+    bool LoopbackWebSocket,
+    bool VideoDecoder,
+    bool H264DecoderConfiguration,
+    bool VideoFrame,
+    bool CreateImageBitmap,
+    string UserAgent,
+    string? Error);
+
+public sealed record ActiveStreamDiagnostics(
+    long Received,
+    long Presented,
+    long Dropped,
+    long DecodeErrors,
+    long Queued,
+    long Batches,
+    long EncodedBytes,
+    int DecodeQueueSize,
+    long RecoveryCount,
+    string StreamIdentity,
+    DateTimeOffset? LastPresentation,
+    string Mode,
+    string? TransportError,
+    NativeStreamMetrics? Native);
 
 public sealed class CdpInjectionService : IAsyncDisposable
 {
@@ -15,13 +42,127 @@ public sealed class CdpInjectionService : IAsyncDisposable
     private CdpClient? _client;
     private CaptureLease? _captureLease;
     private readonly SemaphoreSlim _transitionLock = new(1, 1);
+    private long _recoveryCount;
 
     public bool IsConnected => _client?.IsConnected == true;
     public bool HasActiveCapture => _captureLease?.Session.IsRunning == true;
     public Task ActiveCaptureCompletion => _captureLease?.Session.Completion ?? Task.CompletedTask;
     public CdpTarget? Target => _client?.Target;
+    public void RecordRecoveryAttempt() => Interlocked.Increment(ref _recoveryCount);
 
-    private sealed record CaptureLease(WallpaperEngineCaptureSession Session, string Token);
+    private sealed record CaptureLease(
+        WallpaperEngineCaptureSession Session,
+        string Token,
+        LoopbackMediaStreamServer? MediaStream,
+        H264BatchPublisher? H264Publisher);
+
+    private sealed class H264BatchPublisher : IAsyncDisposable
+    {
+        private const int MaximumBatchFrames = 12;
+        private const int MaximumBatchBytes = 2 * 1024 * 1024;
+        private readonly CdpClient _client;
+        private readonly string _token;
+        private readonly Channel<H264EncodedFrame> _frames = Channel.CreateBounded<H264EncodedFrame>(
+            new BoundedChannelOptions(36)
+            {
+                FullMode = BoundedChannelFullMode.Wait,
+                SingleReader = true,
+                SingleWriter = true
+            });
+        private readonly CancellationTokenSource _lifetime = new();
+        private readonly TaskCompletionSource _firstPresentation = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly Task _worker;
+        private long _queued;
+        private long _batches;
+        private long _bytes;
+        private string? _lastError;
+
+        public H264BatchPublisher(CdpClient client, string token)
+        {
+            _client = client;
+            _token = token;
+            _worker = Task.Run(() => RunAsync(_lifetime.Token));
+        }
+
+        public (long Queued, long Batches, long Bytes) Metrics =>
+            (Interlocked.Read(ref _queued), Interlocked.Read(ref _batches), Interlocked.Read(ref _bytes));
+        public string? LastError => Volatile.Read(ref _lastError);
+
+        public async Task PublishAsync(H264EncodedFrame frame, CancellationToken cancellationToken)
+        {
+            await _frames.Writer.WriteAsync(frame, cancellationToken);
+            Interlocked.Increment(ref _queued);
+        }
+
+        public async Task WaitForFirstPresentationAsync(CancellationToken cancellationToken) =>
+            await _firstPresentation.Task.WaitAsync(cancellationToken);
+
+        private async Task RunAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                while (await _frames.Reader.WaitToReadAsync(cancellationToken))
+                {
+                    var batch = new List<H264EncodedFrame>(MaximumBatchFrames);
+                    var byteLength = 0;
+                    if (_frames.Reader.TryRead(out var first))
+                    {
+                        batch.Add(first);
+                        byteLength += first.Data.Length;
+                    }
+                    // One short coalescing window turns 60 per-frame CDP calls
+                    // into roughly 15 bounded compressed batches per second.
+                    await Task.Delay(TimeSpan.FromMilliseconds(50), cancellationToken);
+                    while (batch.Count < MaximumBatchFrames
+                        && byteLength < MaximumBatchBytes
+                        && _frames.Reader.TryRead(out var frame))
+                    {
+                        batch.Add(frame);
+                        byteLength += frame.Data.Length;
+                    }
+                    if (batch.Count == 0) continue;
+                    var payload = JsonSerializer.Serialize(batch.Select(frame => new
+                    {
+                        timestamp = frame.TimestampMicroseconds,
+                        keyFrame = frame.KeyFrame,
+                        data = Convert.ToBase64String(frame.Data)
+                    }));
+                    var evaluation = await _client.EvaluateAsync(
+                        $"window.__codexWallpaperSkinPushH264Batch({Js(_token)}, {payload})",
+                        cancellationToken);
+                    var status = ReadString(evaluation);
+                    if (status.Equals("stale", StringComparison.Ordinal))
+                        throw new InvalidOperationException("Another controller replaced the H.264 stream.");
+                    if (!status.Equals("accepted", StringComparison.Ordinal)
+                        && !status.Equals("presented", StringComparison.Ordinal))
+                        throw new IOException($"Codex rejected an H.264 batch ({status}).");
+                    Interlocked.Increment(ref _batches);
+                    Interlocked.Add(ref _bytes, byteLength);
+                    if (status.Equals("presented", StringComparison.Ordinal))
+                        _firstPresentation.TrySetResult();
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                _firstPresentation.TrySetCanceled(cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                Volatile.Write(ref _lastError, LimitMessage(exception.Message));
+                _frames.Writer.TryComplete(exception);
+                _firstPresentation.TrySetException(exception);
+                throw;
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            _frames.Writer.TryComplete();
+            _lifetime.Cancel();
+            try { await _worker; } catch { }
+            _lifetime.Dispose();
+        }
+    }
 
     public async Task<CdpTarget> ConnectAsync(string endpoint, CancellationToken cancellationToken = default)
     {
@@ -128,6 +269,8 @@ public sealed class CdpInjectionService : IAsyncDisposable
                 if (WallpaperEngineCaptureSession.CanUse(wallpaper))
                 {
                     WallpaperEngineCaptureSession? session = null;
+                    LoopbackMediaStreamServer? mediaStream = null;
+                    H264BatchPublisher? h264Publisher = null;
                     try
                     {
                         var viewport = await GetViewportAsync(client, operationToken);
@@ -138,20 +281,101 @@ public sealed class CdpInjectionService : IAsyncDisposable
                             client, initialFrame, "wallpaper-engine-capture.jpg", "image", settings, null,
                             progress, operationToken);
                         var captureToken = Guid.NewGuid().ToString("N");
+                        Exception? h264Failure = null;
+                        if (session.CanUseHardwareH264)
+                        {
+                            try
+                            {
+                                var h264Started = await client.EvaluateAsync(
+                                    $"window.__codexWallpaperSkinBeginH264Stream({Js(captureToken)}, {session.CaptureWidth & ~1}, {session.CaptureHeight & ~1})",
+                                    operationToken);
+                                if (ReadString(h264Started).Equals("ready", StringComparison.Ordinal))
+                                {
+                                    h264Publisher = new H264BatchPublisher(client, captureToken);
+                                    var h264Lease = new CaptureLease(session, captureToken, null, h264Publisher);
+                                    _captureLease = h264Lease;
+                                    session.StartH264Streaming(
+                                        (frame, token) => h264Publisher.PublishAsync(frame, token));
+                                    using var firstFrameTimeout = CancellationTokenSource.CreateLinkedTokenSource(operationToken);
+                                    firstFrameTimeout.CancelAfter(TimeSpan.FromSeconds(12));
+                                    await h264Publisher.WaitForFirstPresentationAsync(firstFrameTimeout.Token);
+                                    return initial with
+                                    {
+                                        Mode = "wallpaper-engine-h264",
+                                        Warning = "Rendered by Wallpaper Engine, encoded by the Windows hardware H.264 encoder, and decoded by Codex WebCodecs on one persistent surface. "
+                                            + "Compressed frames are coalesced into bounded control batches because Codex blocks additional local media ports. "
+                                            + (session.ConfiguredWallpaperEngineFrameRateLimit is int engineFps && engineFps < settings.SceneFrameRate
+                                                ? $"Wallpaper Engine currently limits Scene rendering to {engineFps} FPS, below this app's {settings.SceneFrameRate} FPS target. "
+                                                : string.Empty)
+                                            + "Keep this controller running while the animated wallpaper is active."
+                                    };
+                                }
+                            }
+                            catch (OperationCanceledException) when (operationToken.IsCancellationRequested)
+                            {
+                                throw;
+                            }
+                            catch (Exception exception)
+                            {
+                                h264Failure = exception;
+                                ClearCaptureLease(session);
+                                await session.DisposeAsync();
+                                if (h264Publisher is not null)
+                                {
+                                    await h264Publisher.DisposeAsync();
+                                    h264Publisher = null;
+                                }
+                                // A failed encoder/decoder must not strand the
+                                // user on a static first frame. Recreate the WE
+                                // render lease before entering compatibility.
+                                session = await WallpaperEngineCaptureSession.StartAsync(
+                                    wallpaper, settings, viewport.Width, viewport.Height, operationToken);
+                                captureToken = Guid.NewGuid().ToString("N");
+                            }
+                        }
+                        mediaStream = LoopbackMediaStreamServer.Start();
                         var captureStarted = await client.EvaluateAsync(
+                            $"window.__codexWallpaperSkinBeginLoopbackStream({Js(captureToken)}, {Js(mediaStream.Endpoint.AbsoluteUri)})",
+                            operationToken);
+                        var loopbackStatus = ReadString(captureStarted);
+                        if (loopbackStatus.Equals("ready", StringComparison.Ordinal))
+                        {
+                            var loopbackLease = new CaptureLease(session, captureToken, mediaStream, null);
+                            _captureLease = loopbackLease;
+                            await mediaStream.WaitForConnectionAsync(operationToken);
+                            // Do not report Apply as successful until the binary
+                            // receiver has decoded and drawn this stream's first
+                            // frame on the persistent compositor surface.
+                            await mediaStream.PublishAsync(
+                                LoopbackMediaPacketKind.Jpeg,
+                                session.InitialFrame,
+                                waitForPresentation: true,
+                                operationToken);
+                            session.StartStreaming(
+                                (frame, token) => PublishLoopbackFrameAsync(loopbackLease, frame, token),
+                                token => ReadCapturedPointerAsync(loopbackLease, token));
+                            return initial with
+                            {
+                                Mode = "wallpaper-engine-loopback-jpeg",
+                                Warning = session.UsesWindowsGraphicsCapture
+                                    ? "Rendered by Wallpaper Engine and carried over a bounded local binary stream. "
+                                        + "JPEG encoding remains active as the explicit compatibility codec while the GPU video codec is unavailable. "
+                                        + "Keep this controller running while the animated wallpaper is active."
+                                    : "Rendered by Wallpaper Engine with the compatibility capture path because Windows Graphics Capture was unavailable. "
+                                        + "Keep this controller running while the animated wallpaper is active."
+                            };
+                        }
+                        await mediaStream.DisposeAsync();
+                        mediaStream = null;
+                        var compatibilityStarted = await client.EvaluateAsync(
                             $"window.__codexWallpaperSkinBeginCapturedStream({Js(captureToken)})",
                             operationToken);
-                        if (!ReadBoolean(captureStarted))
+                        if (!ReadBoolean(compatibilityStarted))
                         {
-                            throw new InvalidOperationException("Codex rejected the native capture stream lease.");
+                            throw new InvalidOperationException("Codex rejected the native capture compatibility stream lease.");
                         }
-                        var lease = new CaptureLease(session, captureToken);
+                        var lease = new CaptureLease(session, captureToken, null, null);
                         _captureLease = lease;
-                        // Do not report Apply as successful merely because the
-                        // page accepted a stream token. Wait until a frame has
-                        // actually decoded and reached the persistent canvas.
-                        // This closes the gap where the controller said
-                        // "Applied" while the user still saw an older frame.
                         await PublishCapturedFrameAsync(lease, session.InitialFrame, operationToken);
                         session.StartStreaming(
                             (frame, token) => PublishCapturedFrameAsync(lease, frame, token),
@@ -160,7 +384,8 @@ public sealed class CdpInjectionService : IAsyncDisposable
                         {
                             Mode = "wallpaper-engine-capture",
                             Warning = session.UsesWindowsGraphicsCapture
-                                ? "Rendered by Wallpaper Engine and streamed through Windows Graphics Capture/D3D11 at a reduced frame rate. "
+                                ? "Rendered by Wallpaper Engine through the reduced-frame-rate JPEG/CDP compatibility backend because Codex blocked the isolated local media channel. "
+                                    + (h264Failure is null ? string.Empty : "Hardware video startup failed safely: " + LimitMessage(h264Failure.Message) + " ")
                                     + "Keep this controller running while the animated wallpaper is active."
                                 : "Rendered by Wallpaper Engine with the compatibility capture path because Windows Graphics Capture was unavailable. "
                                     + "Keep this controller running while the animated wallpaper is active."
@@ -170,6 +395,8 @@ public sealed class CdpInjectionService : IAsyncDisposable
                     {
                         if (session is not null) ClearCaptureLease(session);
                         if (session is not null) await session.DisposeAsync();
+                        if (mediaStream is not null) await mediaStream.DisposeAsync();
+                        if (h264Publisher is not null) await h264Publisher.DisposeAsync();
                         throw;
                     }
                     catch (Exception exception)
@@ -179,6 +406,8 @@ public sealed class CdpInjectionService : IAsyncDisposable
                             ClearCaptureLease(session);
                         }
                         if (session is not null) await session.DisposeAsync();
+                        if (mediaStream is not null) await mediaStream.DisposeAsync();
+                        if (h264Publisher is not null) await h264Publisher.DisposeAsync();
                         nativeCaptureFailure = exception;
                     }
                 }
@@ -417,6 +646,129 @@ public sealed class CdpInjectionService : IAsyncDisposable
             ? _client
             : throw new InvalidOperationException("Connect to the Codex CDP endpoint first.");
 
+    public async Task<BrowserMediaCapabilityReport> ProbeBrowserMediaAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var client = RequireClient();
+        await using var mediaServer = LoopbackMediaStreamServer.Start();
+        var script = $$"""
+            (async () => {
+              const result = {
+                secureContext: !!window.isSecureContext,
+                loopbackWebSocket: false,
+                videoDecoder: typeof VideoDecoder === 'function',
+                h264DecoderConfiguration: false,
+                videoFrame: typeof VideoFrame === 'function',
+                createImageBitmap: typeof window.createImageBitmap === 'function',
+                userAgent: String(navigator.userAgent || '').slice(0, 300),
+                error: null
+              };
+              let policyViolation = null;
+              const onPolicyViolation = event => {
+                policyViolation = `${event.violatedDirective || 'csp'} blocked ${event.blockedURI || 'resource'}`;
+              };
+              window.addEventListener('securitypolicyviolation', onPolicyViolation);
+              try {
+                if (result.videoDecoder) {
+                  const support = await VideoDecoder.isConfigSupported({
+                    codec: 'avc1.42E01E', codedWidth: 1920, codedHeight: 1080,
+                    hardwareAcceleration: 'prefer-hardware', optimizeForLatency: true
+                  });
+                  result.h264DecoderConfiguration = !!support?.supported;
+                }
+                result.loopbackWebSocket = await new Promise(resolve => {
+                  const socket = new WebSocket({{Js(mediaServer.Endpoint.AbsoluteUri)}});
+                  const timer = setTimeout(() => { try { socket.close(); } catch (_) {} resolve(false); }, 4000);
+                  socket.onopen = () => { clearTimeout(timer); try { socket.close(1000, 'probe'); } catch (_) {} resolve(true); };
+                  socket.onerror = () => { clearTimeout(timer); resolve(false); };
+                });
+              } catch (error) {
+                result.error = String(error?.message || error || 'probe-failed').slice(0, 300);
+              } finally {
+                await new Promise(resolve => setTimeout(resolve, 50));
+                window.removeEventListener('securitypolicyviolation', onPolicyViolation);
+                if (!result.loopbackWebSocket && !result.error && policyViolation) result.error = policyViolation.slice(0, 300);
+              }
+              return result;
+            })()
+            """;
+        var evaluation = await client.EvaluateAsync(script, cancellationToken);
+        try
+        {
+            var value = evaluation.GetProperty("result").GetProperty("value");
+            var report = new BrowserMediaCapabilityReport(
+                value.GetProperty("secureContext").GetBoolean(),
+                value.GetProperty("loopbackWebSocket").GetBoolean(),
+                value.GetProperty("videoDecoder").GetBoolean(),
+                value.GetProperty("h264DecoderConfiguration").GetBoolean(),
+                value.GetProperty("videoFrame").GetBoolean(),
+                value.GetProperty("createImageBitmap").GetBoolean(),
+                value.GetProperty("userAgent").GetString() ?? string.Empty,
+                value.GetProperty("error").ValueKind == JsonValueKind.String
+                    ? value.GetProperty("error").GetString()
+                    : null);
+            if (!report.LoopbackWebSocket && string.IsNullOrWhiteSpace(report.Error))
+            {
+                var connections = mediaServer.GetMetrics().Connections;
+                report = report with
+                {
+                    Error = connections == 0
+                        ? "The Codex page did not reach the loopback listener."
+                        : "The loopback WebSocket handshake did not complete."
+                };
+            }
+            return report;
+        }
+        catch (Exception exception)
+        {
+            throw new InvalidDataException("Codex returned an invalid browser media capability report.", exception);
+        }
+    }
+
+    public async Task<ActiveStreamDiagnostics> GetActiveStreamDiagnosticsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var evaluation = await RequireClient().EvaluateAsync(
+            """
+            (() => {
+              const s = window.__codexWallpaperSkin;
+              const d = s?.captureDiagnostics;
+              if (!s || s.disposed || !d) return null;
+              return {
+                received: Number(d.received || 0), presented: Number(d.presented || 0),
+                dropped: Number(d.dropped || 0), decodeErrors: Number(d.decodeErrors || 0),
+                streamIdentity: String(s.captureToken || ''),
+                lastPresentation: d.lastPresentation || null,
+                decodeQueueSize: Number(s.h264Decoder?.decodeQueueSize || 0),
+                mode: s.h264Decoder ? 'h264-webcodecs' : (s.captureSocket ? 'loopback' : 'jpeg-cdp')
+              };
+            })()
+            """,
+            cancellationToken);
+        var value = evaluation.GetProperty("result").GetProperty("value");
+        if (value.ValueKind != JsonValueKind.Object)
+            throw new InvalidOperationException("No active native wallpaper stream is available.");
+        var publisher = _captureLease?.H264Publisher?.Metrics ?? default;
+        return new ActiveStreamDiagnostics(
+            value.GetProperty("received").GetInt64(),
+            value.GetProperty("presented").GetInt64(),
+            value.GetProperty("dropped").GetInt64(),
+            value.GetProperty("decodeErrors").GetInt64(),
+            publisher.Queued,
+            publisher.Batches,
+            publisher.Bytes,
+            value.GetProperty("decodeQueueSize").GetInt32(),
+            Interlocked.Read(ref _recoveryCount),
+            value.GetProperty("streamIdentity").GetString() ?? string.Empty,
+            value.GetProperty("lastPresentation").ValueKind == JsonValueKind.String
+                && DateTimeOffset.TryParse(value.GetProperty("lastPresentation").GetString(), out var lastPresentation)
+                    ? lastPresentation
+                    : null,
+            value.GetProperty("mode").GetString() ?? "unknown",
+            _captureLease?.H264Publisher?.LastError,
+            _captureLease?.Session.StreamMetrics);
+    }
+
     private static async Task<(int Width, int Height)> GetViewportAsync(
         CdpClient client,
         CancellationToken cancellationToken)
@@ -459,6 +811,21 @@ public sealed class CdpInjectionService : IAsyncDisposable
         }
     }
 
+    private async Task PublishLoopbackFrameAsync(
+        CaptureLease lease,
+        byte[] frame,
+        CancellationToken cancellationToken)
+    {
+        EnsureCurrentCapture(lease);
+        var mediaStream = lease.MediaStream
+            ?? throw new InvalidOperationException("The local media stream is no longer active.");
+        await mediaStream.PublishAsync(
+            LoopbackMediaPacketKind.Jpeg,
+            frame,
+            waitForPresentation: false,
+            cancellationToken);
+    }
+
     private async Task<CapturedPointer?> ReadCapturedPointerAsync(
         CaptureLease lease,
         CancellationToken cancellationToken)
@@ -496,13 +863,21 @@ public sealed class CdpInjectionService : IAsyncDisposable
         if (lease is not null)
         {
             await lease.Session.DisposeAsync();
+            if (lease.MediaStream is not null)
+            {
+                await lease.MediaStream.DisposeAsync();
+            }
+            if (lease.H264Publisher is not null)
+            {
+                await lease.H264Publisher.DisposeAsync();
+            }
             var client = _client;
             if (client is { IsConnected: true })
             {
                 try
                 {
                     await client.EvaluateAsync(
-                        $"(() => {{ const s = window.__codexWallpaperSkin; if (!s || s.captureToken !== {Js(lease.Token)}) return false; s.captureToken = null; s.captureFrameBusy = false; if (s.captureStaging) {{ try {{ s.captureStaging.src = ''; }} catch (_) {{}} s.captureStaging = null; }} return true; }})()",
+                        $"(() => {{ const s = window.__codexWallpaperSkin; if (!s || s.captureToken !== {Js(lease.Token)}) return false; s.captureToken = null; s.captureFrameBusy = false; s.capturePendingPacket = null; if (s.captureSocket) {{ try {{ s.captureSocket.close(1000, 'replaced'); }} catch (_) {{}} s.captureSocket = null; }} if (s.h264Decoder) {{ try {{ s.h264Decoder.close(); }} catch (_) {{}} s.h264Decoder = null; s.h264Generation = (s.h264Generation || 0) + 1; }} if (s.captureStaging) {{ try {{ s.captureStaging.src = ''; }} catch (_) {{}} s.captureStaging = null; }} return true; }})()",
                         CancellationToken.None);
                 }
                 catch
@@ -645,6 +1020,9 @@ public sealed class CdpInjectionService : IAsyncDisposable
             || typeof window.__codexWallpaperSkinFinishUpload !== 'undefined'
             || typeof window.__codexWallpaperSkinSetSettings !== 'undefined'
             || typeof window.__codexWallpaperSkinBeginCapturedStream !== 'undefined'
+            || typeof window.__codexWallpaperSkinBeginH264Stream !== 'undefined'
+            || typeof window.__codexWallpaperSkinPushH264Batch !== 'undefined'
+            || typeof window.__codexWallpaperSkinBeginLoopbackStream !== 'undefined'
             || typeof window.__codexWallpaperSkinSetCapturedFrame !== 'undefined'
             || typeof window.__codexWallpaperSkinGetCapturedPointer !== 'undefined'
             || typeof window.__codexWallpaperSkinCleanup !== 'undefined'
@@ -693,6 +1071,8 @@ public sealed class CdpInjectionService : IAsyncDisposable
           const state = window.__codexWallpaperSkin || capturedState;
           if (state) {
             try { state.disposed = true; } catch (_) {}
+            try { state.captureSocket && state.captureSocket.close(1000, 'cleanup'); } catch (_) {}
+            try { state.h264Decoder && state.h264Decoder.close(); } catch (_) {}
             try { state.observer && state.observer.disconnect(); } catch (_) {}
             try { state.rafId && cancelAnimationFrame(state.rafId); } catch (_) {}
             try { state.visibilityHandler && document.removeEventListener('visibilitychange', state.visibilityHandler); } catch (_) {}
@@ -737,6 +1117,9 @@ public sealed class CdpInjectionService : IAsyncDisposable
           delete window.__codexWallpaperSkinFinishUpload;
           delete window.__codexWallpaperSkinSetSettings;
           delete window.__codexWallpaperSkinBeginCapturedStream;
+          delete window.__codexWallpaperSkinBeginH264Stream;
+          delete window.__codexWallpaperSkinPushH264Batch;
+          delete window.__codexWallpaperSkinBeginLoopbackStream;
           delete window.__codexWallpaperSkinSetCapturedFrame;
           delete window.__codexWallpaperSkinGetCapturedPointer;
           delete window.__codexWallpaperSkinCleanup;
@@ -764,6 +1147,9 @@ public sealed class CdpInjectionService : IAsyncDisposable
             && typeof window.__codexWallpaperSkinFinishUpload === 'undefined'
             && typeof window.__codexWallpaperSkinSetSettings === 'undefined'
             && typeof window.__codexWallpaperSkinBeginCapturedStream === 'undefined'
+            && typeof window.__codexWallpaperSkinBeginH264Stream === 'undefined'
+            && typeof window.__codexWallpaperSkinPushH264Batch === 'undefined'
+            && typeof window.__codexWallpaperSkinBeginLoopbackStream === 'undefined'
             && typeof window.__codexWallpaperSkinSetCapturedFrame === 'undefined'
             && typeof window.__codexWallpaperSkinGetCapturedPointer === 'undefined'
             && typeof window.__codexWallpaperSkinCleanup === 'undefined'
@@ -787,7 +1173,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
             throw new Error('Refusing to inject: this is not a ready Codex app:// page.');
           }
           const existing = window.__codexWallpaperSkin;
-          const existingHealthy = existing && existing.version === 15 && !existing.disposed
+          const existingHealthy = existing && existing.version === 17 && !existing.disposed
             && existing.host?.isConnected && existing.style?.isConnected && existing.overlay?.isConnected
             && document.getElementById('codex-wallpaper-skin-host') === existing.host
             && document.getElementById('codex-wallpaper-skin-style') === existing.style
@@ -812,6 +1198,12 @@ public sealed class CdpInjectionService : IAsyncDisposable
             && window.__codexWallpaperSkinSetSettings === existing.helpers.setSettings
             && typeof window.__codexWallpaperSkinBeginCapturedStream === 'function'
             && window.__codexWallpaperSkinBeginCapturedStream === existing.helpers.beginCapturedStream
+            && typeof window.__codexWallpaperSkinBeginH264Stream === 'function'
+            && window.__codexWallpaperSkinBeginH264Stream === existing.helpers.beginH264Stream
+            && typeof window.__codexWallpaperSkinPushH264Batch === 'function'
+            && window.__codexWallpaperSkinPushH264Batch === existing.helpers.pushH264Batch
+            && typeof window.__codexWallpaperSkinBeginLoopbackStream === 'function'
+            && window.__codexWallpaperSkinBeginLoopbackStream === existing.helpers.beginLoopbackStream
             && typeof window.__codexWallpaperSkinSetCapturedFrame === 'function'
             && window.__codexWallpaperSkinSetCapturedFrame === existing.helpers.setCapturedFrame
             && typeof window.__codexWallpaperSkinGetCapturedPointer === 'function'
@@ -826,6 +1218,8 @@ public sealed class CdpInjectionService : IAsyncDisposable
           }
           if (old) {
             try { old.disposed = true; } catch (_) {}
+            try { old.captureSocket && old.captureSocket.close(1000, 'replaced'); } catch (_) {}
+            try { old.h264Decoder && old.h264Decoder.close(); } catch (_) {}
             try { old.observer && old.observer.disconnect(); } catch (_) {}
             try { old.rafId && cancelAnimationFrame(old.rafId); } catch (_) {}
             try { old.visibilityHandler && document.removeEventListener('visibilitychange', old.visibilityHandler); } catch (_) {}
@@ -869,6 +1263,9 @@ public sealed class CdpInjectionService : IAsyncDisposable
           delete window.__codexWallpaperSkinFinishUpload;
           delete window.__codexWallpaperSkinSetSettings;
           delete window.__codexWallpaperSkinBeginCapturedStream;
+          delete window.__codexWallpaperSkinBeginH264Stream;
+          delete window.__codexWallpaperSkinPushH264Batch;
+          delete window.__codexWallpaperSkinBeginLoopbackStream;
           delete window.__codexWallpaperSkinSetCapturedFrame;
           delete window.__codexWallpaperSkinGetCapturedPointer;
           delete window.__codexWallpaperSkinCleanup;
@@ -954,13 +1351,16 @@ public sealed class CdpInjectionService : IAsyncDisposable
           document.body.appendChild(host);
 
           const state = window.__codexWallpaperSkin = {
-            version: 15, disposed: false, style, host, overlay, media: null, assetUrl: null,
+            version: 17, disposed: false, style, host, overlay, media: null, assetUrl: null,
             sceneController: null, pendingSceneController: null,
             pendingMedia: null, pendingUrl: null, pendingCancel: null,
             uploads: new Map(), marked: new Set(), settings: null, rawPalette: null,
             palette: null, observer: null, rafId: 0, visibilityHandler: null, nativeSurface,
             capturePointer: { x: .5, y: .5, buttons: 0, wheel: 0, inside: false }, capturePointerHandlers: null,
             captureFrameBusy: false, captureStaging: null, captureToken: null,
+            captureSocket: null, capturePendingPacket: null,
+            h264Decoder: null, h264Generation: 0, h264Presented: 0, h264DecodeErrors: 0,
+            captureDiagnostics: { received: 0, presented: 0, dropped: 0, decodeErrors: 0, lastSequence: 0, lastPresentation: null },
             styleText, helpers: null
           };
 
@@ -1207,8 +1607,17 @@ public sealed class CdpInjectionService : IAsyncDisposable
             window.addEventListener('blur', blur, { passive: true, capture: true });
             window.addEventListener('wheel', wheel, { passive: true, capture: true });
           };
+          const closeH264Decoder = () => {
+            state.h264Generation++;
+            const decoder = state.h264Decoder;
+            state.h264Decoder = null;
+            if (decoder) {
+              try { decoder.close(); } catch (_) {}
+            }
+          };
           window.__codexWallpaperSkinBeginCapturedStream = token => {
             if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/.test(token)) return false;
+            closeH264Decoder();
             const source = state.media;
             if (source instanceof HTMLImageElement) {
               const width = Math.max(1, source.naturalWidth || source.width);
@@ -1231,6 +1640,220 @@ public sealed class CdpInjectionService : IAsyncDisposable
             state.captureStaging = null;
             ensureCapturePointerHandlers();
             return true;
+          };
+          window.__codexWallpaperSkinBeginH264Stream = async (token, width, height) => {
+            if (typeof VideoDecoder !== 'function' || typeof EncodedVideoChunk !== 'function') return 'unsupported';
+            if (!window.__codexWallpaperSkinBeginCapturedStream(token)) return 'rejected';
+            width = Math.floor(Number(width)); height = Math.floor(Number(height));
+            if (width < 64 || height < 64 || width > 4096 || height > 4096 || width * height > 10000000) {
+              return 'invalid-size';
+            }
+            const support = await VideoDecoder.isConfigSupported({
+              codec: 'avc1.42E01E', codedWidth: width, codedHeight: height,
+              hardwareAcceleration: 'prefer-hardware', optimizeForLatency: true
+            });
+            if (!support?.supported) return 'unsupported';
+            const media = state.media;
+            if (!(media instanceof HTMLCanvasElement) || !media.isConnected || media.parentNode !== state.host) {
+              return 'canvas-unavailable';
+            }
+            closeH264Decoder();
+            state.captureToken = token;
+            const generation = state.h264Generation;
+            state.h264Presented = 0;
+            state.h264DecodeErrors = 0;
+            state.captureDiagnostics = { received: 0, presented: 0, dropped: 0, decodeErrors: 0, lastSequence: 0, lastPresentation: null };
+            const decoder = new VideoDecoder({
+              output: frame => {
+                try {
+                  if (state.disposed || state.h264Decoder !== decoder || generation !== state.h264Generation
+                      || token !== state.captureToken || state.media !== media) return;
+                  const frameWidth = Math.max(1, frame.displayWidth || frame.codedWidth);
+                  const frameHeight = Math.max(1, frame.displayHeight || frame.codedHeight);
+                  const context = media.getContext('2d', { alpha: false, desynchronized: true });
+                  if (!context) throw new Error('canvas-unavailable');
+                  if (media.width !== frameWidth || media.height !== frameHeight) {
+                    media.width = frameWidth; media.height = frameHeight;
+                  }
+                  context.drawImage(frame, 0, 0, frameWidth, frameHeight);
+                  state.h264Presented++;
+                  state.captureDiagnostics.presented++;
+                  state.captureDiagnostics.lastPresentation = new Date().toISOString();
+                } catch (_) {
+                  state.h264DecodeErrors++;
+                  state.captureDiagnostics.decodeErrors++;
+                } finally {
+                  try { frame.close(); } catch (_) {}
+                }
+              },
+              error: () => {
+                state.h264DecodeErrors++;
+                state.captureDiagnostics.decodeErrors++;
+              }
+            });
+            decoder.configure({
+              codec: 'avc1.42E01E', codedWidth: width, codedHeight: height,
+              hardwareAcceleration: 'prefer-hardware', optimizeForLatency: true
+            });
+            state.h264Decoder = decoder;
+            return 'ready';
+          };
+          window.__codexWallpaperSkinPushH264Batch = async (token, frames) => {
+            if (token !== state.captureToken) return 'stale';
+            const decoder = state.h264Decoder;
+            if (!decoder || decoder.state !== 'configured' || !Array.isArray(frames)
+                || frames.length < 1 || frames.length > 16) return 'rejected';
+            const presentedBefore = state.h264Presented;
+            const waitForFirstPresentation = presentedBefore === 0;
+            for (const frame of frames) {
+              if (!frame || typeof frame.data !== 'string' || frame.data.length < 4
+                  || frame.data.length > 2 * 1024 * 1024
+                  || !Number.isSafeInteger(frame.timestamp) || frame.timestamp < 0) return 'invalid-frame';
+              const binary = atob(frame.data);
+              if (binary.length < 4 || binary.length > 1536 * 1024) return 'invalid-frame';
+              const bytes = new Uint8Array(binary.length);
+              for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+              decoder.decode(new EncodedVideoChunk({
+                type: frame.keyFrame ? 'key' : 'delta',
+                timestamp: frame.timestamp,
+                data: bytes
+              }));
+              state.captureDiagnostics.received++;
+            }
+            // VideoDecoder.flush() makes the next chunk require another key
+            // frame, so it must not be used as per-batch backpressure. Wait on
+            // the output callback and decodeQueueSize instead, preserving one
+            // continuous GOP across batches.
+            const deadline = performance.now() + 2500;
+            while (waitForFirstPresentation && state.h264Presented === 0 && performance.now() < deadline) {
+              await new Promise(resolve => setTimeout(resolve, 4));
+            }
+            while (decoder.decodeQueueSize > 8 && performance.now() < deadline) {
+              await new Promise(resolve => setTimeout(resolve, 4));
+            }
+            if (waitForFirstPresentation && state.h264Presented === 0) {
+              state.h264DecodeErrors++;
+              state.captureDiagnostics.decodeErrors++;
+              return 'decode-error';
+            }
+            return state.h264Presented > presentedBefore ? 'presented' : 'accepted';
+          };
+          const closeCaptureSocket = reason => {
+            const socket = state.captureSocket;
+            state.captureSocket = null;
+            state.capturePendingPacket = null;
+            if (socket) {
+              try { socket.close(1000, reason || 'replaced'); } catch (_) {}
+            }
+          };
+          const sendCaptureControl = (socket, value) => {
+            if (socket === state.captureSocket && socket.readyState === WebSocket.OPEN) {
+              try { socket.send(value); } catch (_) {}
+            }
+          };
+          const processLoopbackPacket = async (socket, packet) => {
+            if (socket !== state.captureSocket || state.disposed || !(packet instanceof ArrayBuffer)) return;
+            if (packet.byteLength < 25 || packet.byteLength > 8 * 1024 * 1024 + 24) {
+              state.captureDiagnostics.decodeErrors++;
+              return;
+            }
+            const bytes = new Uint8Array(packet);
+            if (bytes[0] !== 67 || bytes[1] !== 87 || bytes[2] !== 83 || bytes[3] !== 52) {
+              state.captureDiagnostics.decodeErrors++;
+              return;
+            }
+            const view = new DataView(packet);
+            const kind = bytes[4];
+            const sequence = Number(view.getBigInt64(8, true));
+            state.captureDiagnostics.received++;
+            state.captureDiagnostics.lastSequence = sequence;
+            if (kind !== 1) {
+              state.captureDiagnostics.decodeErrors++;
+              sendCaptureControl(socket, `decode-error:${sequence}:unsupported-packet`);
+              return;
+            }
+            const media = state.media;
+            if (!(media instanceof HTMLCanvasElement) || !media.isConnected || media.parentNode !== state.host) {
+              sendCaptureControl(socket, `decode-error:${sequence}:canvas-unavailable`);
+              return;
+            }
+            state.captureFrameBusy = true;
+            try {
+              const blob = new Blob([packet.slice(24)], { type: 'image/jpeg' });
+              const bitmap = await createImageBitmap(blob);
+              try {
+                if (socket !== state.captureSocket || state.disposed || state.media !== media) {
+                  state.captureDiagnostics.dropped++;
+                  return;
+                }
+                const context = media.getContext('2d', { alpha: false, desynchronized: true });
+                if (!context) throw new Error('canvas-unavailable');
+                if (media.width !== bitmap.width || media.height !== bitmap.height) {
+                  media.width = bitmap.width; media.height = bitmap.height;
+                }
+                context.drawImage(bitmap, 0, 0, bitmap.width, bitmap.height);
+                state.captureDiagnostics.presented++;
+                state.captureDiagnostics.lastPresentation = new Date().toISOString();
+                sendCaptureControl(socket, `presented:${sequence}`);
+              } finally {
+                try { bitmap.close(); } catch (_) {}
+              }
+            } catch (error) {
+              state.captureDiagnostics.decodeErrors++;
+              const reason = String(error?.message || error || 'decode-error').replace(/[:\r\n]/g, '-').slice(0, 80);
+              sendCaptureControl(socket, `decode-error:${sequence}:${reason}`);
+            } finally {
+              state.captureFrameBusy = false;
+              const pending = state.capturePendingPacket;
+              state.capturePendingPacket = null;
+              if (pending && socket === state.captureSocket) {
+                queueMicrotask(() => processLoopbackPacket(socket, pending));
+              }
+            }
+          };
+          window.__codexWallpaperSkinBeginLoopbackStream = async (token, endpoint) => {
+            if (!window.__codexWallpaperSkinBeginCapturedStream(token)) return 'rejected';
+            if (typeof endpoint !== 'string'
+                || !/^ws:\/\/127\.0\.0\.1:\d{1,5}\/cws\/[a-f0-9]{64}$/.test(endpoint)) {
+              return 'invalid-endpoint';
+            }
+            closeCaptureSocket('replaced');
+            state.captureDiagnostics = { received: 0, presented: 0, dropped: 0, decodeErrors: 0, lastSequence: 0, lastPresentation: null };
+            const socket = new WebSocket(endpoint);
+            socket.binaryType = 'arraybuffer';
+            state.captureSocket = socket;
+            socket.onmessage = event => {
+              if (socket !== state.captureSocket || !(event.data instanceof ArrayBuffer)) return;
+              if (state.captureFrameBusy) {
+                if (state.capturePendingPacket) state.captureDiagnostics.dropped++;
+                state.capturePendingPacket = event.data;
+                return;
+              }
+              processLoopbackPacket(socket, event.data);
+            };
+            socket.onclose = () => {
+              if (state.captureSocket === socket) state.captureSocket = null;
+            };
+            return await new Promise(resolve => {
+              let settled = false;
+              const finish = value => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(watchdog);
+                resolve(value);
+              };
+              const watchdog = setTimeout(() => {
+                try { socket.close(); } catch (_) {}
+                if (state.captureSocket === socket) state.captureSocket = null;
+                finish('connect-timeout');
+              }, 5000);
+              socket.onopen = () => finish('ready');
+              socket.onerror = () => {
+                try { socket.close(); } catch (_) {}
+                if (state.captureSocket === socket) state.captureSocket = null;
+                finish('connect-error');
+              };
+            });
           };
           window.__codexWallpaperSkinSetCapturedFrame = (token, encoded) => {
             if (token !== state.captureToken) return 'stale';
@@ -1354,6 +1977,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
                 && window.__codexWallpaperSkinFinishUpload === state.helpers.finishUpload
                 && window.__codexWallpaperSkinSetSettings === state.helpers.setSettings
                 && window.__codexWallpaperSkinBeginCapturedStream === state.helpers.beginCapturedStream
+                && window.__codexWallpaperSkinBeginLoopbackStream === state.helpers.beginLoopbackStream
                 && window.__codexWallpaperSkinSetCapturedFrame === state.helpers.setCapturedFrame
                 && window.__codexWallpaperSkinGetCapturedPointer === state.helpers.getCapturedPointer
                 && window.__codexWallpaperSkinCleanup === state.helpers.cleanup;
@@ -1381,6 +2005,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
               }
               state.pendingCancel = null; state.pendingMedia = null; state.pendingUrl = null; state.pendingSceneController = null;
               const previousMedia = state.media, previousUrl = state.assetUrl, previousSceneController = state.sceneController;
+              closeCaptureSocket('media-replaced');
               state.captureToken = null; state.captureFrameBusy = false;
               state.media = media; state.assetUrl = candidateUrl; state.sceneController = sceneController; state.rawPalette = rawPalette;
               host.insertBefore(media, state.overlay); root.classList.add('cws-active');
@@ -1415,6 +2040,9 @@ public sealed class CdpInjectionService : IAsyncDisposable
                     && window.__codexWallpaperSkinFinishUpload === state.helpers.finishUpload
                     && window.__codexWallpaperSkinSetSettings === state.helpers.setSettings
                     && window.__codexWallpaperSkinBeginCapturedStream === state.helpers.beginCapturedStream
+                    && window.__codexWallpaperSkinBeginH264Stream === state.helpers.beginH264Stream
+                    && window.__codexWallpaperSkinPushH264Batch === state.helpers.pushH264Batch
+                    && window.__codexWallpaperSkinBeginLoopbackStream === state.helpers.beginLoopbackStream
                     && window.__codexWallpaperSkinSetCapturedFrame === state.helpers.setCapturedFrame
                     && window.__codexWallpaperSkinGetCapturedPointer === state.helpers.getCapturedPointer
                     && window.__codexWallpaperSkinCleanup === state.helpers.cleanup;
@@ -1423,6 +2051,8 @@ public sealed class CdpInjectionService : IAsyncDisposable
                       try { window.__codexWallpaperSkinCleanup(); } catch (_) {}
                     } else {
                       state.disposed = true;
+                      try { closeCaptureSocket('runtime-invalid'); } catch (_) {}
+                      try { closeH264Decoder(); } catch (_) {}
                       try { state.observer.disconnect(); } catch (_) {}
                       try { state.visibilityHandler && document.removeEventListener('visibilitychange', state.visibilityHandler); } catch (_) {}
                       try { state.capturePointerHandlers && window.removeEventListener('pointermove', state.capturePointerHandlers.move, true); } catch (_) {}
@@ -1480,6 +2110,8 @@ public sealed class CdpInjectionService : IAsyncDisposable
             const current = state;
             const ownsGlobals = !window.__codexWallpaperSkin || window.__codexWallpaperSkin === state;
             current.disposed = true;
+            try { closeCaptureSocket('cleanup'); } catch (_) {}
+            try { closeH264Decoder(); } catch (_) {}
             try { current.observer && current.observer.disconnect(); } catch (_) {}
             try { current.rafId && cancelAnimationFrame(current.rafId); } catch (_) {}
             try { current.visibilityHandler && document.removeEventListener('visibilitychange', current.visibilityHandler); } catch (_) {}
@@ -1516,6 +2148,9 @@ public sealed class CdpInjectionService : IAsyncDisposable
               delete window.__codexWallpaperSkinFinishUpload;
               delete window.__codexWallpaperSkinSetSettings;
               delete window.__codexWallpaperSkinBeginCapturedStream;
+              delete window.__codexWallpaperSkinBeginH264Stream;
+              delete window.__codexWallpaperSkinPushH264Batch;
+              delete window.__codexWallpaperSkinBeginLoopbackStream;
               delete window.__codexWallpaperSkinSetCapturedFrame;
               delete window.__codexWallpaperSkinGetCapturedPointer;
               delete window.__codexWallpaperSkinCleanup;
@@ -1529,6 +2164,9 @@ public sealed class CdpInjectionService : IAsyncDisposable
             finishUpload: window.__codexWallpaperSkinFinishUpload,
             setSettings: window.__codexWallpaperSkinSetSettings,
             beginCapturedStream: window.__codexWallpaperSkinBeginCapturedStream,
+            beginH264Stream: window.__codexWallpaperSkinBeginH264Stream,
+            pushH264Batch: window.__codexWallpaperSkinPushH264Batch,
+            beginLoopbackStream: window.__codexWallpaperSkinBeginLoopbackStream,
             setCapturedFrame: window.__codexWallpaperSkinSetCapturedFrame,
             getCapturedPointer: window.__codexWallpaperSkinGetCapturedPointer,
             cleanup: window.__codexWallpaperSkinCleanup

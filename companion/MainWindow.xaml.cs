@@ -27,6 +27,8 @@ public partial class MainWindow : Window
     private bool _saveFailureShown;
     private string? _stateWarning;
     private bool _startupChangeGuard;
+    private string? _streamRecoveryWallpaperId;
+    private int _streamRecoveryAttempts;
 
     private sealed record WallpaperTypeFilterOption(string Label, WallpaperKind? Kind);
     private sealed record WallpaperCollectionFilterOption(string Label, string? Collection, bool Ungrouped = false);
@@ -54,7 +56,7 @@ public partial class MainWindow : Window
         };
         WallpaperTypeFilter.SelectedIndex = 0;
         FitCombo.ItemsSource = Enum.GetValues<WallpaperFit>();
-        SceneFpsCombo.ItemsSource = new[] { 10, 15 };
+        SceneFpsCombo.ItemsSource = new[] { 30, 60 };
         EndpointTextBox.Text = _state.CdpBaseUrl;
         AumidTextBox.Text = _state.Aumid ?? string.Empty;
         foreach (var savedItem in _state.Wallpapers)
@@ -612,6 +614,11 @@ public partial class MainWindow : Window
         WallpaperApplyResult applyResult,
         string action)
     {
+        if (!action.Equals("Recovered", StringComparison.Ordinal))
+        {
+            _streamRecoveryWallpaperId = selected.Id;
+            _streamRecoveryAttempts = 0;
+        }
         _state.LastAppliedWallpaperId = selected.Id;
         _state.PendingWallpaperId = null;
         _state.PendingActivation = false;
@@ -626,6 +633,8 @@ public partial class MainWindow : Window
             "live-scene" => " Live 2D scene rendering is active.",
             "scene-partial" => " Live 2D scene rendering is active with unsupported layers omitted.",
             "scene-static" => " The renderer used the full-resolution scene texture fallback.",
+            "wallpaper-engine-h264" => " Wallpaper Engine native rendering is active through Windows hardware H.264 and Codex WebCodecs.",
+            "wallpaper-engine-loopback-jpeg" => " Wallpaper Engine native rendering is active through the local binary compatibility stream.",
             "wallpaper-engine-capture" => " Wallpaper Engine native rendering and pointer forwarding are active through a reduced-frame-rate capture stream.",
             "animated-preview" => " The low-resolution animated Workshop preview is active.",
             "static-preview" => " The static Workshop preview fallback is active.",
@@ -635,7 +644,7 @@ public partial class MainWindow : Window
         var warningStatus = string.IsNullOrWhiteSpace(applyResult.Warning) ? string.Empty : " Note: " + applyResult.Warning;
         RestartApplyButton.Visibility = Visibility.Collapsed;
         SetStatus($"{action} {selected.DisplayTitle}.{modeStatus}{paletteStatus}{warningStatus} No Codex file was changed; Restore removes the whole layer.");
-        if (applyResult.Mode == "wallpaper-engine-capture")
+        if (applyResult.Mode is "wallpaper-engine-h264" or "wallpaper-engine-loopback-jpeg" or "wallpaper-engine-capture")
         {
             _ = MonitorCaptureAsync(selected.Id, selected.DisplayTitle, _injection.ActiveCaptureCompletion);
         }
@@ -650,21 +659,102 @@ public partial class MainWindow : Window
             // lease is installed. Give that transaction time to complete, then
             // warn only if this exact lease is still the current one.
             await Task.Delay(250);
-            await Dispatcher.InvokeAsync(() =>
+            var shouldRecover = await Dispatcher.InvokeAsync(() =>
             {
-                if (!_closeRequested
+                return !_closeRequested
+                    && !_busy
+                    && _injection.IsConnected
                     && !_injection.HasActiveCapture
                     && ReferenceEquals(_injection.ActiveCaptureCompletion, completion)
-                    && string.Equals(_state.LastAppliedWallpaperId, wallpaperId, StringComparison.OrdinalIgnoreCase))
-                {
-                    SetStatus($"The live stream for {title} stopped after repeated renderer or connection failures. The last good frame was kept; click Apply selected to restart it.");
-                }
+                    && string.Equals(_state.LastAppliedWallpaperId, wallpaperId, StringComparison.OrdinalIgnoreCase);
             });
+            if (!shouldRecover) return;
+
+            if (!string.Equals(_streamRecoveryWallpaperId, wallpaperId, StringComparison.OrdinalIgnoreCase))
+            {
+                _streamRecoveryWallpaperId = wallpaperId;
+                _streamRecoveryAttempts = 0;
+            }
+            while (_streamRecoveryAttempts < 2)
+            {
+                var attempt = ++_streamRecoveryAttempts;
+                _injection.RecordRecoveryAttempt();
+                await Dispatcher.InvokeAsync(() =>
+                    SetStatus($"Recovering the live stream for {title} (attempt {attempt} of 2). The last good frame remains visible…"));
+                await Task.Delay(attempt == 1 ? TimeSpan.FromSeconds(1) : TimeSpan.FromSeconds(3));
+                var recoveryTask = await Dispatcher.InvokeAsync(() =>
+                    RecoverStoppedCaptureAsync(
+                        wallpaperId,
+                        title,
+                        attempt == 1 ? completion : null,
+                        attempt));
+                if (await recoveryTask) return;
+
+                var canRetry = await Dispatcher.InvokeAsync(() =>
+                    !_closeRequested
+                    && !_busy
+                    && _injection.IsConnected
+                    && !_injection.HasActiveCapture
+                    && string.Equals(_state.LastAppliedWallpaperId, wallpaperId, StringComparison.OrdinalIgnoreCase));
+                if (!canRetry) return;
+            }
+            await Dispatcher.InvokeAsync(() =>
+                SetStatus($"The live stream for {title} could not be restored after two bounded attempts. The last good frame was kept; click Apply selected to retry manually."));
         }
         catch
         {
             // Apply/switch/close owns user-facing error reporting. This monitor
             // exists only to surface a stream that ended after Apply succeeded.
+        }
+    }
+
+    private async Task<bool> RecoverStoppedCaptureAsync(
+        string wallpaperId,
+        string title,
+        Task? stoppedCompletion,
+        int attempt)
+    {
+        if (_busy
+            || _closeRequested
+            || !_injection.IsConnected
+            || _injection.HasActiveCapture
+            || (stoppedCompletion is not null
+                && !ReferenceEquals(_injection.ActiveCaptureCompletion, stoppedCompletion))
+            || !string.Equals(_state.LastAppliedWallpaperId, wallpaperId, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+        var wallpaper = _wallpapers.FirstOrDefault(item =>
+            item.Id.Equals(wallpaperId, StringComparison.OrdinalIgnoreCase));
+        if (wallpaper?.CanApply != true)
+        {
+            SetStatus($"The live stream for {title} stopped, and its source is no longer available. The last good frame was kept.");
+            return false;
+        }
+
+        _busy = true;
+        RootGrid.IsEnabled = false;
+        using var recoveryTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(35));
+        try
+        {
+            var result = await _injection.ApplyAsync(
+                wallpaper,
+                _state.Settings,
+                cancellationToken: recoveryTimeout.Token);
+            CompleteSuccessfulApply(wallpaper, _state.Settings, result, "Recovered");
+            return true;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException || !_closeRequested)
+        {
+            SetStatus(
+                $"Live-stream recovery {attempt} of 2 for {title} did not complete: {exception.Message} "
+                + "The last good frame was kept; recovery remains bounded.");
+            return false;
+        }
+        finally
+        {
+            _busy = false;
+            RootGrid.IsEnabled = true;
         }
     }
 
@@ -823,7 +913,7 @@ public partial class MainWindow : Window
             PlaybackRate = RateSlider.Value / 100,
             Muted = MutedCheck.IsChecked == true,
             PauseWhenHidden = PauseHiddenCheck.IsChecked == true,
-            SceneFrameRate = SceneFpsCombo.SelectedItem is int frameRate ? frameRate : 15,
+            SceneFrameRate = SceneFpsCombo.SelectedItem is int frameRate ? frameRate : 60,
             SceneResolutionScale = SceneScaleSlider.Value / 100
         }.Normalize();
     }

@@ -16,6 +16,14 @@ public sealed record CapturedPointer(
     bool Hidden,
     bool Inside);
 
+public sealed record NativeStreamMetrics(
+    long CapturedFrames,
+    long EncoderInputs,
+    long EncodedFrames,
+    double CaptureMilliseconds,
+    double EncodeMilliseconds,
+    double ElapsedSeconds);
+
 /// <summary>
 /// Uses Wallpaper Engine itself as the renderer for Scene projects. Frames are
 /// captured from a private off-screen play-in-window surface, while pointer
@@ -67,6 +75,13 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private int _lastPointerButtons;
     private int _stopRequested;
     private bool _disposed;
+    private readonly int? _configuredEngineFrameRateLimit;
+    private long _capturedFrames;
+    private long _encoderInputs;
+    private long _encodedFrames;
+    private long _captureTicks;
+    private long _encodeTicks;
+    private long _streamStarted;
 
     private WallpaperEngineCaptureSession(
         string engineExecutable,
@@ -77,7 +92,8 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         int frameRate,
         bool pauseWhenHidden,
         double baseRate,
-        double baseVolume)
+        double baseVolume,
+        int? configuredEngineFrameRateLimit)
     {
         _engineExecutable = engineExecutable;
         _windowName = windowName;
@@ -89,17 +105,47 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         _pauseWhenHidden = pauseWhenHidden;
         _baseRate = baseRate;
         _baseVolume = baseVolume;
+        _configuredEngineFrameRateLimit = configuredEngineFrameRateLimit;
     }
 
     public byte[] InitialFrame { get; }
     public bool UsesWindowsGraphicsCapture => _graphicsCapture is not null;
+    public bool CanUseHardwareH264 => _graphicsCapture is not null;
+    public int CaptureWidth => _graphicsCapture?.CaptureWidth ?? 0;
+    public int CaptureHeight => _graphicsCapture?.CaptureHeight ?? 0;
+    public int? ConfiguredWallpaperEngineFrameRateLimit => _configuredEngineFrameRateLimit;
     public bool IsRunning => !_disposed && _streamTask is { IsCompleted: false };
     public Task Completion => _streamTask ?? Task.CompletedTask;
+    public NativeStreamMetrics StreamMetrics
+    {
+        get
+        {
+            var started = Volatile.Read(ref _streamStarted);
+            var elapsed = started == 0 ? TimeSpan.Zero : Stopwatch.GetElapsedTime(started);
+            return new NativeStreamMetrics(
+                Interlocked.Read(ref _capturedFrames),
+                Interlocked.Read(ref _encoderInputs),
+                Interlocked.Read(ref _encodedFrames),
+                StopwatchTicksToMilliseconds(Interlocked.Read(ref _captureTicks)),
+                StopwatchTicksToMilliseconds(Interlocked.Read(ref _encodeTicks)),
+                elapsed.TotalSeconds);
+        }
+    }
 
     public static bool CanUse(WallpaperEntry wallpaper) =>
         wallpaper.IsWallpaperEngineScene
         && !string.IsNullOrWhiteSpace(wallpaper.ProjectPath)
         && TryResolveEngine(wallpaper.ProjectPath, out _, out _);
+
+    internal static int? GetConfiguredFrameRateLimit(WallpaperEntry wallpaper)
+    {
+        if (string.IsNullOrWhiteSpace(wallpaper.ProjectPath)
+            || !TryResolveEngine(wallpaper.ProjectPath, out var engineRoot, out _))
+        {
+            return null;
+        }
+        return ReadConfiguredFrameRateLimit(engineRoot);
+    }
 
     public static async Task<WallpaperEngineCaptureSession> StartAsync(
         WallpaperEntry wallpaper,
@@ -177,7 +223,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
             }
             return new WallpaperEngineCaptureSession(
                 controlExecutable, windowName, handle, graphicsCapture, initialFrame, settings.SceneFrameRate,
-                settings.PauseWhenHidden, baseRate, baseVolume);
+                settings.PauseWhenHidden, baseRate, baseVolume, ReadConfiguredFrameRateLimit(engineRoot));
         }
         catch
         {
@@ -194,9 +240,25 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(readPointer);
         if (_disposed) throw new ObjectDisposedException(nameof(WallpaperEngineCaptureSession));
         if (_streamTask is not null) throw new InvalidOperationException("Wallpaper Engine capture is already streaming.");
+        Volatile.Write(ref _streamStarted, Stopwatch.GetTimestamp());
         _streamTask = Task.WhenAll(
             Task.Run(() => StreamFramesAsync(publishFrame, _lifetime.Token)),
             Task.Run(() => StreamPointerAsync(readPointer, _lifetime.Token)));
+    }
+
+    internal void StartH264Streaming(
+        Func<H264EncodedFrame, CancellationToken, Task> publishFrame)
+    {
+        ArgumentNullException.ThrowIfNull(publishFrame);
+        if (_disposed) throw new ObjectDisposedException(nameof(WallpaperEngineCaptureSession));
+        if (_graphicsCapture is null) throw new NotSupportedException("Windows Graphics Capture is required for H.264 streaming.");
+        if (_streamTask is not null) throw new InvalidOperationException("Wallpaper Engine capture is already streaming.");
+        // v0.4 deliberately drops Wallpaper Engine mouse-effect emulation.
+        // Avoiding the old 30 Hz pointer CDP polling also leaves the control
+        // channel available for coalesced video batches and removes a source of
+        // stream cancellation when two CDP requests overlap.
+        Volatile.Write(ref _streamStarted, Stopwatch.GetTimestamp());
+        _streamTask = Task.Run(() => StreamH264FramesAsync(publishFrame, _lifetime.Token));
     }
 
     public async Task UpdateSettingsAsync(WallpaperSettings settings, CancellationToken cancellationToken = default)
@@ -263,6 +325,95 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         {
         }
     }
+
+    private async Task StreamH264FramesAsync(
+        Func<H264EncodedFrame, CancellationToken, Task> publishFrame,
+        CancellationToken cancellationToken)
+    {
+        var graphicsCapture = _graphicsCapture
+            ?? throw new NotSupportedException("Windows Graphics Capture is required for H.264 streaming.");
+        MediaFoundationH264Encoder? encoder = null;
+        var consecutiveFailures = 0;
+        try
+        {
+            while (Volatile.Read(ref _stopRequested) == 0
+                && !cancellationToken.IsCancellationRequested
+                && IsWindow(_windowHandle))
+            {
+                if (_pauseWhenHidden && _lastPageHidden)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
+                    continue;
+                }
+                var started = Stopwatch.GetTimestamp();
+                try
+                {
+                    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    timeout.CancelAfter(TimeSpan.FromSeconds(3));
+                    var captureStarted = Stopwatch.GetTimestamp();
+                    var frame = await graphicsCapture.ReadFrameAsync(timeout.Token);
+                    Interlocked.Add(ref _captureTicks, Stopwatch.GetTimestamp() - captureStarted);
+                    Interlocked.Increment(ref _capturedFrames);
+                    if (!CapturedFrameQuality.IsAcceptable(frame))
+                    {
+                        // Hold the browser's last decoded frame instead of
+                        // encoding a transient black/white capture surface.
+                        continue;
+                    }
+                    encoder ??= MediaFoundationH264Encoder.Create(
+                        frame.Width & ~1,
+                        frame.Height & ~1,
+                        _frameRate,
+                        CalculateH264Bitrate(frame.Width, frame.Height, _frameRate));
+                    var encodeStarted = Stopwatch.GetTimestamp();
+                    var outputs = encoder.EncodeBgra(frame.Pixels, frame.Width, frame.Height, frame.Stride);
+                    Interlocked.Add(ref _encodeTicks, Stopwatch.GetTimestamp() - encodeStarted);
+                    Interlocked.Increment(ref _encoderInputs);
+                    foreach (var encoded in outputs)
+                    {
+                        Interlocked.Increment(ref _encodedFrames);
+                        await publishFrame(encoded, cancellationToken);
+                    }
+                    consecutiveFailures = 0;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch
+                {
+                    consecutiveFailures++;
+                    if (consecutiveFailures >= MaximumConsecutiveStreamFailures)
+                    {
+                        Volatile.Write(ref _stopRequested, 1);
+                        break;
+                    }
+                    await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(750, 50 * consecutiveFailures)), cancellationToken);
+                }
+                var elapsed = Stopwatch.GetElapsedTime(started);
+                var interval = TimeSpan.FromSeconds(1d / Math.Max(1, _frameRate));
+                if (elapsed < interval) await Task.Delay(interval - elapsed, cancellationToken);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            encoder?.Dispose();
+        }
+    }
+
+    private static int CalculateH264Bitrate(int width, int height, int frameRate)
+    {
+        // Roughly 0.10 bits per pixel per frame, bounded for dependable local
+        // decode quality without producing oversized CDP batches.
+        var estimated = (long)width * height * frameRate / 10;
+        return (int)Math.Clamp(estimated, 4_000_000, 20_000_000);
+    }
+
+    private static double StopwatchTicksToMilliseconds(long ticks) =>
+        ticks <= 0 ? 0 : ticks * 1000d / Stopwatch.Frequency;
 
     private async Task<byte[]> CaptureNextFrameAsync(CancellationToken cancellationToken)
     {
@@ -546,6 +697,15 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
             throw new InvalidDataException("The captured Wallpaper Engine frame exceeded the streaming budget.");
         }
         return encoded;
+    }
+
+    private static byte[] EncodeCapturedFrame(CapturedBgraFrame frame)
+    {
+        if (!CapturedFrameQuality.IsAcceptable(frame))
+        {
+            throw new InvalidDataException("Wallpaper Engine returned an empty or uniform transient frame.");
+        }
+        return EncodeCapturedFrame(frame.ToBitmapSource());
     }
 
     private static byte[] EncodeJpeg(BitmapSource bitmap, int quality)
@@ -913,7 +1073,49 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         }
     }
 
-    private static int NormalizeFrameRate(int requested) => requested <= 10 ? 10 : 15;
+    private static int NormalizeFrameRate(int requested) => requested >= 60 ? 60 : 30;
+
+    private static int? ReadConfiguredFrameRateLimit(string engineRoot)
+    {
+        try
+        {
+            var path = Path.Combine(engineRoot, "config.json");
+            var file = new FileInfo(path);
+            if (!file.Exists || file.Length is <= 0 or > 2 * 1024 * 1024
+                || (file.Attributes & FileAttributes.ReparsePoint) != 0) return null;
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var document = JsonDocument.Parse(stream, new JsonDocumentOptions { MaxDepth = 64 });
+            return FindFrameRate(document.RootElement);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static int? FindFrameRate(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (property.Name.Equals("fps", StringComparison.OrdinalIgnoreCase)
+                    && property.Value.TryGetInt32(out var fps)
+                    && fps is >= 1 and <= 240) return fps;
+                var nested = FindFrameRate(property.Value);
+                if (nested.HasValue) return nested;
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                var nested = FindFrameRate(item);
+                if (nested.HasValue) return nested;
+            }
+        }
+        return null;
+    }
 
     public async ValueTask DisposeAsync()
     {
@@ -1072,6 +1274,41 @@ internal static class CapturedFrameQuality
         // while the real DirectX frame is being presented. Never publish that
         // transient over the last known-good frame.
         return !(deviation < 2.25 && dynamicRange < 8 && averageChroma < 2.5);
+    }
+
+    public static bool IsAcceptable(CapturedBgraFrame frame)
+    {
+        ArgumentNullException.ThrowIfNull(frame);
+        if (frame.Width < 64 || frame.Height < 64 || frame.Stride < frame.Width * 4
+            || frame.Pixels.Length < checked(frame.Stride * frame.Height)) return false;
+        double sum = 0, sumSquares = 0, chroma = 0;
+        var minimum = 255d;
+        var maximum = 0d;
+        var count = 0;
+        for (var row = 0; row < SampleRows; row++)
+        {
+            var y = Math.Min(frame.Height - 1,
+                (int)Math.Round((row + .5) * frame.Height / SampleRows - .5));
+            for (var column = 0; column < SampleColumns; column++)
+            {
+                var x = Math.Min(frame.Width - 1,
+                    (int)Math.Round((column + .5) * frame.Width / SampleColumns - .5));
+                var offset = y * frame.Stride + x * 4;
+                var blue = frame.Pixels[offset];
+                var green = frame.Pixels[offset + 1];
+                var red = frame.Pixels[offset + 2];
+                var luminance = red * .2126 + green * .7152 + blue * .0722;
+                sum += luminance;
+                sumSquares += luminance * luminance;
+                chroma += Math.Max(red, Math.Max(green, blue)) - Math.Min(red, Math.Min(green, blue));
+                minimum = Math.Min(minimum, luminance);
+                maximum = Math.Max(maximum, luminance);
+                count++;
+            }
+        }
+        var mean = sum / count;
+        var deviation = Math.Sqrt(Math.Max(0, sumSquares / count - mean * mean));
+        return !(deviation < 2.25 && maximum - minimum < 8 && chroma / count < 2.5);
     }
 }
 
