@@ -429,7 +429,12 @@ public static class Program
                 return await DeferredRestoreLauncher.RunAsync();
             }
 
-            Console.Error.WriteLine("Usage: CodexWallpaperSkin [--doctor [--json] | --restore | --auto-restore | --wait-and-restore | --self-test | --browser-media-probe | --h264-encoder-probe | --h264-encode-probe | --h264-browser-smoke-test <project.json> | --h264-switch-smoke-test <project1.json> <project2.json> <project3.json> | --wgc-smoke-test | --we-capture-smoke-test <project.json> | --we-capture-soak-test <project.json> | --we-h264-smoke-test <project.json>]");
+            if (args.Contains(DesktopCodexLauncher.LaunchArgument, StringComparer.OrdinalIgnoreCase))
+            {
+                return await RememberedWallpaperLauncher.RunAsync();
+            }
+
+            Console.Error.WriteLine("Usage: CodexWallpaperSkin [--doctor [--json] | --restore | --auto-restore | --wait-and-restore | --launch-remembered-wallpaper | --self-test | --browser-media-probe | --h264-encoder-probe | --h264-encode-probe | --h264-browser-smoke-test <project.json> | --h264-switch-smoke-test <project1.json> <project2.json> <project3.json> | --wgc-smoke-test | --we-capture-smoke-test <project.json> | --we-capture-soak-test <project.json> | --we-h264-smoke-test <project.json>]");
             return 64;
         }
         catch (Exception exception)

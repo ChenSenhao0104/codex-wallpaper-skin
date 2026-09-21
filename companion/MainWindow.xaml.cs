@@ -14,6 +14,7 @@ namespace CodexWallpaperSkin;
 public partial class MainWindow : Window
 {
     private const string StaleStartupWarning = "Windows sign-in restore points to another copy of this controller. Turn the sign-in restore option on to update it to this executable.";
+    private const string StaleDesktopLauncherWarning = "The wallpaper-aware desktop shortcut points to another copy of this controller. Turn its option on to update it to this executable.";
     private readonly ObservableCollection<WallpaperEntry> _wallpapers = [];
     private readonly ICollectionView _wallpaperView;
     private readonly Dictionary<string, WallpaperPersonalization> _libraryPersonalizations;
@@ -27,6 +28,7 @@ public partial class MainWindow : Window
     private bool _saveFailureShown;
     private string? _stateWarning;
     private bool _startupChangeGuard;
+    private bool _desktopLauncherChangeGuard;
     private string? _streamRecoveryWallpaperId;
     private int _streamRecoveryAttempts;
     private System.Windows.Forms.NotifyIcon? _trayIcon;
@@ -93,6 +95,21 @@ public partial class MainWindow : Window
         catch
         {
             StartupRestoreCheck.IsChecked = false;
+        }
+        try
+        {
+            var launcherStatus = DesktopCodexLauncher.GetStatus();
+            DesktopLauncherCheck.IsChecked = launcherStatus == DesktopLauncherStatus.CurrentExecutable;
+            if (launcherStatus == DesktopLauncherStatus.StaleExecutable)
+            {
+                _stateWarning = string.IsNullOrWhiteSpace(_stateWarning)
+                    ? StaleDesktopLauncherWarning
+                    : _stateWarning + Environment.NewLine + StaleDesktopLauncherWarning;
+            }
+        }
+        catch
+        {
+            DesktopLauncherCheck.IsChecked = false;
         }
 
         var selected = _wallpapers.FirstOrDefault(item => item.Id == _state.SelectedWallpaperId);
@@ -866,6 +883,45 @@ public partial class MainWindow : Window
         }
     }
 
+    private void DesktopLauncherChanged(object sender, RoutedEventArgs e)
+    {
+        if (_loading || _desktopLauncherChangeGuard)
+        {
+            return;
+        }
+        var enabled = DesktopLauncherCheck.IsChecked == true;
+        try
+        {
+            if (enabled)
+            {
+                DesktopCodexLauncher.InstallOrUpdate();
+                if (!string.IsNullOrWhiteSpace(_stateWarning))
+                {
+                    var remainingWarnings = _stateWarning
+                        .Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries)
+                        .Where(line => !line.Equals(StaleDesktopLauncherWarning, StringComparison.Ordinal))
+                        .ToArray();
+                    _stateWarning = remainingWarnings.Length == 0
+                        ? null
+                        : string.Join(Environment.NewLine, remainingWarnings);
+                }
+                SetStatus("Desktop launcher installed. Open ‘Codex with remembered wallpaper’ next time; keep this portable folder in its current location.");
+            }
+            else
+            {
+                DesktopCodexLauncher.Remove();
+                SetStatus("The wallpaper-aware desktop launcher was removed. The official Codex shortcut was not changed.");
+            }
+        }
+        catch (Exception exception)
+        {
+            _desktopLauncherChangeGuard = true;
+            DesktopLauncherCheck.IsChecked = !enabled;
+            _desktopLauncherChangeGuard = false;
+            ShowError("The wallpaper-aware desktop launcher could not be changed: " + exception.Message);
+        }
+    }
+
     private void SettingsChanged(object sender, RoutedEventArgs e)
     {
         if (_loading || !IsLoaded)
@@ -986,6 +1042,32 @@ public partial class MainWindow : Window
         _settingsTimer.Stop();
         _settingsTimer.Start();
         SetStatus("Original media color/clarity restored. Interface palette and panel opacity were left unchanged.");
+    }
+
+    private void BrighterFidelity_Click(object sender, RoutedEventArgs e)
+    {
+        var wasLoading = _loading;
+        _loading = true;
+        try
+        {
+            OpacitySlider.Value = 100;
+            OverlaySlider.Value = 0;
+            BrightnessSlider.Value = 106;
+            ContrastSlider.Value = 102;
+            SaturationSlider.Value = 103;
+            BlurSlider.Value = 0;
+            SceneScaleSlider.Value = 100;
+            PanelOpacitySlider.Value = 55;
+        }
+        finally
+        {
+            _loading = wasLoading;
+        }
+        UpdateSettingLabels();
+        _state.Settings = ReadSettings();
+        _settingsTimer.Stop();
+        _settingsTimer.Start();
+        SetStatus("Brighter high-clarity preset selected: full capture scale, neutral veil/blur, mild display compensation and less panel dimming. You can fine-tune every value below.");
     }
 
     private void ShowCompleteWallpaper_Click(object sender, RoutedEventArgs e)

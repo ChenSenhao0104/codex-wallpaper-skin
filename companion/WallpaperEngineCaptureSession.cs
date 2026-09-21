@@ -410,8 +410,8 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         // Favor clarity over network-style compression: this is a local-only
         // stream. The higher ceiling reduces gradients and fine-line smearing
         // while keeping batches bounded and within hardware encoder limits.
-        var estimated = (long)width * height * frameRate / 5;
-        return (int)Math.Clamp(estimated, 6_000_000, 32_000_000);
+        var estimated = (long)width * height * frameRate / 3;
+        return (int)Math.Clamp(estimated, 8_000_000, 40_000_000);
     }
 
     internal static (int Width, int Height) CalculateCaptureSize(

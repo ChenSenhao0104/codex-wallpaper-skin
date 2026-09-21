@@ -86,6 +86,13 @@ public static class SelfTests
             Equal(30, settings.SceneFrameRate);
             Equal(0.5d, settings.SceneResolutionScale);
         });
+        Check("wallpaper-aware desktop launcher contract", () =>
+        {
+            True(DesktopCodexLauncher.IsExpectedLaunchArgument("--launch-remembered-wallpaper"));
+            True(DesktopCodexLauncher.IsExpectedLaunchArgument("  --LAUNCH-REMEMBERED-WALLPAPER  "));
+            True(!DesktopCodexLauncher.IsExpectedLaunchArgument("--wait-and-restore"));
+            Equal("Codex with remembered wallpaper.lnk", DesktopCodexLauncher.FileName);
+        });
         Check("BGRA to NV12 conversion is bounded and deterministic", () =>
         {
             var black = new byte[4 * 4 * 4];
