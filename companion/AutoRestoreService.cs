@@ -39,7 +39,7 @@ public static class AutoRestoreService
             var connectedTarget = await injection.ConnectAsync(state.CdpBaseUrl, cancellationToken);
             return new CdpConnectionResult(connectedTarget, false);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
@@ -66,10 +66,10 @@ public static class AutoRestoreService
                     var endpoint = CdpEndpoint.Normalize(state.CdpBaseUrl);
                     CdpProcessIdentity.EnsureOfficialCodexOwnsPort(endpoint.Port);
                     var lateTarget = await WaitForConnectionAsync(
-                        state.CdpBaseUrl, injection, TimeSpan.FromSeconds(10), initialConnectionError, cancellationToken);
+                        state.CdpBaseUrl, injection, TimeSpan.FromSeconds(35), initialConnectionError, cancellationToken);
                     return new CdpConnectionResult(lateTarget, false);
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
                     throw;
                 }
@@ -103,7 +103,7 @@ public static class AutoRestoreService
         state.Aumid = aumid;
         await AppActivation.ActivateWithCdpAsync(aumid, state.CdpBaseUrl, cancellationToken);
         var target = await WaitForConnectionAsync(
-            state.CdpBaseUrl, injection, TimeSpan.FromSeconds(30), initialConnectionError, cancellationToken);
+            state.CdpBaseUrl, injection, TimeSpan.FromSeconds(60), initialConnectionError, cancellationToken);
         return new CdpConnectionResult(target, true);
     }
 
@@ -150,7 +150,7 @@ public static class AutoRestoreService
             {
                 return await injection.ConnectAsync(endpoint, cancellationToken);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
             }

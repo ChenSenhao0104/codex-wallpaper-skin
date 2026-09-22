@@ -228,12 +228,11 @@ public partial class MainWindow : Window
             {
                 WallpaperList.SelectedItem = listed;
             }
-            SaveState();
-            SetStatus(UiLanguage.IsChinese
-                ? $"已从上次会话恢复 {restored.Wallpaper.DisplayTitle}。"
-                    + (restored.ActivatedCodex ? " Codex 已使用已验证的本地壁纸通道启动。" : string.Empty)
-                : $"Restored {restored.Wallpaper.DisplayTitle} from the previous session."
-                    + (restored.ActivatedCodex ? " Codex was started with its verified local CDP endpoint." : string.Empty));
+            CompleteSuccessfulApply(
+                listed ?? restored.Wallpaper,
+                _state.Settings,
+                restored.ApplyResult,
+                "Recovered");
         });
     }
 
@@ -275,11 +274,9 @@ public partial class MainWindow : Window
                         ? $"已连接，正在恢复 {remembered.DisplayTitle}…"
                         : $"Connected. Restoring {remembered.DisplayTitle}…");
                     var progress = new Progress<double>(value => UploadProgress.Value = value * 100);
-                    await _injection.ApplyAsync(remembered, _state.Settings, progress, cancellationToken);
+                    var result = await _injection.ApplyAsync(remembered, _state.Settings, progress, cancellationToken);
                     UploadProgress.Visibility = Visibility.Collapsed;
-                    SetStatus(UiLanguage.IsChinese
-                        ? $"已连接并恢复上次会话的 {remembered.DisplayTitle}。"
-                        : $"Connected and restored {remembered.DisplayTitle} from the previous session.");
+                    CompleteSuccessfulApply(remembered, _state.Settings, result, "Recovered");
                     return;
                 }
             }

@@ -40,6 +40,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
     };
 
     private CdpClient? _client;
+    private string? _endpoint;
     private CaptureLease? _captureLease;
     private readonly SemaphoreSlim _transitionLock = new(1, 1);
     private long _recoveryCount;
@@ -178,8 +179,16 @@ public sealed class CdpInjectionService : IAsyncDisposable
         var operationToken = timeout.Token;
         var endpointUri = CdpEndpoint.Normalize(endpoint);
         CdpProcessIdentity.EnsureOfficialCodexOwnsPort(endpointUri.Port);
-        var targets = await CdpDiscovery.GetTargetsAsync(endpoint, operationToken);
-        var pages = CdpDiscovery.GetCodexPages(targets);
+        IReadOnlyList<CdpTarget> targets;
+        try
+        {
+            targets = await CdpDiscovery.GetTargetsAsync(endpoint, operationToken);
+        }
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException("Finding a verified Codex app page exceeded the 20-second safety timeout.", exception);
+        }
+        var pages = CdpDiscovery.GetConnectableCodexPages(targets);
         if (pages.Count == 0)
         {
             throw new InvalidOperationException("CDP exposes no Codex app:// page.");
@@ -201,7 +210,26 @@ public sealed class CdpInjectionService : IAsyncDisposable
                 {
                     throw new InvalidOperationException("The page does not expose the expected native Codex surface marker.");
                 }
+
+                // Codex can publish its main target before the first navigation
+                // and React shell have settled. Re-check both target ownership
+                // and the native surface after a short stability window so the
+                // caller never receives a connection that is already obsolete.
+                await Task.Delay(TimeSpan.FromMilliseconds(750), operationToken);
+                var stableTargets = await CdpDiscovery.GetTargetsAsync(endpoint, operationToken);
+                var stablePage = CdpDiscovery.GetConnectableCodexPages(stableTargets)
+                    .FirstOrDefault(target => target.Id.Equals(page.Id, StringComparison.Ordinal));
+                if (stablePage is null)
+                {
+                    throw new InvalidOperationException("The Codex main page changed while the wallpaper channel was connecting.");
+                }
+                var stableMarker = await candidate.EvaluateAsync(NativeSurfaceProbeScript, operationToken);
+                if (!ReadBoolean(stableMarker))
+                {
+                    throw new InvalidOperationException("The Codex main page was not stable after startup.");
+                }
                 _client = candidate;
+                _endpoint = endpointUri.AbsoluteUri.TrimEnd('/');
                 return candidate.Target!;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -248,7 +276,6 @@ public sealed class CdpInjectionService : IAsyncDisposable
         IProgress<double>? progress,
         CancellationToken cancellationToken)
     {
-        var client = RequireClient();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(MaximumApplyDuration);
         var operationToken = timeout.Token;
@@ -259,6 +286,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
         }
 
         settings.Normalize();
+        var client = await EnsureStableClientAsync(operationToken);
         await StopCaptureAsync(operationToken);
         await client.EvaluateAsync(BootstrapScript, operationToken);
         Exception? nativeCaptureFailure = null;
@@ -645,6 +673,43 @@ public sealed class CdpInjectionService : IAsyncDisposable
         _client is { IsConnected: true }
             ? _client
             : throw new InvalidOperationException("Connect to the Codex CDP endpoint first.");
+
+    private async Task<CdpClient> EnsureStableClientAsync(CancellationToken cancellationToken)
+    {
+        var endpoint = _endpoint
+            ?? throw new InvalidOperationException("Connect to the Codex CDP endpoint first.");
+        var client = _client;
+        if (client is { IsConnected: true } && client.Target is not null)
+        {
+            try
+            {
+                var targets = await CdpDiscovery.GetTargetsAsync(endpoint, cancellationToken);
+                var targetStillPrimary = CdpDiscovery.GetConnectableCodexPages(targets)
+                    .Any(target => target.Id.Equals(client.Target.Id, StringComparison.Ordinal));
+                if (targetStillPrimary)
+                {
+                    var marker = await client.EvaluateAsync(NativeSurfaceProbeScript, cancellationToken);
+                    if (ReadBoolean(marker))
+                    {
+                        return client;
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch
+            {
+                // A socket can remain Open while its renderer has navigated or
+                // been replaced. Reconnect below instead of asking the user to
+                // click the same button repeatedly.
+            }
+        }
+
+        await ConnectAsync(endpoint, cancellationToken);
+        return RequireClient();
+    }
 
     public async Task<BrowserMediaCapabilityReport> ProbeBrowserMediaAsync(
         CancellationToken cancellationToken = default)
@@ -2191,5 +2256,6 @@ public sealed class CdpInjectionService : IAsyncDisposable
             await _client.DisposeAsync();
             _client = null;
         }
+        _endpoint = null;
     }
 }

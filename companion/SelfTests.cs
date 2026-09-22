@@ -573,6 +573,24 @@ public static class SelfTests
             Equal(valid, CdpDiscovery.SelectCodexPage(new[] { browser, valid }));
             Throws<InvalidOperationException>(() => CdpDiscovery.SelectCodexPage(new[] { browser }));
         });
+        Check("CDP target selection prefers the normal Codex shell", () =>
+        {
+            var detached = new CdpTarget(
+                "001", "page", "ChatGPT", "app://-/detached-window.html?initialRoute=%2Fdetached-window",
+                "ws://127.0.0.1:9222/devtools/page/001");
+            var avatar = new CdpTarget(
+                "002", "page", "ChatGPT", "app://-/index.html?initialRoute=%2Favatar-overlay",
+                "ws://127.0.0.1:9222/devtools/page/002");
+            var normal = new CdpTarget(
+                "999", "page", "Current task", "app://-/index.html",
+                "ws://127.0.0.1:9222/devtools/page/999");
+
+            Equal(normal, CdpDiscovery.SelectCodexPage(new[] { detached, avatar, normal }));
+            Equal(1, CdpDiscovery.GetConnectableCodexPages(new[] { detached, avatar, normal }).Count);
+            True(CdpDiscovery.IsPrimaryCodexPage(normal));
+            True(!CdpDiscovery.IsPrimaryCodexPage(avatar));
+            True(!CdpDiscovery.IsPrimaryCodexPage(detached));
+        });
         Check("official Codex package identity policy", () =>
         {
             const string packageFamily = "OpenAI.Codex_2p2nqsd0c76g0";

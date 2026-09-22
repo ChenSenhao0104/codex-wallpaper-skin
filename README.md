@@ -2,7 +2,7 @@
 
 [English](README.en.md) | 简体中文
 
-一个独立运行的 Windows 11 x64 桌面程序，用本地图片、视频和已安装的 Wallpaper Engine 项目为 Codex Desktop 更换背景。当前 GUI 版本为 `0.4.6`，要求官方 x64 `OpenAI.Codex` Store/MSIX 桌面包。
+一个独立运行的 Windows 11 x64 桌面程序，用本地图片、视频和已安装的 Wallpaper Engine 项目为 Codex Desktop 更换背景。当前 GUI 版本为 `0.4.7`，要求官方 x64 `OpenAI.Codex` Store/MSIX 桌面包。
 
 程序通过仅绑定 `127.0.0.1` 的 Chrome DevTools Protocol（CDP），在真实 Codex 页面中添加可逆的背景层。Image/Video 由 Codex 独立加载；复杂 Scene 由本机 Wallpaper Engine 在隔离窗口中原生渲染后传给 Codex。程序不修改 `WindowsApps`、`app.asar`、官方签名、聊天内容或登录数据。
 

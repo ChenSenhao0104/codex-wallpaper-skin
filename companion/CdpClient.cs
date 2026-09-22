@@ -95,8 +95,13 @@ public static class CdpDiscovery
             AllowAutoRedirect = false,
             UseProxy = false
         };
-        using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(3) };
-        using (var versionResponse = await http.GetAsync(new Uri(root, "json/version"), cancellationToken))
+        // A freshly started Codex can expose the port before Chromium's local
+        // discovery handlers are responsive. Three seconds proved too short on
+        // busy Windows sign-ins and turned a healthy startup into a false
+        // timeout. Keep this bounded, but give the local endpoint enough time
+        // to answer while the outer connection loop remains in control.
+        using var http = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+        using (var versionResponse = await GetLocalAsync(http, new Uri(root, "json/version"), cancellationToken))
         {
             versionResponse.EnsureSuccessStatusCode();
             await using var versionStream = await versionResponse.Content.ReadAsStreamAsync(cancellationToken);
@@ -109,7 +114,7 @@ public static class CdpDiscovery
                 throw new InvalidDataException("The loopback endpoint is not a Chromium CDP browser.");
             }
         }
-        using var response = await http.GetAsync(new Uri(root, "json/list"), cancellationToken);
+        using var response = await GetLocalAsync(http, new Uri(root, "json/list"), cancellationToken);
         response.EnsureSuccessStatusCode();
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
@@ -149,9 +154,29 @@ public static class CdpDiscovery
         return targets;
     }
 
+    private static async Task<HttpResponseMessage> GetLocalAsync(
+        HttpClient http,
+        Uri uri,
+        CancellationToken cancellationToken)
+    {
+        using var requestTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        requestTimeout.CancelAfter(TimeSpan.FromSeconds(8));
+        try
+        {
+            return await http.GetAsync(uri, HttpCompletionOption.ResponseContentRead, requestTimeout.Token);
+        }
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            // HttpClient timeouts are TaskCanceledException instances. They are
+            // transient startup failures, not a user cancellation; translate
+            // them so the outer bounded connection loop can retry.
+            throw new TimeoutException("The local Codex discovery endpoint did not answer within 8 seconds.", exception);
+        }
+    }
+
     public static CdpTarget SelectCodexPage(IEnumerable<CdpTarget> targets)
     {
-        var pages = GetCodexPages(targets);
+        var pages = GetConnectableCodexPages(targets);
         if (pages.Count == 0)
         {
             throw new InvalidOperationException("CDP is reachable, but it exposes no Codex app:// page. Refusing to inject another browser or Electron app.");
@@ -164,9 +189,42 @@ public static class CdpDiscovery
         return targets
             .Where(target => string.Equals(target.Type, "page", StringComparison.OrdinalIgnoreCase)
                 && target.Url.StartsWith("app://", StringComparison.OrdinalIgnoreCase))
-            .OrderByDescending(target => ContainsCodex(target.Title) || ContainsCodex(target.Url))
+            .OrderByDescending(IsPrimaryCodexPage)
+            .ThenByDescending(target => ContainsCodex(target.Title) || ContainsCodex(target.Url))
             .ThenBy(target => target.Id, StringComparer.Ordinal)
             .ToArray();
+    }
+
+    internal static IReadOnlyList<CdpTarget> GetConnectableCodexPages(IEnumerable<CdpTarget> targets)
+    {
+        var pages = GetCodexPages(targets);
+        var primaryPages = pages.Where(IsPrimaryCodexPage).ToArray();
+        // Current Codex builds expose extra app:// pages for avatar overlays and
+        // detached windows. They share theme variables with the real shell, so
+        // a visual-surface probe alone can accept them and inject an invisible
+        // wallpaper. When the normal shell is present, never fall through to
+        // those auxiliary targets. Retain the fallback for older Codex builds.
+        return primaryPages.Length > 0 ? primaryPages : pages;
+    }
+
+    internal static bool IsPrimaryCodexPage(CdpTarget target)
+    {
+        if (!target.Type.Equals("page", StringComparison.OrdinalIgnoreCase)
+            || !Uri.TryCreate(target.Url, UriKind.Absolute, out var uri)
+            || !uri.Scheme.Equals("app", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var path = uri.AbsolutePath.Replace('\\', '/');
+        if (!path.EndsWith("/index.html", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var route = Uri.UnescapeDataString(uri.Query + uri.Fragment);
+        return !route.Contains("avatar-overlay", StringComparison.OrdinalIgnoreCase)
+            && !route.Contains("detached-window", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool ContainsCodex(string value) =>
