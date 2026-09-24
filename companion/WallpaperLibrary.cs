@@ -27,6 +27,9 @@ public static class WallpaperLibrary
             ? null
             : NormalizeCustomTitle(previous.CustomTitle);
         refreshed.Collection = NormalizeCollection(previous.Collection);
+        refreshed.VisualPresetId = previous.VisualPresetId is { Length: > 0 and <= 64 }
+            ? previous.VisualPresetId
+            : null;
     }
 
     public static bool Matches(

@@ -14,6 +14,7 @@
                  FontFamily="Consolas" FontSize="12" TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto"
                  HorizontalScrollBarVisibility="Auto" Background="#0B0D11" Foreground="#DCE3EF" BorderBrush="#303744"/>
         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="Export diagnostic package…" Click="Export_Click" Padding="14,7" Margin="0,0,8,0" Background="#3B4351" Foreground="White" BorderThickness="0"/>
             <Button Content="Copy" Click="Copy_Click" Padding="14,7" Margin="0,0,8,0" Background="#3B4351" Foreground="White" BorderThickness="0"/>
             <Button Content="Close" Click="Close_Click" Padding="14,7" Background="#2B65D9" Foreground="White" BorderThickness="0"/>
         </StackPanel>

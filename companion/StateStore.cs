@@ -175,6 +175,13 @@ public static class StateStore
             state.VisualPreset ??= VisualPresetSettings.BuiltIn();
             state.SchemaVersion = 7;
         }
+        if (state.SchemaVersion < 8)
+        {
+            // Existing users already know the established workflow. Show the
+            // compact first-run guide only to genuinely fresh installations.
+            state.FirstRunCompleted = true;
+            state.SchemaVersion = 8;
+        }
     }
 
     private static void NormalizeVisualPresets(AppState state, bool importLegacySelection)

@@ -6,7 +6,9 @@ public static class DiagnosticsService
     {
         var report = new DiagnosticReport
         {
+            AppVersion = typeof(DiagnosticsService).Assembly.GetName().Version?.ToString() ?? "unknown",
             StateFileExists = File.Exists(StateStore.StatePath),
+            LogFileExists = File.Exists(AppLog.LogPath),
             CdpEndpoint = state.CdpBaseUrl,
             CdpEndpointIsLoopback = CdpEndpoint.IsLoopbackHttp(state.CdpBaseUrl),
             RequestedSceneFrameRate = state.Settings.SceneFrameRate >= 60 ? 60 : 30
@@ -48,7 +50,9 @@ public static class DiagnosticsService
             {
                 var endpoint = CdpEndpoint.Normalize(state.CdpBaseUrl);
                 CdpProcessIdentity.EnsureOfficialCodexOwnsPort(endpoint.Port);
-                report.Targets = (await CdpDiscovery.GetTargetsAsync(state.CdpBaseUrl, cancellationToken)).ToList();
+                report.Targets = (await CdpDiscovery.GetTargetsAsync(state.CdpBaseUrl, cancellationToken))
+                    .Select(SanitizeTarget)
+                    .ToList();
                 report.CdpReachable = true;
                 if (report.Targets.Count == 0)
                 {
@@ -82,4 +86,16 @@ public static class DiagnosticsService
         }
         return report;
     }
+
+    internal static CdpTarget SanitizeTarget(CdpTarget target) => target with
+    {
+        // Codex page titles can contain the current task title. It is not
+        // needed for support and must not be copied into a package the user
+        // may share.
+        Title = CdpDiscovery.IsPrimaryCodexPage(target)
+            ? "Codex main window"
+            : target.Url.StartsWith("app://", StringComparison.OrdinalIgnoreCase)
+                ? "Codex auxiliary window"
+                : target.Type
+    };
 }

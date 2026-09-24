@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Net.WebSockets;
+using System.IO.Compression;
 
 namespace CodexWallpaperSkin;
 
@@ -124,7 +125,8 @@ public static class SelfTests
             };
             StateStore.MigrateState(legacy);
             StateStore.NormalizeState(legacy);
-            Equal(7, legacy.SchemaVersion);
+            Equal(8, legacy.SchemaVersion);
+            True(legacy.FirstRunCompleted);
             Equal(1, legacy.VisualPresets.Count);
             Equal("Brighter high-clarity", legacy.VisualPresets[0].Name);
             Equal(1.23d, legacy.VisualPresets[0].Settings.Brightness);
@@ -278,6 +280,7 @@ public static class SelfTests
                 Title = "Complicated original title",
                 CustomTitle = WallpaperLibrary.NormalizeCustomTitle("  Quiet\nNight  "),
                 Collection = WallpaperLibrary.NormalizeCollection(" Relaxing "),
+                VisualPresetId = VisualPresetProfile.DefaultId,
                 Source = "Test",
                 Kind = WallpaperKind.Scene,
                 Support = WallpaperSupport.LiveScene,
@@ -294,17 +297,47 @@ public static class SelfTests
             WallpaperLibrary.CopyPersonalization(entry, refreshed);
             Equal("Quiet Night", refreshed.CustomTitle);
             Equal("Relaxing", refreshed.Collection);
+            Equal(VisualPresetProfile.DefaultId, refreshed.VisualPresetId);
             var personalizations = new Dictionary<string, WallpaperPersonalization>(StringComparer.OrdinalIgnoreCase);
             WallpaperLibraryStore.Update(entry, personalizations);
             var restored = new WallpaperEntry { Id = entry.Id, Title = "Rescanned title" };
             WallpaperLibraryStore.Apply(restored, personalizations);
             Equal("Quiet Night", restored.DisplayTitle);
             Equal("Relaxing", restored.Collection);
+            Equal(VisualPresetProfile.DefaultId, restored.VisualPresetId);
             restored.CustomTitle = null;
             restored.Collection = null;
+            restored.VisualPresetId = null;
             WallpaperLibraryStore.Update(restored, personalizations);
             Equal(0, personalizations.Count);
             Throws<InvalidDataException>(() => WallpaperLibrary.NormalizeCustomTitle("   "));
+        });
+        Check("diagnostic support bundle excludes raw state and media", () =>
+        {
+            var directory = Path.Combine(Path.GetTempPath(), "cws-support-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                var path = Path.Combine(directory, "diagnostics.zip");
+                SupportBundleService.Export(path, "{\"CdpReachable\":true}");
+                using var archive = ZipFile.OpenRead(path);
+                True(archive.GetEntry("diagnostic.json") is not null);
+                True(archive.GetEntry("README.txt") is not null);
+                True(archive.GetEntry("state.json") is null);
+            }
+            finally
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        });
+        Check("diagnostics redact Codex task titles", () =>
+        {
+            var target = new CdpTarget(
+                "main", "page", "private task title", "app://-/index.html",
+                "ws://127.0.0.1:9222/devtools/page/main");
+            var sanitized = DiagnosticsService.SanitizeTarget(target);
+            Equal("Codex main window", sanitized.Title);
+            True(!sanitized.Title.Contains("private", StringComparison.OrdinalIgnoreCase));
         });
         Check("schema 6 sibling state round-trips without data loss", () =>
         {

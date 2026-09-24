@@ -16,6 +16,8 @@
 
 列表上方的 **Search**、类型和收藏夹筛选可快速缩小结果。选择壁纸后，**Rename** 只修改本软件中的显示名称，**Set collection** 可建立“治愈”“动漫”“风景”等个人收藏夹；重新扫描不会丢失这些整理信息，也不会改动 Steam 或本地素材。
 
+右侧 **Performance profile** 提供省电、均衡和高画质档位；单独调整参数后会自动显示为自定义。可用 **Assign preset to wallpaper** 把当前视觉预设绑定到所选壁纸。顶部 **Doctor** 支持导出诊断 ZIP；其中不包含壁纸媒体、完整状态文件或 Codex 任务标题。
+
 Image 与不超过 256 MiB 的 Video 项目直接使用已安装的原始素材；更大的 Wallpaper Engine Video 和 Scene 项目由 Wallpaper Engine 在私有离屏窗口中播放，再走原生捕获链路。该窗口不会出现在任务栏或 Alt+Tab，也不会抢占焦点。Wallpaper Engine 需保持后台可用。为保证稳定性，当前 H.264 路径不复刻鼠标互动。原生后端不可用时才明确降级到受限内置渲染器或安全预览。Web 项目只使用安全预览，Application 项目永不执行。
 
 ## 命令行与校验

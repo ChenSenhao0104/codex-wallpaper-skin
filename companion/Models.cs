@@ -57,6 +57,8 @@ public sealed class WallpaperEntry
     public string? CustomTitle { get; set; }
     [JsonIgnore]
     public string? Collection { get; set; }
+    [JsonIgnore]
+    public string? VisualPresetId { get; set; }
 
     [JsonIgnore]
     public string DisplayTitle => string.IsNullOrWhiteSpace(CustomTitle) ? Title : CustomTitle;
@@ -233,7 +235,7 @@ public sealed class PaletteResult
 
 public sealed class AppState
 {
-    public const int CurrentSchema = 7;
+    public const int CurrentSchema = 8;
     public int SchemaVersion { get; set; } = CurrentSchema;
     public string CdpBaseUrl { get; set; } = CdpEndpoint.CreateUnusedLoopbackUrl();
     public string? Aumid { get; set; }
@@ -244,6 +246,7 @@ public sealed class AppState
     public bool PendingActivation { get; set; }
     public bool AutoRestoreOnLaunch { get; set; } = true;
     public string UiLanguage { get; set; } = CodexWallpaperSkin.UiLanguage.DefaultCode;
+    public bool FirstRunCompleted { get; set; }
     public List<WallpaperEntry> Wallpapers { get; set; } = [];
     public WallpaperSettings Settings { get; set; } = new();
     // Keep the selected profile mirrored here so v0.4.4 can still open and
@@ -269,8 +272,11 @@ public sealed class DiagnosticReport
     public string Os { get; set; } = Environment.OSVersion.VersionString;
     public string Runtime { get; set; } = Environment.Version.ToString();
     public string Architecture { get; set; } = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString();
+    public string AppVersion { get; set; } = string.Empty;
     public string StatePath { get; set; } = StateStore.StatePath;
     public bool StateFileExists { get; set; }
+    public string LogPath { get; set; } = AppLog.LogPath;
+    public bool LogFileExists { get; set; }
     public string CdpEndpoint { get; set; } = string.Empty;
     public bool CdpEndpointIsLoopback { get; set; }
     public bool CdpReachable { get; set; }

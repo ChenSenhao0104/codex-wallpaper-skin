@@ -51,6 +51,30 @@ public sealed class CdpInjectionService : IAsyncDisposable
     public CdpTarget? Target => _client?.Target;
     public void RecordRecoveryAttempt() => Interlocked.Increment(ref _recoveryCount);
 
+    public async Task<bool> CheckConnectionAsync(CancellationToken cancellationToken = default)
+    {
+        var client = _client;
+        var endpoint = _endpoint;
+        if (client is not { IsConnected: true } || client.Target is null || string.IsNullOrWhiteSpace(endpoint))
+            return false;
+        try
+        {
+            var targets = await CdpDiscovery.GetTargetsAsync(endpoint, cancellationToken);
+            if (!CdpDiscovery.GetConnectableCodexPages(targets)
+                .Any(target => target.Id.Equals(client.Target.Id, StringComparison.Ordinal)))
+                return false;
+            return ReadBoolean(await client.EvaluateAsync(NativeSurfaceProbeScript, cancellationToken));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private sealed record CaptureLease(
         WallpaperEngineCaptureSession Session,
         string Token,

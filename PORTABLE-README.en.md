@@ -14,6 +14,8 @@ The last successful Apply is remembered. Start or connect Codex through this con
 
 Use **Search**, the type filter, and the collection filter above the list to narrow a large library. After selecting a wallpaper, **Rename** changes only its display name in this app and **Set collection** creates personal groups such as Relaxing, Anime, Landscape, or Work. Rescanning preserves this organization and never renames Steam Workshop projects or local files.
 
+The right-side **Performance profile** offers Power saver, Balanced, and High quality plans; changing an individual quality control switches the label to Custom. **Assign preset to wallpaper** binds the selected visual preset to one wallpaper. **Doctor** can export a diagnostic ZIP that excludes wallpaper media, the complete state file, and Codex task titles.
+
 Image and Video projects up to 256 MiB use their original installed media directly. Larger Wallpaper Engine videos and Scene projects use Wallpaper Engine's private off-screen renderer and the native capture path. That surface remains capturable without appearing in the taskbar or Alt+Tab and without taking focus. Wallpaper Engine must remain available in the background. For stability, the current H.264 path does not reproduce pointer interaction. If native rendering is unavailable, the app explicitly falls back to the bounded renderer or a safe preview. Web projects use safe previews only, and Application projects are never executed.
 
 ## Command line and verification

@@ -6,6 +6,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
@@ -20,6 +21,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, WallpaperPersonalization> _libraryPersonalizations;
     private readonly CdpInjectionService _injection = new();
     private readonly DispatcherTimer _settingsTimer;
+    private readonly DispatcherTimer _connectionHealthTimer;
     private AppState _state;
     private bool _loading = true;
     private bool _busy;
@@ -34,10 +36,15 @@ public partial class MainWindow : Window
     private bool _allowExit;
     private bool _trayTipShown;
     private bool _exitSequenceRunning;
+    private bool _connectionHealthRunning;
+    private ConnectionUiState _connectionUiState = ConnectionUiState.Disconnected;
 
     private sealed record WallpaperTypeFilterOption(string Label, WallpaperKind? Kind);
     private sealed record WallpaperCollectionFilterOption(string Label, string? Collection, bool Ungrouped = false);
     private sealed record WallpaperFitOption(string Label, WallpaperFit Value);
+    private sealed record PerformanceProfileOption(string Label, PerformanceProfileKind Kind);
+    private enum ConnectionUiState { Disconnected, Connecting, Connected, ActionNeeded, Error }
+    private enum PerformanceProfileKind { PowerSaver, Balanced, HighQuality, Custom }
 
     public MainWindow()
     {
@@ -46,15 +53,20 @@ public partial class MainWindow : Window
         UiLanguage.Set(_state.UiLanguage);
         UiLanguage.Apply(this);
         UpdateLanguageButton();
+        SetConnectionUiState(_connectionUiState);
         _libraryPersonalizations = WallpaperLibraryStore.Load();
         _settingsTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(180) };
         _settingsTimer.Tick += SettingsTimer_Tick;
+        _connectionHealthTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(12) };
+        _connectionHealthTimer.Tick += ConnectionHealthTimer_Tick;
+        _connectionHealthTimer.Start();
 
         _wallpaperView = CollectionViewSource.GetDefaultView(_wallpapers);
         _wallpaperView.Filter = WallpaperMatchesActiveFilters;
         WallpaperList.ItemsSource = _wallpaperView;
         LoadLocalizedTypeFilter();
         LoadLocalizedFitOptions(_state.Settings.Fit);
+        LoadLocalizedPerformanceProfiles();
         SceneFpsCombo.ItemsSource = new[] { 30, 60 };
         foreach (var profile in _state.VisualPresets) _visualPresets.Add(profile);
         VisualPresetCombo.ItemsSource = _visualPresets;
@@ -80,7 +92,9 @@ public partial class MainWindow : Window
         RefreshCollectionFilter();
         RefreshWallpaperView();
         LoadSettings(_state.Settings);
+        SyncPerformanceProfileSelection();
         AutoRestoreCheck.IsChecked = _state.AutoRestoreOnLaunch;
+        FirstRunGuide.Visibility = _state.FirstRunCompleted ? Visibility.Collapsed : Visibility.Visible;
         var startupRegistrationRepaired = false;
         try
         {
@@ -132,6 +146,7 @@ public partial class MainWindow : Window
         Closed += MainWindow_Closed;
         Loaded += MainWindow_Loaded;
         InitializeTrayIcon();
+        SetConnectionUiState(ConnectionUiState.Disconnected);
     }
 
     private void Language_Click(object sender, RoutedEventArgs e)
@@ -140,10 +155,18 @@ public partial class MainWindow : Window
         _state.UiLanguage = UiLanguage.Code;
         UiLanguage.Apply(this);
         UpdateLanguageButton();
+        SetConnectionUiState(_connectionUiState);
         LoadLocalizedTypeFilter();
         LoadLocalizedFitOptions(ReadSettings().Fit);
+        LoadLocalizedPerformanceProfiles();
+        SyncPerformanceProfileSelection();
         RefreshCollectionFilter();
         RefreshWallpaperView();
+        if (WallpaperList.SelectedItem is WallpaperEntry selected)
+        {
+            UpdateWallpaperPresetBindingUi(selected);
+            UpdateWallpaperDetails(selected);
+        }
         InitializeTrayIcon();
         SaveState();
         SetStatus(UiLanguage.Text("Language changed to English."));
@@ -192,6 +215,22 @@ public partial class MainWindow : Window
             .First(item => item.Value == selected);
     }
 
+    private void LoadLocalizedPerformanceProfiles()
+    {
+        var selected = (PerformanceProfileCombo.SelectedItem as PerformanceProfileOption)?.Kind
+            ?? DetectPerformanceProfile(ReadSettings());
+        PerformanceProfileCombo.ItemsSource = new[]
+        {
+            new PerformanceProfileOption(UiLanguage.Text("Power saver"), PerformanceProfileKind.PowerSaver),
+            new PerformanceProfileOption(UiLanguage.Text("Balanced"), PerformanceProfileKind.Balanced),
+            new PerformanceProfileOption(UiLanguage.Text("High quality"), PerformanceProfileKind.HighQuality),
+            new PerformanceProfileOption(UiLanguage.Text("Custom"), PerformanceProfileKind.Custom)
+        };
+        PerformanceProfileCombo.SelectedItem = PerformanceProfileCombo.Items
+            .Cast<PerformanceProfileOption>()
+            .First(item => item.Kind == selected);
+    }
+
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
         Loaded -= MainWindow_Loaded;
@@ -199,9 +238,18 @@ public partial class MainWindow : Window
         {
             return;
         }
+        SetConnectionUiState(ConnectionUiState.Connecting);
         await RunBusyAsync(async cancellationToken =>
         {
             _state.Wallpapers = _wallpapers.ToList();
+            var rememberedForPreset = AutoRestoreService.ResolveLastWallpaper(_state);
+            var listedForPreset = rememberedForPreset is null ? null : _wallpapers.FirstOrDefault(item =>
+                item.Id.Equals(rememberedForPreset.Id, StringComparison.OrdinalIgnoreCase));
+            if (listedForPreset is not null)
+            {
+                ApplyBoundVisualPreset(listedForPreset);
+                _state.Settings = ReadSettings();
+            }
             UploadProgress.Value = 0;
             UploadProgress.Visibility = Visibility.Visible;
             SetStatus("Restoring the last applied wallpaper…");
@@ -238,6 +286,7 @@ public partial class MainWindow : Window
 
     private async void Connect_Click(object sender, RoutedEventArgs e)
     {
+        SetConnectionUiState(ConnectionUiState.Connecting);
         await RunBusyAsync(async cancellationToken =>
         {
             var endpoint = EndpointTextBox.Text.Trim();
@@ -268,6 +317,13 @@ public partial class MainWindow : Window
                 var remembered = AutoRestoreService.ResolveLastWallpaper(_state);
                 if (remembered?.CanApply == true)
                 {
+                    var listedRemembered = _wallpapers.FirstOrDefault(item =>
+                        item.Id.Equals(remembered.Id, StringComparison.OrdinalIgnoreCase));
+                    if (listedRemembered is not null)
+                    {
+                        ApplyBoundVisualPreset(listedRemembered);
+                        _state.Settings = ReadSettings();
+                    }
                     UploadProgress.Value = 0;
                     UploadProgress.Visibility = Visibility.Visible;
                     SetStatus(UiLanguage.IsChinese
@@ -287,6 +343,7 @@ public partial class MainWindow : Window
                 : connection.ActivatedCodex
                     ? $"Codex was started with the verified wallpaper channel and connected: {connection.Target.Title}."
                     : $"Connected: {connection.Target.Title} — {connection.Target.Url}");
+            SetConnectionUiState(ConnectionUiState.Connected);
         });
     }
 
@@ -521,16 +578,20 @@ public partial class MainWindow : Window
         ApplyButton.IsEnabled = selected?.CanApply == true;
         RenameWallpaperButton.IsEnabled = selected is not null;
         SetCollectionButton.IsEnabled = selected is not null;
+        BindPresetButton.IsEnabled = selected is not null;
+        ClearPresetBindingButton.IsEnabled = !string.IsNullOrWhiteSpace(selected?.VisualPresetId);
         PreviewImage.Source = null;
         PreviewPlaceholder.Visibility = Visibility.Visible;
         if (selected is null)
         {
             WallpaperDetails.Text = string.Empty;
+            WallpaperPresetBindingText.Text = UiLanguage.Text("No preset is assigned to this wallpaper.");
             PreviewPlaceholder.Text = "Select a wallpaper";
             return;
         }
 
         _state.SelectedWallpaperId = selected.Id;
+        UpdateWallpaperPresetBindingUi(selected);
         UpdateWallpaperDetails(selected);
         var path = selected.IsScene ? selected.PreviewPath : selected.EffectivePath;
         if (path is not null && IsWpfPreviewImage(path))
@@ -587,6 +648,7 @@ public partial class MainWindow : Window
             }
 
             _settingsTimer.Stop();
+            ApplyBoundVisualPreset(selected);
             var settings = ReadSettings();
             _state.Settings = settings;
             SaveState();
@@ -634,6 +696,8 @@ public partial class MainWindow : Window
         WallpaperApplyResult applyResult,
         string action)
     {
+        SetConnectionUiState(ConnectionUiState.Connected);
+        AppLog.Info($"wallpaper-{action.ToLowerInvariant()} id={selected.Id} mode={applyResult.Mode}");
         if (!action.Equals("Recovered", StringComparison.Ordinal))
         {
             _streamRecoveryWallpaperId = selected.Id;
@@ -912,8 +976,79 @@ public partial class MainWindow : Window
         }
         UpdateSettingLabels();
         _state.Settings = ReadSettings();
+        SyncPerformanceProfileSelection();
         _settingsTimer.Stop();
         _settingsTimer.Start();
+    }
+
+    private void PerformanceProfile_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loading || PerformanceProfileCombo.SelectedItem is not PerformanceProfileOption option
+            || option.Kind == PerformanceProfileKind.Custom)
+        {
+            return;
+        }
+
+        var wasLoading = _loading;
+        _loading = true;
+        try
+        {
+            switch (option.Kind)
+            {
+                case PerformanceProfileKind.PowerSaver:
+                    SceneFpsCombo.SelectedItem = 30;
+                    SceneScaleSlider.Value = 60;
+                    PauseHiddenCheck.IsChecked = true;
+                    break;
+                case PerformanceProfileKind.Balanced:
+                    SceneFpsCombo.SelectedItem = 30;
+                    SceneScaleSlider.Value = 85;
+                    PauseHiddenCheck.IsChecked = true;
+                    break;
+                case PerformanceProfileKind.HighQuality:
+                    SceneFpsCombo.SelectedItem = 60;
+                    SceneScaleSlider.Value = 100;
+                    PauseHiddenCheck.IsChecked = true;
+                    break;
+            }
+        }
+        finally
+        {
+            _loading = wasLoading;
+        }
+        UpdateSettingLabels();
+        _state.Settings = ReadSettings();
+        SaveState();
+        _settingsTimer.Stop();
+        _settingsTimer.Start();
+        SetStatus($"Performance profile ‘{option.Label}’ selected. Individual quality controls remain editable.");
+    }
+
+    private void SyncPerformanceProfileSelection()
+    {
+        if (PerformanceProfileCombo.ItemsSource is null) return;
+        var kind = DetectPerformanceProfile(ReadSettings());
+        var selected = PerformanceProfileCombo.Items.Cast<PerformanceProfileOption>()
+            .FirstOrDefault(item => item.Kind == kind);
+        if (selected is null || ReferenceEquals(PerformanceProfileCombo.SelectedItem, selected)) return;
+        var wasLoading = _loading;
+        _loading = true;
+        PerformanceProfileCombo.SelectedItem = selected;
+        _loading = wasLoading;
+    }
+
+    private static PerformanceProfileKind DetectPerformanceProfile(WallpaperSettings settings)
+    {
+        if (settings.PauseWhenHidden && settings.SceneFrameRate == 30
+            && Math.Abs(settings.SceneResolutionScale - 0.60) < 0.001)
+            return PerformanceProfileKind.PowerSaver;
+        if (settings.PauseWhenHidden && settings.SceneFrameRate == 30
+            && Math.Abs(settings.SceneResolutionScale - 0.85) < 0.001)
+            return PerformanceProfileKind.Balanced;
+        if (settings.PauseWhenHidden && settings.SceneFrameRate == 60
+            && Math.Abs(settings.SceneResolutionScale - 1.00) < 0.001)
+            return PerformanceProfileKind.HighQuality;
+        return PerformanceProfileKind.Custom;
     }
 
     private async void SettingsTimer_Tick(object? sender, EventArgs e)
@@ -932,6 +1067,31 @@ public partial class MainWindow : Window
         catch (Exception exception)
         {
             SetStatus("Live settings update failed: " + exception.Message);
+        }
+    }
+
+    private async void ConnectionHealthTimer_Tick(object? sender, EventArgs e)
+    {
+        if (_connectionHealthRunning || _busy || _closeRequested || _connectionUiState != ConnectionUiState.Connected)
+            return;
+        _connectionHealthRunning = true;
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(4));
+            if (!await _injection.CheckConnectionAsync(timeout.Token))
+            {
+                SetConnectionUiState(ConnectionUiState.Error);
+                AppLog.Warning("connection-health-check-failed");
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            SetConnectionUiState(ConnectionUiState.Error);
+            AppLog.Warning("connection-health-check-timed-out");
+        }
+        finally
+        {
+            _connectionHealthRunning = false;
         }
     }
 
@@ -1030,6 +1190,44 @@ public partial class MainWindow : Window
     private async void ApplyVisualPreset_Click(object sender, RoutedEventArgs e)
     {
         var profile = VisualPresetCombo.SelectedItem as VisualPresetProfile ?? _visualPresets.First();
+        LoadVisualPresetControls(profile);
+        _state.Settings = ReadSettings();
+        _settingsTimer.Stop();
+        SaveState();
+
+        await RunBusyAsync(async cancellationToken =>
+        {
+            if (!_injection.IsConnected
+                && CdpEndpoint.IsLoopbackHttp(_state.CdpBaseUrl)
+                && !CdpEndpoint.IsAvailableForActivation(_state.CdpBaseUrl))
+            {
+                try
+                {
+                    await _injection.ConnectAsync(_state.CdpBaseUrl, cancellationToken);
+                    ConnectButton.Content = UiLanguage.Text("Reconnect Codex");
+                    SetConnectionUiState(ConnectionUiState.Connected);
+                }
+                catch
+                {
+                    // The preset remains saved and will be applied by the next
+                    // successful Apply. Do not misreport it as live.
+                }
+            }
+
+            if (_injection.IsConnected)
+            {
+                await _injection.UpdateSettingsAsync(_state.Settings, cancellationToken);
+                SetStatus($"Visual preset ‘{profile.Name}’ applied to Codex now. The capture-scale value takes full effect on the next wallpaper Apply; every control remains editable.");
+            }
+            else
+            {
+                SetStatus($"Visual preset ‘{profile.Name}’ selected but not applied: this window is not connected to the current Codex wallpaper channel. Its values will be used on the next successful Apply.");
+            }
+        });
+    }
+
+    private void LoadVisualPresetControls(VisualPresetProfile profile)
+    {
         var preset = profile.Settings.Normalize();
         var wasLoading = _loading;
         _loading = true;
@@ -1049,38 +1247,7 @@ public partial class MainWindow : Window
             _loading = wasLoading;
         }
         UpdateSettingLabels();
-        _state.Settings = ReadSettings();
-        _settingsTimer.Stop();
-        SaveState();
-
-        await RunBusyAsync(async cancellationToken =>
-        {
-            if (!_injection.IsConnected
-                && CdpEndpoint.IsLoopbackHttp(_state.CdpBaseUrl)
-                && !CdpEndpoint.IsAvailableForActivation(_state.CdpBaseUrl))
-            {
-                try
-                {
-                    await _injection.ConnectAsync(_state.CdpBaseUrl, cancellationToken);
-                    ConnectButton.Content = UiLanguage.Text("Reconnect Codex");
-                }
-                catch
-                {
-                    // The preset remains saved and will be applied by the next
-                    // successful Apply. Do not misreport it as live.
-                }
-            }
-
-            if (_injection.IsConnected)
-            {
-                await _injection.UpdateSettingsAsync(_state.Settings, cancellationToken);
-                SetStatus($"Visual preset ‘{profile.Name}’ applied to Codex now. The capture-scale value takes full effect on the next wallpaper Apply; every control remains editable.");
-            }
-            else
-            {
-                SetStatus($"Visual preset ‘{profile.Name}’ selected but not applied: this window is not connected to the current Codex wallpaper channel. Its values will be used on the next successful Apply.");
-            }
-        });
+        SyncPerformanceProfileSelection();
     }
 
     private void VisualPreset_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1102,8 +1269,78 @@ public partial class MainWindow : Window
         _state.SelectedVisualPresetId = dialog.SelectedProfileId;
         VisualPresetCombo.SelectedItem = _visualPresets.FirstOrDefault(item =>
             item.Id.Equals(dialog.SelectedProfileId, StringComparison.OrdinalIgnoreCase)) ?? _visualPresets[0];
+        var validIds = _visualPresets.Select(item => item.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var removedBindings = 0;
+        foreach (var wallpaper in _wallpapers.Where(item => !string.IsNullOrWhiteSpace(item.VisualPresetId)
+            && !validIds.Contains(item.VisualPresetId!)))
+        {
+            wallpaper.VisualPresetId = null;
+            WallpaperLibraryStore.Update(wallpaper, _libraryPersonalizations);
+            removedBindings++;
+        }
+        if (removedBindings > 0) WallpaperLibraryStore.Save(_libraryPersonalizations);
+        if (WallpaperList.SelectedItem is WallpaperEntry selected) UpdateWallpaperPresetBindingUi(selected);
         SaveState();
         SetStatus($"Visual preset library saved ({_visualPresets.Count} presets). Select one and click Apply preset; every right-side control remains editable afterward.");
+    }
+
+    private void BindPresetToWallpaper_Click(object sender, RoutedEventArgs e)
+    {
+        if (WallpaperList.SelectedItem is not WallpaperEntry wallpaper
+            || VisualPresetCombo.SelectedItem is not VisualPresetProfile profile) return;
+        wallpaper.VisualPresetId = profile.Id;
+        SavePersonalization(wallpaper);
+        UpdateWallpaperPresetBindingUi(wallpaper);
+        UpdateWallpaperDetails(wallpaper);
+        SetStatus(UiLanguage.IsChinese
+            ? $"已将预设“{profile.Name}”分配给 {wallpaper.DisplayTitle}。以后应用该壁纸时会自动加载此预设。"
+            : $"Assigned preset ‘{profile.Name}’ to {wallpaper.DisplayTitle}. It will load automatically whenever this wallpaper is applied.");
+    }
+
+    private void ClearWallpaperPresetBinding_Click(object sender, RoutedEventArgs e)
+    {
+        if (WallpaperList.SelectedItem is not WallpaperEntry wallpaper) return;
+        wallpaper.VisualPresetId = null;
+        SavePersonalization(wallpaper);
+        UpdateWallpaperPresetBindingUi(wallpaper);
+        UpdateWallpaperDetails(wallpaper);
+        SetStatus(UiLanguage.IsChinese
+            ? $"已清除 {wallpaper.DisplayTitle} 的预设分配。"
+            : $"Cleared the preset assignment for {wallpaper.DisplayTitle}.");
+    }
+
+    private void ApplyBoundVisualPreset(WallpaperEntry wallpaper)
+    {
+        if (string.IsNullOrWhiteSpace(wallpaper.VisualPresetId)) return;
+        var profile = _visualPresets.FirstOrDefault(item =>
+            item.Id.Equals(wallpaper.VisualPresetId, StringComparison.OrdinalIgnoreCase));
+        if (profile is null)
+        {
+            wallpaper.VisualPresetId = null;
+            SavePersonalization(wallpaper);
+            UpdateWallpaperPresetBindingUi(wallpaper);
+            return;
+        }
+
+        var wasLoading = _loading;
+        _loading = true;
+        VisualPresetCombo.SelectedItem = profile;
+        _state.SelectedVisualPresetId = profile.Id;
+        _loading = wasLoading;
+        LoadVisualPresetControls(profile);
+    }
+
+    private void UpdateWallpaperPresetBindingUi(WallpaperEntry wallpaper)
+    {
+        var profile = string.IsNullOrWhiteSpace(wallpaper.VisualPresetId)
+            ? null
+            : _visualPresets.FirstOrDefault(item => item.Id.Equals(wallpaper.VisualPresetId, StringComparison.OrdinalIgnoreCase));
+        WallpaperPresetBindingText.Text = profile is null
+            ? UiLanguage.Text("No preset is assigned to this wallpaper.")
+            : UiLanguage.IsChinese
+                ? $"已分配预设：{profile.Name}。应用此壁纸时会自动加载。"
+                : $"Assigned preset: {profile.Name}. It loads automatically when this wallpaper is applied.";
+        ClearPresetBindingButton.IsEnabled = profile is not null;
     }
 
     private void ShowCompleteWallpaper_Click(object sender, RoutedEventArgs e)
@@ -1145,6 +1382,8 @@ public partial class MainWindow : Window
             if (!_closeRequested)
             {
                 SetStatus("Operation cancelled.");
+                if (_connectionUiState == ConnectionUiState.Connecting)
+                    SetConnectionUiState(ConnectionUiState.Disconnected);
             }
         }
         catch (CodexAlreadyRunningWithoutCdpException)
@@ -1160,6 +1399,9 @@ public partial class MainWindow : Window
             UploadProgress.Visibility = Visibility.Collapsed;
             if (!_closeRequested)
             {
+                AppLog.Error(exception, "interactive-operation");
+                if (_connectionUiState == ConnectionUiState.Connecting)
+                    SetConnectionUiState(ConnectionUiState.Error);
                 ShowError(ToUserFacingError(exception));
             }
         }
@@ -1188,7 +1430,38 @@ public partial class MainWindow : Window
 
     private void SetManualReconnectStatus()
     {
+        SetConnectionUiState(ConnectionUiState.ActionNeeded);
         SetStatus(UiLanguage.Text("Codex is already open without the wallpaper channel. Please close Codex manually, then click Start / reconnect Codex. The controller will never close Codex for you."));
+    }
+
+    private void SetConnectionUiState(ConnectionUiState state)
+    {
+        _connectionUiState = state;
+        ConnectionStateText.Text = UiLanguage.Text(state switch
+        {
+            ConnectionUiState.Connecting => "Connecting",
+            ConnectionUiState.Connected => "Connected",
+            ConnectionUiState.ActionNeeded => "Action needed",
+            ConnectionUiState.Error => "Connection problem",
+            _ => "Not connected"
+        });
+        ConnectionStateBadge.Background = new SolidColorBrush(
+            (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(state switch
+        {
+            ConnectionUiState.Connecting => "#9A6516",
+            ConnectionUiState.Connected => "#24714A",
+            ConnectionUiState.ActionNeeded => "#9A6516",
+            ConnectionUiState.Error => "#9A3944",
+            _ => "#3B4351"
+        }));
+    }
+
+    private void DismissFirstRun_Click(object sender, RoutedEventArgs e)
+    {
+        _state.FirstRunCompleted = true;
+        FirstRunGuide.Visibility = Visibility.Collapsed;
+        SaveState();
+        SetStatus("First-use guide dismissed. Start / reconnect Codex remains the only startup and connection entry point.");
     }
 
     private void WallpaperSearch_TextChanged(object sender, TextChangedEventArgs e)
@@ -1352,7 +1625,11 @@ public partial class MainWindow : Window
         var originalName = string.IsNullOrWhiteSpace(selected.CustomTitle)
             ? string.Empty
             : $" · Original name: {selected.Title}";
-        WallpaperDetails.Text = $"{selected.Source} · {selected.Kind} · Collection: {collection}{originalName} · {selected.Note}";
+        var preset = string.IsNullOrWhiteSpace(selected.VisualPresetId)
+            ? null
+            : _visualPresets.FirstOrDefault(item => item.Id.Equals(selected.VisualPresetId, StringComparison.OrdinalIgnoreCase));
+        var presetText = preset is null ? string.Empty : $" · Preset: {preset.Name}";
+        WallpaperDetails.Text = $"{selected.Source} · {selected.Kind} · Collection: {collection}{presetText}{originalName} · {selected.Note}";
     }
 
     private void SavePersonalization(WallpaperEntry selected)
@@ -1507,6 +1784,7 @@ public partial class MainWindow : Window
 
     private async void MainWindow_Closed(object? sender, EventArgs e)
     {
+        _connectionHealthTimer.Stop();
         if (!_exitSequenceRunning
             && _injection.HasActiveCapture
             && !string.IsNullOrWhiteSpace(_state.LastAppliedWallpaperId))

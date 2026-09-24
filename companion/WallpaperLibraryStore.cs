@@ -8,6 +8,7 @@ public sealed class WallpaperPersonalization
     public string Id { get; set; } = string.Empty;
     public string? CustomTitle { get; set; }
     public string? Collection { get; set; }
+    public string? VisualPresetId { get; set; }
 }
 
 public sealed class WallpaperLibraryDocument
@@ -62,7 +63,9 @@ public static class WallpaperLibraryStore
         var document = new WallpaperLibraryDocument
         {
             Items = personalizations.Values
-                .Where(item => !string.IsNullOrWhiteSpace(item.CustomTitle) || !string.IsNullOrWhiteSpace(item.Collection))
+                .Where(item => !string.IsNullOrWhiteSpace(item.CustomTitle)
+                    || !string.IsNullOrWhiteSpace(item.Collection)
+                    || !string.IsNullOrWhiteSpace(item.VisualPresetId))
                 .OrderBy(item => item.Id, StringComparer.OrdinalIgnoreCase)
                 .ToList()
         };
@@ -95,13 +98,16 @@ public static class WallpaperLibraryStore
         if (!personalizations.TryGetValue(wallpaper.Id, out var item)) return;
         wallpaper.CustomTitle = item.CustomTitle;
         wallpaper.Collection = item.Collection;
+        wallpaper.VisualPresetId = item.VisualPresetId;
     }
 
     public static void Update(
         WallpaperEntry wallpaper,
         IDictionary<string, WallpaperPersonalization> personalizations)
     {
-        if (string.IsNullOrWhiteSpace(wallpaper.CustomTitle) && string.IsNullOrWhiteSpace(wallpaper.Collection))
+        if (string.IsNullOrWhiteSpace(wallpaper.CustomTitle)
+            && string.IsNullOrWhiteSpace(wallpaper.Collection)
+            && string.IsNullOrWhiteSpace(wallpaper.VisualPresetId))
         {
             personalizations.Remove(wallpaper.Id);
             return;
@@ -110,7 +116,8 @@ public static class WallpaperLibraryStore
         {
             Id = wallpaper.Id,
             CustomTitle = wallpaper.CustomTitle,
-            Collection = wallpaper.Collection
+            Collection = wallpaper.Collection,
+            VisualPresetId = wallpaper.VisualPresetId
         };
     }
 
@@ -136,12 +143,16 @@ public static class WallpaperLibraryStore
                 ? null
                 : WallpaperLibrary.NormalizeCustomTitle(item.CustomTitle);
             var collection = WallpaperLibrary.NormalizeCollection(item.Collection);
-            if (customTitle is null && collection is null) continue;
+            var visualPresetId = item.VisualPresetId is { Length: > 0 and <= 64 }
+                ? item.VisualPresetId.Trim()
+                : null;
+            if (customTitle is null && collection is null && visualPresetId is null) continue;
             result[item.Id] = new WallpaperPersonalization
             {
                 Id = item.Id,
                 CustomTitle = customTitle,
-                Collection = collection
+                Collection = collection,
+                VisualPresetId = visualPresetId
             };
         }
         return result;

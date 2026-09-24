@@ -101,6 +101,14 @@ Video 项目在 256 MiB 安全上限内会直接使用原始 MP4/WebM；更大�
 - **Manage presets…** 可新建、命名、修改或删除多组方案（最多 32 组），每组可保存亮度、对比度、饱和度、面板透明度、遮罩、模糊和 Scene 捕获比例。
 - 选好方案后点击 **Apply preset**。若当前已连接 Codex，可立即看到效果；若未连接，状态栏会明确提示尚未应用。
 - 套用预设后，右侧每一项仍可继续手动微调。手动微调只影响当前参数，不会反向覆盖已保存的方案。
+- 点击 **Assign preset to wallpaper** 可把当前预设绑定到所选壁纸。以后应用或恢复该壁纸时会先自动载入对应预设；删除预设时相关绑定会安全清除。
+
+### 性能档位
+
+- **Power saver / 省电**：30 FPS、60% Scene 比例、隐藏时限速。
+- **Balanced / 均衡**：30 FPS、85% Scene 比例、隐藏时限速。
+- **High quality / 高画质**：60 FPS、100% Scene 比例、隐藏时限速。
+- 修改单独的质量参数后会显示为 **Custom / 自定义**，不会锁住任何控件。
 
 ### 整理、重命名和查找壁纸
 
@@ -131,14 +139,14 @@ Video 项目在 256 MiB 安全上限内会直接使用原始 MP4/WebM；更大�
 | **Animation playback speed** | 调整视频和 Scene 动画速度。 | 通常保持 `100%`。 |
 | **Mute video / Wallpaper Engine scene** | 静音视频和高保真 Scene。 | 默认开启。 |
 | **Pause video / throttle scene while Codex is hidden** | Codex 隐藏时暂停视频，并显著降低原生 Scene 的采集频率。 | 默认开启，可降低后台消耗。 |
-| **Scene quality target** | 控制 Scene 采集目标；高保真传输为稳定与负载安全最高限制在 15 FPS。 | 省电时选 15。 |
+| **Scene quality target** | 控制 Scene 采集目标；实际帧率不会超过 Wallpaper Engine 的全局限制。 | 省电时选 30。 |
 | **Live scene render scale** | 按 Codex 视口的 50%–100% 渲染 Scene。 | 降低可明显减少 GPU 和显存占用。 |
 
 点击 **Original color / clarity** 会把背景不透明度、黑色遮罩、亮度、对比度、饱和度和模糊恢复为中性值，不会关闭自动取色或改变面板透明度。
 
 每个滑杆右侧的当前数字都可以点击。弹窗只接受范围内的纯数字（动画速度按 `0.25`–`2.00` 倍输入），确定后滑杆、保存状态和已连接的 Codex 会同步更新。
 
-**Automatically reapply the last wallpaper when this controller opens** 默认开启，只记住最后一次成功 Apply 的项目；应用失败不会覆盖记忆。**Restore at Windows sign-in** 是可选的当前用户启动项。若 Codex 已经在没有 CDP 参数的情况下运行，软件保存待应用项目并在后台等待用户自然退出，不需要再次手工打开调节器。
+**Automatically reapply the last wallpaper when this controller opens** 默认开启，只记住最后一次成功 Apply 的项目；应用失败不会覆盖记忆。Windows 登录恢复是可选的当前用户启动项。若 Codex 已经在没有 CDP 参数的情况下运行，软件会保存待应用项目，但不会关闭、等待关闭或重新打开 Codex；请手动关闭 Codex，再点击 **Start / reconnect Codex**。
 
 自动取色只在图片、视频首帧或 Scene 首次渲染画面上进行一次 32×32 采样，不会逐帧持续取色。
 
@@ -154,6 +162,10 @@ Video 项目在 256 MiB 安全上限内会直接使用原始 MP4/WebM；更大�
 - 不需要时恢复原始背景。
 
 本项目不会转码，也不会根据电池、CPU 或 GPU 使用率自动切换预设。Image/Video 由 Codex 独立解码；高保真 Scene 会由 Wallpaper Engine 创建一份专用渲染窗口，因此桌面端同时播放壁纸时会产生额外渲染负载。
+
+## 6.1 诊断包
+
+点击顶部 **Doctor**，再点击 **Export diagnostic package…**，可以导出 ZIP。诊断包包含只读 Doctor 报告和滚动控制器日志，不包含壁纸媒体、完整 `state.json`、认证信息、对话内容或 Codex 任务标题。发送给他人前仍建议自行检查内容。
 
 ## 7. 恢复原始背景
 

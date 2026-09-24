@@ -12,6 +12,7 @@ public static class Program
     [STAThread]
     public static int Main(string[] args)
     {
+        AppLog.Initialize();
         if (args.Length == 0
             || args.Any(value => value.Equals(LegacyDesktopLauncherCleanup.LegacyArgument, StringComparison.OrdinalIgnoreCase)))
         {
@@ -41,6 +42,7 @@ public static class Program
             }
             if (!ownsMutex)
             {
+                AppLog.Info("second-gui-instance-forwarded");
                 showEvent.Set();
                 return 0;
             }
