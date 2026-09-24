@@ -13,7 +13,7 @@
 - 加载 PNG、JPEG、WebP、GIF、MP4 和 WebM。
 - 扫描本机 Steam 当前仍订阅且已下载的 Wallpaper Engine Image、Video、Scene 和 Web 项目；重新扫描会移除已取消订阅的残留目录条目，但不影响 **Add local** 壁纸。
 - Image/Video 使用项目中的原始本地媒体；不超过 256 MiB 的视频直接传给 Codex，较大的 Wallpaper Engine 视频改由官方 `playInWindow` 播放并走原生捕获链路，避免整文件上传和巨额内存副本。
-- Scene 优先通过本机已安装的 Wallpaper Engine 官方 `playInWindow` 后端渲染，再把离屏画面与 Codex 鼠标坐标安全桥接；Puppet Warp、粒子、作者脚本、水面反馈和音频响应因此保持原生语义。
+- Scene 优先通过本机已安装的 Wallpaper Engine 官方 `playInWindow` 后端渲染，再把离屏画面传给 Codex；Puppet Warp、粒子、作者脚本和音频响应由 Wallpaper Engine 保持原生语义。当前稳定 H.264 链路不复刻鼠标互动。
 - 官方高保真后端不可用时才使用受限内置 2D 渲染器，并明确提示兼容性降级；最终还可安全回退到包内原始纹理或经过验证的 Workshop 预览。
 - Web 项目不执行网页代码，只允许使用安全的 GIF 或静态预览；Application 项目始终拒绝。
 - 一次性 32×32 取色可协调半透明面板、强调色和继承文字；代码、终端、警告和状态色保持原样。
@@ -22,12 +22,13 @@
 - 提供个人收藏夹、技术类型筛选、即时搜索和仅限本软件的重命名；重新扫描不会清除整理结果，也不会改动工坊文件。
 - 顶部提供中英文一键切换并记住选择；**Start / reconnect Codex** 是唯一的 Codex 启动与重连入口。
 - 媒体解码成功后原子切换；失败保留旧背景；支持隐藏暂停、异常清理和 **Restore Codex background** 一键恢复。
+- 提供无需管理员权限的当前用户安装器；升级保留壁纸库、预设和设置，卸载时可选择保留或彻底删除本软件数据，且安装/卸载不会关闭 Codex。
 
 复杂 Scene 不再由本项目猜测其私有格式，而由 Wallpaper Engine 自身渲染。此模式要求 Wallpaper Engine 已安装并在播放期间保持后台运行；关闭窗口会隐藏到托盘并继续播放，使用托盘中的 **Remove wallpaper and exit** 会快速尝试移除壁纸并彻底退出，Codex 已关闭或不可用时也不会阻塞退出。当前 H.264 路径为稳定性不复刻鼠标互动；内置 2D 渲染器只作为明确标注的兼容后备。
 
 ## 快速开始
 
-详细步骤见 [具体操作流程](usage-process.md)。普通用户从 Release 下载 `CodexWallpaperSkin-win-x64.zip` 和对应 `.sha256`，校验后完整解压并运行 `CodexWallpaperSkin.exe`。便携版是自包含程序，不需要安装 Python、PyYAML、Node.js 或 .NET。
+详细步骤见 [具体操作流程](usage-process.md)。普通用户优先下载 `CodexWallpaperSkin-Setup-vX.Y.Z-win-x64.exe` 和对应 `.sha256`，校验后运行安装器；也可下载便携 ZIP，完整解压后运行 `CodexWallpaperSkin.exe`。两种版本都是自包含程序，不需要安装 Python、PyYAML、Node.js 或 .NET。
 
 1. 运行软件，点击 **Start / reconnect Codex**；程序会自动检测、启动或重新连接，普通使用无需填写 CDP 或 AUMID。
 2. 如果 Codex 已普通启动，请先手动关闭 Codex，再点击 **Start / reconnect Codex**；软件不会自动关闭或重启 Codex。
@@ -52,7 +53,7 @@
 
 ## 性能与安全
 
-静态图负担最低。视频直接在 Codex 解码；高保真 Scene 同时使用 Wallpaper Engine 渲染、Windows Graphics Capture/D3D11（不可用时回退兼容抓取）、JPEG 编码和回环传输，传输安全上限为 15 FPS，并受 50%–100% 渲染比例控制。低负担建议是模糊 `0`、选择 15 FPS、较低 Scene 比例并开启隐藏暂停。
+静态图负担最低。视频直接在 Codex 解码；高保真 Scene 同时使用 Wallpaper Engine 渲染、Windows Graphics Capture/D3D11、硬件 H.264 编码和回环传输，并受 Wallpaper Engine 的全局帧率限制与 50%–100% 渲染比例控制。低负担建议是模糊 `0`、使用 30 FPS 省电方案、较低 Scene 比例并开启隐藏暂停。
 
 所有画面只通过回环 CDP 在本机内存中传入 Codex，不发送到互联网或局域网。高保真 Scene 由用户已安装的 Wallpaper Engine 执行并遵循其安全/性能设置；本程序自身不解释或执行 SceneScript。Web 壁纸代码与 Application 壁纸始终不会运行。同一 Windows 用户下的其他进程仍可能访问未认证的 CDP 端口，因此只应在可信会话中使用；完全退出以 CDP 参数启动的 Codex 才会关闭端口。
 
@@ -60,7 +61,7 @@
 
 ## 开发与验证
 
-构建需要 .NET 8 SDK；完整运行时测试需要 Node.js。GUI 本体不依赖第三方 NuGet 包。
+构建需要 .NET 8 SDK；完整运行时测试需要 Node.js，安装器构建还需要 Inno Setup 7。第三方依赖与许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ```powershell
 pwsh -NoProfile -File .\scripts\build-companion.ps1
@@ -80,6 +81,12 @@ dotnet .\companion\bin\Debug\net8.0-windows10.0.19041.0\win-x64\CodexWallpaperSk
 
 ```powershell
 pwsh -NoProfile -File .\scripts\build-companion.ps1 -Configuration Release -Publish
+```
+
+安装 Inno Setup 7 后，可在完成全部便携版验证的同时生成当前用户安装器及 SHA-256：
+
+```powershell
+pwsh -NoProfile -File .\scripts\build-installer.ps1
 ```
 
 `SKILL.md`、`agents/` 和 `references/` 仅作为未来可能的 Codex 集成入口保留，不属于当前 GUI 交付，也不会被便携版运行。许可证为 [Apache-2.0](LICENSE)，第三方代码说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

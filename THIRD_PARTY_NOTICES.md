@@ -30,6 +30,16 @@ codec; encoding is performed by Windows.
 - Upstream project: <https://github.com/amerkoleci/Vortice.Windows>
 - License: <https://github.com/amerkoleci/Vortice.Windows/blob/main/LICENSE>
 
+## Installer tooling
+
+The optional Windows setup executable is compiled with **Inno Setup 7**. Inno
+Setup is a build-time tool and is not included in the portable ZIP. Anyone
+redistributing or commercially building the installer is responsible for
+following the current Inno Setup license terms.
+
+- Project and license information: <https://jrsoftware.org/isinfo.php>
+- Download and signature-verification information: <https://jrsoftware.org/isdl.php>
+
 ## Technical references
 
 The following open-source projects were consulted as primary technical references for the independently implemented loopback-CDP architecture:

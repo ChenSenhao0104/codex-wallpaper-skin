@@ -4,7 +4,7 @@
 
 ## 一分钟流程
 
-1. 解压 `CodexWallpaperSkin-win-x64.zip`，运行 `CodexWallpaperSkin.exe`。
+1. 运行 `CodexWallpaperSkin-Setup-vX.Y.Z-win-x64.exe` 完成当前用户安装；也可解压便携 ZIP 后直接运行。
 2. 点击 **Start / reconnect Codex**；检测、受控启动和重新连接均自动完成。
 3. 如果 Codex 已普通启动，请先手动关闭 Codex，再点击 **Start / reconnect Codex**；软件不会自动关闭或重启 Codex。
 4. 点击 **Scan Wallpaper Engine**，选择壁纸，检查参数后点击 **Apply selected**。
@@ -20,18 +20,25 @@
 
 ## 2. 安装 GUI 软件
 
-1. 下载 `CodexWallpaperSkin-win-x64.zip` 和旁边的 `.sha256` 文件。
-2. 对下载的 ZIP 计算校验值：
+推荐下载安装器 `CodexWallpaperSkin-Setup-vX.Y.Z-win-x64.exe` 和旁边的 `.sha256` 文件。安装器只写入当前用户的 `%LOCALAPPDATA%\Programs\Codex Wallpaper Skin`，无需管理员权限，并创建开始菜单入口；桌面快捷方式为可选项。
+
+1. 对下载的安装器计算校验值：
 
    ```powershell
-   Get-FileHash "D:\Downloads\CodexWallpaperSkin-win-x64.zip" -Algorithm SHA256
+   Get-FileHash "D:\Downloads\CodexWallpaperSkin-Setup-vX.Y.Z-win-x64.exe" -Algorithm SHA256
    ```
 
-3. 将结果与 `.sha256` 文件中的值比较。
-4. 把 ZIP 完整解压到你信任的目录。
-5. 双击 `CodexWallpaperSkin.exe`。
+2. 将结果与 `.sha256` 文件中的值比较。
+3. 运行安装器，完成后从开始菜单打开 **Codex Wallpaper Skin**。
 
-便携版是自包含程序，普通使用不需要安装 Python、PyYAML、Node.js 或 .NET。
+如需免安装使用，可改为下载便携 ZIP，完整解压到可信目录后运行 `CodexWallpaperSkin.exe`。安装版与便携版都是自包含程序，普通使用不需要安装 Python、PyYAML、Node.js 或 .NET。
+
+### 升级、回滚与卸载
+
+- **升级**：先从托盘选择 **Remove wallpaper and exit** 退出控制器，再运行新版安装器。安装器只替换程序文件，保留 `%LOCALAPPDATA%\CodexWallpaperSkin` 中的壁纸库、预设、设置和日志，不会关闭 Codex。
+- **回滚**：同样先退出控制器，再运行你保留的旧版安装器。程序状态带版本保护；如果旧版提示状态格式较新，它会停止写入而不会破坏文件，此时重新安装新版即可。发布前必须对相邻版本执行一次升级与回滚测试。
+- **卸载**：在 Windows“已安装的应用”中卸载。默认建议保留壁纸库、预设和设置，方便以后重装；选择彻底删除时，只删除 `%LOCALAPPDATA%\CodexWallpaperSkin`，不会删除本地壁纸、Wallpaper Engine 项目或任何 Codex 数据。
+- 若控制器仍在运行，安装器或卸载器会要求先从托盘退出，不会强制结束控制器，也不会结束 Codex。
 
 ## 3. 首次连接 Codex
 

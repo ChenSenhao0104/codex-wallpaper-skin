@@ -2,6 +2,8 @@
 
 This is a self-contained Windows 11 x64 companion. It needs no Python, PyYAML, or .NET installation. This release requires the official x64 `OpenAI.Codex` Store/MSIX desktop package; unpackaged or renamed copies and ARM64/x86 builds are unsupported. Download it only from this project's trusted release page, extract the complete ZIP, and then run `CodexWallpaperSkin.exe`.
 
+This directory is the portable distribution and does not register an uninstaller. Use the matching `CodexWallpaperSkin-Setup-vX.Y.Z-win-x64.exe` instead when Start-menu integration, in-place upgrades, and standard Windows uninstall are preferred.
+
 ## Use a Wallpaper Engine wallpaper
 
 1. Subscribe to or select a wallpaper in Wallpaper Engine and let its local files finish downloading.

@@ -2,6 +2,8 @@
 
 这是 Windows 11 x64 的自包含调节器，无需安装 Python、PyYAML 或 .NET。当前版本要求官方 x64 `OpenAI.Codex` Store/MSIX 桌面包；非打包版、改名副本、ARM64 和 x86 版本不受支持。请只从本项目的可信 Release 页面下载，并将 ZIP 完整解压后再运行 `CodexWallpaperSkin.exe`。
 
+本目录是便携版，不会注册卸载器。希望使用开始菜单、原位升级和标准卸载流程的用户应改用同版本的 `CodexWallpaperSkin-Setup-vX.Y.Z-win-x64.exe`。
+
 完整的逐步说明、参数表和排障流程见 [usage-process.md](usage-process.md)。
 
 ## 使用 Wallpaper Engine 壁纸

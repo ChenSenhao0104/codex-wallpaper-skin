@@ -13,7 +13,7 @@ The application uses a loopback-only Chrome DevTools Protocol (CDP) session to a
 - PNG, JPEG, WebP, GIF, MP4, and WebM media.
 - Discovery of currently subscribed and downloaded Wallpaper Engine Image, Video, Scene, and Web projects across local Steam libraries. A rescan removes unsubscribed stale Workshop folders without affecting **Add local** entries.
 - Original local media for Image and Video projects. Videos up to 256 MiB play directly in Codex; larger Wallpaper Engine videos use official `playInWindow` rendering and the native capture path instead of uploading the whole file.
-- Scene projects prefer Wallpaper Engine's official `playInWindow` renderer and bridge its off-screen output plus Codex pointer coordinates. Puppet Warp, particles, author scripts, feedback effects, and audio response therefore keep their native semantics.
+- Scene projects prefer Wallpaper Engine's official `playInWindow` renderer and present its off-screen output in Codex. Puppet Warp, particles, author scripts, and audio response retain Wallpaper Engine's native semantics. The current stable H.264 path does not reproduce pointer interaction.
 - If the native renderer is unavailable, the bounded built-in 2D renderer is used with an explicit compatibility warning, followed by an original package texture or validated Workshop preview when necessary.
 - Web code is never executed; only validated animated/static previews are allowed. Application projects are always rejected.
 - One-time 32×32 palette sampling for translucent surfaces, accents, and inherited interface text while code, terminal, warning, and status colors remain intact.
@@ -22,12 +22,13 @@ The application uses a loopback-only Chrome DevTools Protocol (CDP) session to a
 - Personal collections, technical-type filters, instant search, and app-only renaming. Rescanning preserves the organization and never renames Workshop or local files.
 - A top-level English/Chinese button switches the interface immediately and remembers the choice. **Start / reconnect Codex** is the only Codex startup and reconnection entry point.
 - Decode-before-swap, preservation of the old background on failure, pause when hidden, bounded cleanup, and **Restore Codex background**.
+- A per-user installer that needs no elevation. Upgrades preserve the wallpaper library, presets, and settings; uninstall offers to retain or remove this app's user data and never closes Codex.
 
-Complex and interactive Scenes are rendered by Wallpaper Engine itself. Codex pointer movement and button state are mapped to the private render window, so water feedback, parallax, and similar interactions remain the wallpaper's own implementation. Wallpaper Engine must be installed and remain available in the background; closing the visible controller hands playback to a hidden restore worker. The built-in renderer remains only as an explicitly labeled fallback.
+Complex Scenes are rendered by Wallpaper Engine itself. Wallpaper Engine must be installed and remain available in the background; closing the visible controller keeps it running in the notification area. The current stable H.264 path does not reproduce pointer interaction, and the built-in renderer remains only as an explicitly labeled fallback.
 
 ## Quick start
 
-Download `CodexWallpaperSkin-win-x64.zip` and its `.sha256` file from Releases, verify the hash, extract the complete archive, and run `CodexWallpaperSkin.exe`. The portable application is self-contained and needs no Python, PyYAML, Node.js, or .NET installation.
+For ordinary use, download `CodexWallpaperSkin-Setup-vX.Y.Z-win-x64.exe` and its `.sha256`, verify the hash, and run the installer. A portable ZIP remains available: extract it completely before running `CodexWallpaperSkin.exe`. Both distributions are self-contained and need no Python, PyYAML, Node.js, or .NET installation.
 
 1. Run the application and choose **Start / reconnect Codex**. Detection, controlled startup, and reconnection are automatic; normal use does not require entering a CDP endpoint or AUMID.
 2. If Codex is already running normally, close Codex manually and then choose **Start / reconnect Codex**. The controller never closes or restarts Codex automatically.
@@ -52,7 +53,7 @@ After the first successful Apply, the controller remembers that wallpaper. Windo
 
 ## Performance and security
 
-Static images have the lowest overhead. Video decodes in Codex. High-fidelity Scenes use Wallpaper Engine rendering, Windows Graphics Capture/D3D11 (with compatibility capture fallback), JPEG encoding, and loopback transfer, capped safely at 15 FPS and controlled by the 50%–100% render scale. Keep blur at `0`, choose the 15 FPS target, lower Scene scale, and enable pause-when-hidden for a lighter setup.
+Static images have the lowest overhead. Video decodes in Codex. High-fidelity Scenes use Wallpaper Engine rendering, Windows Graphics Capture/D3D11, hardware H.264 encoding, and loopback transfer, subject to Wallpaper Engine's global frame-rate limit and the 50%–100% render scale. Keep blur at `0`, use the 30 FPS Power saver profile, lower Scene scale, and enable pause-when-hidden for a lighter setup.
 
 Frames travel only through loopback CDP into Codex renderer memory and are never uploaded by this app. High-fidelity Scenes execute inside the user's installed Wallpaper Engine and follow its security/performance settings; this app does not interpret SceneScript itself. Web wallpaper code and Application wallpapers are never run. Other processes under the same Windows user can still reach an unauthenticated CDP port, so use it only in a trusted session and fully exit the CDP-enabled Codex process to close the port.
 
@@ -60,7 +61,7 @@ No Wallpaper Engine media is bundled or redistributed. Users must own Wallpaper 
 
 ## Development and verification
 
-Building requires the .NET 8 SDK; the full runtime test suite also needs Node.js. The GUI has no third-party NuGet dependency.
+Building requires the .NET 8 SDK; the full runtime test suite also needs Node.js, and installer builds need Inno Setup 7. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for dependencies and licenses.
 
 ```powershell
 pwsh -NoProfile -File .\scripts\build-companion.ps1
@@ -80,6 +81,12 @@ Create the self-contained executable, portable ZIP, and SHA-256 file with:
 
 ```powershell
 pwsh -NoProfile -File .\scripts\build-companion.ps1 -Configuration Release -Publish
+```
+
+With Inno Setup 7 installed, build the verified per-user installer and SHA-256 file with:
+
+```powershell
+pwsh -NoProfile -File .\scripts\build-installer.ps1
 ```
 
 `SKILL.md`, `agents/`, and `references/` are retained only as possible future Codex integration entry points. They are not part of the current GUI delivery and are not used by the portable application. See the [Apache-2.0 license](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md).
