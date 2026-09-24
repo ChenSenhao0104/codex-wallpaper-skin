@@ -2,6 +2,9 @@
 param(
   [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,
   [string]$IsccPath,
+  [ValidatePattern('^[0-9A-Fa-f]{40}$')][string]$CertificateThumbprint,
+  [ValidatePattern('^https://')][string]$TimestampUrl,
+  [string]$SignToolPath,
   [switch]$SkipPortableBuild
 )
 
@@ -22,12 +25,20 @@ if ($Version -ne $projectVersion) {
 }
 
 & (Join-Path $PSScriptRoot 'installer-policy-test.ps1') -InstallerScript $installerScript
+& (Join-Path $PSScriptRoot 'version-consistency-test.ps1')
+
+$signingRequested = [bool]$CertificateThumbprint -or [bool]$TimestampUrl
+if ($signingRequested -and (-not $CertificateThumbprint -or -not $TimestampUrl)) {
+  throw 'Code signing requires both -CertificateThumbprint and -TimestampUrl.'
+}
 
 $payloadName = "win-x64-v$Version-installer-payload"
 $archiveBaseName = "CodexWallpaperSkin-v$Version-portable-win-x64"
 $payloadDirectory = Join-Path $distRoot $payloadName
+$portableArchive = Join-Path $distRoot "$archiveBaseName.zip"
 $setupLeaf = "CodexWallpaperSkin-Setup-v$Version-win-x64.exe"
 $setupPath = Join-Path $distRoot $setupLeaf
+$releaseManifestPath = Join-Path $distRoot "CodexWallpaperSkin-v$Version-release-manifest.json"
 
 if (-not $SkipPortableBuild) {
   & (Join-Path $PSScriptRoot 'build-companion.ps1') -Publish `
@@ -35,10 +46,23 @@ if (-not $SkipPortableBuild) {
 }
 
 $payloadExecutable = Join-Path $payloadDirectory 'CodexWallpaperSkin.exe'
-foreach ($required in @($installerScript, $payloadExecutable, (Join-Path $payloadDirectory 'LICENSE'))) {
+foreach ($required in @($installerScript, $payloadExecutable, (Join-Path $payloadDirectory 'LICENSE'), $portableArchive)) {
   if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
     throw "Required installer input was not found: $required"
   }
+}
+
+if ($signingRequested) {
+  & (Join-Path $PSScriptRoot 'sign-release.ps1') -Path $payloadExecutable `
+    -CertificateThumbprint $CertificateThumbprint -TimestampUrl $TimestampUrl -SignToolPath $SignToolPath
+
+  foreach ($artifact in @($portableArchive, "$portableArchive.sha256")) {
+    if (Test-Path -LiteralPath $artifact) { Remove-Item -LiteralPath $artifact -Force }
+  }
+  Compress-Archive -Path (Join-Path $payloadDirectory '*') -DestinationPath $portableArchive -CompressionLevel Optimal
+  $portableChecksum = (Get-FileHash -LiteralPath $portableArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+  Set-Content -LiteralPath "$portableArchive.sha256" `
+    -Value "$portableChecksum  $(Split-Path -Leaf $portableArchive)" -Encoding ascii
 }
 
 function Resolve-Iscc {
@@ -88,8 +112,16 @@ if (-not (Test-Path -LiteralPath $setupPath -PathType Leaf)) {
   throw "Inno Setup did not create the expected installer: $setupPath"
 }
 
+if ($signingRequested) {
+  & (Join-Path $PSScriptRoot 'sign-release.ps1') -Path $setupPath `
+    -CertificateThumbprint $CertificateThumbprint -TimestampUrl $TimestampUrl -SignToolPath $SignToolPath
+}
+
 $checksum = (Get-FileHash -LiteralPath $setupPath -Algorithm SHA256).Hash.ToLowerInvariant()
 Set-Content -LiteralPath "$setupPath.sha256" -Value "$checksum  $setupLeaf" -Encoding ascii
+
+& (Join-Path $PSScriptRoot 'write-release-manifest.ps1') -Version $Version `
+  -ArtifactPath @($setupPath, $portableArchive) -OutputPath $releaseManifestPath
 
 Write-Host "Installer: $setupPath"
 Write-Host "SHA-256: $checksum"

@@ -31,13 +31,19 @@ jobs:
         shell: pwsh
         run: ./scripts/repository-hygiene.ps1
 
+      - name: Check release metadata and installer policy
+        shell: pwsh
+        run: |
+          ./scripts/version-consistency-test.ps1
+          ./scripts/installer-policy-test.ps1
+
       - name: Build companion
         shell: pwsh
         run: ./scripts/build-companion.ps1
 
       - name: Run companion self-tests
         shell: pwsh
-        run: dotnet ./companion/bin/Debug/net8.0-windows/win-x64/CodexWallpaperSkin.dll --self-test
+        run: dotnet ./companion/bin/Debug/net8.0-windows10.0.19041.0/win-x64/CodexWallpaperSkin.dll --self-test
 
       - name: Run injection runtime smoke test
         shell: pwsh

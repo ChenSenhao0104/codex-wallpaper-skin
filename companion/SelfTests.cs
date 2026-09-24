@@ -18,6 +18,11 @@ public static class SelfTests
         var failed = 0;
         var messages = new List<string>();
 
+        Check("release version metadata", () =>
+        {
+            True(System.Text.RegularExpressions.Regex.IsMatch(
+                BuildInfo.DisplayVersion, @"^\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$"));
+        });
         Check("MIME types", () =>
         {
             Equal("image/webp", WallpaperCatalog.MimeTypeFor("x.WEBP"));

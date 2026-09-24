@@ -49,6 +49,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        Title = $"Codex Wallpaper Skin {BuildInfo.DisplayVersion}";
+        VersionText.Text = $"v{BuildInfo.DisplayVersion}";
         _state = StateStore.Load();
         UiLanguage.Set(_state.UiLanguage);
         UiLanguage.Apply(this);

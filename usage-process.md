@@ -31,6 +31,8 @@
 2. 将结果与 `.sha256` 文件中的值比较。
 3. 运行安装器，完成后从开始菜单打开 **Codex Wallpaper Skin**。
 
+发布目录中的 `release-manifest.json` 还会列出安装器和便携 ZIP 的文件大小、SHA-256、源码提交与数字签名状态。它用于审计和自动化校验，不能替代可信下载来源或有效数字签名。
+
 如需免安装使用，可改为下载便携 ZIP，完整解压到可信目录后运行 `CodexWallpaperSkin.exe`。安装版与便携版都是自包含程序，普通使用不需要安装 Python、PyYAML、Node.js 或 .NET。
 
 ### 升级、回滚与卸载

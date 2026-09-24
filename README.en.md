@@ -2,7 +2,7 @@
 
 English | [简体中文](README.md)
 
-An independent Windows 11 x64 desktop application that adds local images, videos, and installed Wallpaper Engine projects as Codex Desktop backgrounds. The current GUI development version is `0.5.0` and requires the official x64 `OpenAI.Codex` Store/MSIX package.
+An independent Windows 11 x64 desktop application that adds local images, videos, and installed Wallpaper Engine projects as Codex Desktop backgrounds. The current GUI development version is `0.5.1` and requires the official x64 `OpenAI.Codex` Store/MSIX package.
 
 The application uses a loopback-only Chrome DevTools Protocol (CDP) session to add a reversible background layer to the real Codex page. Codex loads Image/Video media independently; complex Scene projects are rendered natively by a private local Wallpaper Engine window and transferred to Codex. The application does not patch `WindowsApps`, `app.asar`, the official signature, chats, or authentication data.
 
@@ -23,6 +23,7 @@ The application uses a loopback-only Chrome DevTools Protocol (CDP) session to a
 - A top-level English/Chinese button switches the interface immediately and remembers the choice. **Start / reconnect Codex** is the only Codex startup and reconnection entry point.
 - Decode-before-swap, preservation of the old background on failure, pause when hidden, bounded cleanup, and **Restore Codex background**.
 - A per-user installer that needs no elevation. Upgrades preserve the wallpaper library, presets, and settings; uninstall offers to retain or remove this app's user data and never closes Codex.
+- The window title exposes the actual application version. Release builds emit a machine-readable manifest containing sizes, SHA-256 hashes, source revision, and Authenticode status.
 
 Complex Scenes are rendered by Wallpaper Engine itself. Wallpaper Engine must be installed and remain available in the background; closing the visible controller keeps it running in the notification area. The current stable H.264 path does not reproduce pointer interaction, and the built-in renderer remains only as an explicitly labeled fallback.
 
@@ -88,5 +89,15 @@ With Inno Setup 7 installed, build the verified per-user installer and SHA-256 f
 ```powershell
 pwsh -NoProfile -File .\scripts\build-installer.ps1
 ```
+
+When a code-signing certificate is available in the current user's certificate store, sign both the inner executable and final installer without copying a private key into the repository or release directory:
+
+```powershell
+pwsh -NoProfile -File .\scripts\build-installer.ps1 `
+  -CertificateThumbprint "40-hex-character certificate thumbprint" `
+  -TimestampUrl "https://your-certificate-provider.example/timestamp"
+```
+
+Without a certificate, the same command still produces test packages and records `NotSigned` in `release-manifest.json`; it never labels an unsigned artifact as signed. `.github/workflows/release-candidate.yml` can run the full build plus isolated install, in-place upgrade, and uninstall tests on a Windows GitHub Actions runner without automatically publishing a Release.
 
 `SKILL.md`, `agents/`, and `references/` are retained only as possible future Codex integration entry points. They are not part of the current GUI delivery and are not used by the portable application. See the [Apache-2.0 license](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md).

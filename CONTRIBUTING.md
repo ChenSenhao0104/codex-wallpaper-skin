@@ -27,6 +27,8 @@ Before submitting a change:
 
 For installer releases, also compile `installer/CodexWallpaperSkin.iss` through `scripts/build-installer.ps1`, run `scripts/installer-smoke-test.ps1` after exiting the controller, and verify a clean current-user install, an in-place upgrade, and a data-preserving silent uninstall. The installer must never terminate Codex, and generated installers remain under ignored `dist/` output.
 
+`scripts/version-consistency-test.ps1` keeps project, manifest, installer, and documentation versions aligned. `scripts/write-release-manifest.ps1` records artifact hashes and the real Authenticode result. If signing is enabled, use the current-user certificate store and a trusted HTTPS timestamp service through `scripts/build-installer.ps1`; never commit a certificate, token, password, private key, or signing-service credential.
+
 Do not push experimental commits directly to `main`, force-push shared branches, or resolve conflicts by overwriting another implementation. A maintainer decides the final integration after product-gate review. Keep commits focused and include license attribution for reused code or assets.
 
 By contributing, you agree that your contribution is licensed under Apache-2.0. Building requires the .NET 8 SDK; the full acceptance flow also needs Node.js. End users do not need Node.js, Python, PyYAML, or .NET when using the self-contained release. The retained Skill-related files are outside the current GUI delivery scope.
