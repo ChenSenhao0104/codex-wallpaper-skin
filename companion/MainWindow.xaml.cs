@@ -783,12 +783,12 @@ public partial class MainWindow : Window
                 _streamRecoveryWallpaperId = wallpaperId;
                 _streamRecoveryAttempts = 0;
             }
-            while (_streamRecoveryAttempts < 2)
+            while (StreamHealthPolicy.HasRecoveryBudget(_streamRecoveryAttempts))
             {
                 var attempt = ++_streamRecoveryAttempts;
                 _injection.RecordRecoveryAttempt();
                 await Dispatcher.InvokeAsync(() =>
-                    SetStatus($"Recovering the live stream for {title} (attempt {attempt} of 2). The last good frame remains visible…"));
+                    SetStatus($"Recovering the live stream for {title} (attempt {attempt} of {StreamHealthPolicy.MaximumRecoveryAttempts}). The last good frame remains visible…"));
                 await Task.Delay(attempt == 1 ? TimeSpan.FromSeconds(1) : TimeSpan.FromSeconds(3));
                 var recoveryTask = await Dispatcher.InvokeAsync(() =>
                     RecoverStoppedCaptureAsync(
@@ -820,12 +820,13 @@ public partial class MainWindow : Window
         string wallpaperId,
         string title,
         Task? stoppedCompletion,
-        int attempt)
+        int attempt,
+        bool replaceActiveCapture = false)
     {
         if (_busy
             || _closeRequested
             || !_injection.IsConnected
-            || _injection.HasActiveCapture
+            || (!replaceActiveCapture && _injection.HasActiveCapture)
             || (stoppedCompletion is not null
                 && !ReferenceEquals(_injection.ActiveCaptureCompletion, stoppedCompletion))
             || !string.Equals(_state.LastAppliedWallpaperId, wallpaperId, StringComparison.OrdinalIgnoreCase))
@@ -855,7 +856,7 @@ public partial class MainWindow : Window
         catch (Exception exception) when (exception is not OperationCanceledException || !_closeRequested)
         {
             SetStatus(
-                $"Live-stream recovery {attempt} of 2 for {title} did not complete: {exception.Message} "
+                $"Live-stream recovery {attempt} of {StreamHealthPolicy.MaximumRecoveryAttempts} for {title} did not complete: {exception.Message} "
                 + "The last good frame was kept; recovery remains bounded.");
             return false;
         }
@@ -1084,7 +1085,9 @@ public partial class MainWindow : Window
             {
                 SetConnectionUiState(ConnectionUiState.Error);
                 AppLog.Warning("connection-health-check-failed");
+                return;
             }
+            await CheckActiveStreamHealthAsync();
         }
         catch (OperationCanceledException)
         {
@@ -1095,6 +1098,60 @@ public partial class MainWindow : Window
         {
             _connectionHealthRunning = false;
         }
+    }
+
+    private async Task CheckActiveStreamHealthAsync()
+    {
+        if (!_injection.HasActiveCapture
+            || string.IsNullOrWhiteSpace(_state.LastAppliedWallpaperId)
+            || _busy
+            || _closeRequested)
+        {
+            return;
+        }
+
+        ActiveStreamDiagnostics diagnostics;
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(4));
+            diagnostics = await _injection.GetActiveStreamDiagnosticsAsync(timeout.Token);
+        }
+        catch (Exception exception)
+        {
+            AppLog.Warning("stream-health-probe-unavailable " + exception.GetType().Name);
+            return;
+        }
+
+        var decision = StreamHealthPolicy.Evaluate(
+            diagnostics,
+            _state.Settings.PauseWhenHidden,
+            DateTimeOffset.UtcNow);
+        if (!decision.ShouldRecover) return;
+
+        var wallpaperId = _state.LastAppliedWallpaperId!;
+        var wallpaper = _wallpapers.FirstOrDefault(item =>
+            item.Id.Equals(wallpaperId, StringComparison.OrdinalIgnoreCase));
+        if (wallpaper?.CanApply != true) return;
+
+        if (!string.Equals(_streamRecoveryWallpaperId, wallpaperId, StringComparison.OrdinalIgnoreCase))
+        {
+            _streamRecoveryWallpaperId = wallpaperId;
+            _streamRecoveryAttempts = 0;
+        }
+        if (!StreamHealthPolicy.HasRecoveryBudget(_streamRecoveryAttempts)) return;
+
+        var attempt = ++_streamRecoveryAttempts;
+        _injection.RecordRecoveryAttempt();
+        AppLog.Warning($"stream-watchdog-recovery kind={decision.Kind} attempt={attempt}");
+        SetStatus(UiLanguage.IsChinese
+            ? $"检测到动态壁纸画面停止更新，正在进行第 {attempt}/{StreamHealthPolicy.MaximumRecoveryAttempts} 次有界恢复。最后一帧会继续保留。"
+            : $"The live wallpaper stopped updating. Running bounded recovery {attempt} of {StreamHealthPolicy.MaximumRecoveryAttempts}; the last good frame remains visible.");
+        await RecoverStoppedCaptureAsync(
+            wallpaperId,
+            wallpaper.DisplayTitle,
+            stoppedCompletion: null,
+            attempt: attempt,
+            replaceActiveCapture: true);
     }
 
     private WallpaperSettings ReadSettings()

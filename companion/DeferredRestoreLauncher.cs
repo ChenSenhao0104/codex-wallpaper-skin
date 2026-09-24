@@ -113,18 +113,17 @@ public static class DeferredRestoreLauncher
                     if (injection.HasActiveCapture)
                     {
                         var completion = injection.ActiveCaptureCompletion;
-                        while (!completion.IsCompleted && !stopEvent.WaitOne(0))
-                        {
-                            await Task.WhenAny(completion, Task.Delay(250, workerToken));
-                        }
-                        if (stopEvent.WaitOne(0)) return 0;
-                        await completion.WaitAsync(workerToken);
+                        if (!await WaitForStreamRecoverySignalAsync(
+                                injection, state.Settings, completion, stopEvent, workerToken)) return 0;
                         // Keep the last confirmed browser frame while a private
                         // Wallpaper Engine renderer is being recovered. Do not
                         // reopen Codex after the user intentionally closes it.
                         if (CdpProcessIdentity.FindRunningOfficialCodexProcessIds().Count == 0) return 0;
-                        for (var recoveryAttempt = 1; recoveryAttempt <= 2; recoveryAttempt++)
+                        for (var recoveryAttempt = 1;
+                             recoveryAttempt <= StreamHealthPolicy.MaximumRecoveryAttempts;
+                             recoveryAttempt++)
                         {
+                            injection.RecordRecoveryAttempt();
                             if (await DelayOrStopAsync(
                                     stopEvent,
                                     recoveryAttempt == 1 ? TimeSpan.FromSeconds(1) : TimeSpan.FromSeconds(3),
@@ -136,15 +135,12 @@ public static class DeferredRestoreLauncher
                                     state, injection, activateIfNeeded: false, cancellationToken: workerToken);
                                 StateStore.Save(state);
                                 completion = injection.ActiveCaptureCompletion;
-                                while (!completion.IsCompleted && !stopEvent.WaitOne(0))
-                                {
-                                    await Task.WhenAny(completion, Task.Delay(250, workerToken));
-                                }
-                                if (stopEvent.WaitOne(0)) return 0;
-                                await completion.WaitAsync(workerToken);
+                                if (!injection.HasActiveCapture) return 0;
+                                if (!await WaitForStreamRecoverySignalAsync(
+                                        injection, state.Settings, completion, stopEvent, workerToken)) return 0;
                                 if (CdpProcessIdentity.FindRunningOfficialCodexProcessIds().Count == 0) return 0;
                             }
-                            catch when (recoveryAttempt < 2)
+                            catch when (recoveryAttempt < StreamHealthPolicy.MaximumRecoveryAttempts)
                             {
                                 // One final bounded attempt remains.
                             }
@@ -180,6 +176,48 @@ public static class DeferredRestoreLauncher
 
     private static EventWaitHandle OpenStopEvent() =>
         new(false, EventResetMode.ManualReset, WorkerStopEventName);
+
+    private static async Task<bool> WaitForStreamRecoverySignalAsync(
+        CdpInjectionService injection,
+        WallpaperSettings settings,
+        Task completion,
+        EventWaitHandle stopEvent,
+        CancellationToken cancellationToken)
+    {
+        var nextProbe = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(12);
+        while (!completion.IsCompleted && !stopEvent.WaitOne(0))
+        {
+            await Task.WhenAny(completion, Task.Delay(250, cancellationToken));
+            if (DateTimeOffset.UtcNow < nextProbe || completion.IsCompleted) continue;
+            nextProbe = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(12);
+            try
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(TimeSpan.FromSeconds(4));
+                var diagnostics = await injection.GetActiveStreamDiagnosticsAsync(timeout.Token);
+                var decision = StreamHealthPolicy.Evaluate(
+                    diagnostics, settings.PauseWhenHidden, DateTimeOffset.UtcNow);
+                if (decision.ShouldRecover)
+                {
+                    AppLog.Warning($"background-stream-watchdog kind={decision.Kind}");
+                    return true;
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                AppLog.Warning("background-stream-health-probe-unavailable " + exception.GetType().Name);
+            }
+        }
+        if (stopEvent.WaitOne(0)) return false;
+        try { await completion.WaitAsync(cancellationToken); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch { }
+        return true;
+    }
 
     private static bool WaitForWorkerExit(TimeSpan timeout)
     {

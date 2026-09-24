@@ -23,6 +23,51 @@ public static class SelfTests
             True(System.Text.RegularExpressions.Regex.IsMatch(
                 BuildInfo.DisplayVersion, @"^\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$"));
         });
+        Check("live stream health watchdog classifies bounded recovery failures", () =>
+        {
+            var now = DateTimeOffset.UtcNow;
+            var healthyNative = new NativeStreamMetrics(120, 110, 105, 10, 12, 30);
+            ActiveStreamDiagnostics Diagnostic(
+                DateTimeOffset? lastPresentation,
+                bool hidden = false,
+                string mode = "h264-webcodecs",
+                string? transportError = null,
+                NativeStreamMetrics? native = null,
+                long received = 100,
+                long presented = 95,
+                long decodeErrors = 0) => new(
+                    received, presented, 0, decodeErrors, 100, 20, 1000, 0, 0,
+                    "test-stream", lastPresentation, hidden, mode, transportError,
+                    native ?? healthyNative);
+
+            Equal(LiveStreamHealthKind.Healthy,
+                StreamHealthPolicy.Evaluate(Diagnostic(now.AddSeconds(-2)), true, now).Kind);
+            Equal(LiveStreamHealthKind.PausedWhileHidden,
+                StreamHealthPolicy.Evaluate(Diagnostic(null, hidden: true), true, now).Kind);
+            Equal(LiveStreamHealthKind.WarmingUp,
+                StreamHealthPolicy.Evaluate(Diagnostic(null, native: healthyNative with { ElapsedSeconds = 5 }), false, now).Kind);
+
+            var capture = StreamHealthPolicy.Evaluate(
+                Diagnostic(null, native: healthyNative with { CapturedFrames = 0 }), false, now);
+            True(capture.ShouldRecover);
+            Equal(LiveStreamHealthKind.CaptureStalled, capture.Kind);
+
+            var encoder = StreamHealthPolicy.Evaluate(
+                Diagnostic(null, native: healthyNative with { EncoderInputs = 10, EncodedFrames = 0 }), false, now);
+            Equal(LiveStreamHealthKind.EncoderStalled, encoder.Kind);
+
+            var transport = StreamHealthPolicy.Evaluate(
+                Diagnostic(now.AddMinutes(-1), received: 0), false, now);
+            Equal(LiveStreamHealthKind.TransportStalled, transport.Kind);
+
+            var presenter = StreamHealthPolicy.Evaluate(
+                Diagnostic(now.AddMinutes(-1), decodeErrors: 3), false, now);
+            Equal(LiveStreamHealthKind.PresenterStalled, presenter.Kind);
+            True(StreamHealthPolicy.HasRecoveryBudget(0));
+            True(StreamHealthPolicy.HasRecoveryBudget(1));
+            True(!StreamHealthPolicy.HasRecoveryBudget(2));
+            True(!StreamHealthPolicy.HasRecoveryBudget(-1));
+        });
         Check("MIME types", () =>
         {
             Equal("image/webp", WallpaperCatalog.MimeTypeFor("x.WEBP"));

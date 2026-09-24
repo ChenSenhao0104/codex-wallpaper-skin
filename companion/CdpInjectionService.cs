@@ -25,6 +25,7 @@ public sealed record ActiveStreamDiagnostics(
     long RecoveryCount,
     string StreamIdentity,
     DateTimeOffset? LastPresentation,
+    bool PageHidden,
     string Mode,
     string? TransportError,
     NativeStreamMetrics? Native);
@@ -828,6 +829,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
                 dropped: Number(d.dropped || 0), decodeErrors: Number(d.decodeErrors || 0),
                 streamIdentity: String(s.captureToken || ''),
                 lastPresentation: d.lastPresentation || null,
+                pageHidden: document.hidden === true,
                 decodeQueueSize: Number(s.h264Decoder?.decodeQueueSize || 0),
                 mode: s.h264Decoder ? 'h264-webcodecs' : (s.captureSocket ? 'loopback' : 'jpeg-cdp')
               };
@@ -853,6 +855,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
                 && DateTimeOffset.TryParse(value.GetProperty("lastPresentation").GetString(), out var lastPresentation)
                     ? lastPresentation
                     : null,
+            value.GetProperty("pageHidden").GetBoolean(),
             value.GetProperty("mode").GetString() ?? "unknown",
             _captureLease?.H264Publisher?.LastError,
             _captureLease?.Session.StreamMetrics);
