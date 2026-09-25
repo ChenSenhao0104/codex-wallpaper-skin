@@ -389,6 +389,25 @@ public static class SelfTests
             Equal("Codex main window", sanitized.Title);
             True(!sanitized.Title.Contains("private", StringComparison.OrdinalIgnoreCase));
         });
+        Check("watchdog diagnostics are bounded and privacy-safe", () =>
+        {
+            var injection = new CdpInjectionService();
+            var initial = injection.GetStreamWatchdogSnapshot();
+            True(!initial.ActiveCapture);
+            Equal(0L, initial.RecoveryCount);
+            True(initial.LastRecoveryKind is null);
+
+            injection.RecordRecoveryAttempt(LiveStreamHealthKind.PresenterStalled);
+            var recovered = injection.GetStreamWatchdogSnapshot();
+            Equal(1L, recovered.RecoveryCount);
+            Equal(nameof(LiveStreamHealthKind.PresenterStalled), recovered.LastRecoveryKind);
+            True(recovered.LastRecoveryAt is not null);
+
+            var report = new DiagnosticReport();
+            var json = JsonSerializer.Serialize(report);
+            True(!json.Contains("EffectivePath", StringComparison.OrdinalIgnoreCase));
+            True(!json.Contains("SavedWallpaper\"", StringComparison.Ordinal));
+        });
         Check("schema 6 sibling state round-trips without data loss", () =>
         {
             const string json = """

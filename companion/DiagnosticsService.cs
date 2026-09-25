@@ -2,7 +2,15 @@ namespace CodexWallpaperSkin;
 
 public static class DiagnosticsService
 {
-    public static async Task<DiagnosticReport> RunAsync(AppState state, CancellationToken cancellationToken = default)
+    public static Task<DiagnosticReport> RunAsync(
+        AppState state,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(state, injection: null, cancellationToken: cancellationToken);
+
+    public static async Task<DiagnosticReport> RunAsync(
+        AppState state,
+        CdpInjectionService? injection,
+        CancellationToken cancellationToken = default)
     {
         var report = new DiagnosticReport
         {
@@ -15,7 +23,8 @@ public static class DiagnosticsService
         };
 
         var selected = state.Wallpapers.FirstOrDefault(item => item.Id == state.SelectedWallpaperId);
-        report.SavedWallpaper = selected?.EffectivePath;
+        report.SavedWallpaperSource = selected?.Source;
+        report.SavedWallpaperKind = selected?.Kind.ToString();
         report.SavedWallpaperExists = selected?.EffectivePath is { } selectedPath && File.Exists(selectedPath);
         if (selected?.IsWallpaperEngineScene == true)
         {
@@ -84,7 +93,51 @@ public static class DiagnosticsService
         {
             report.Notes.Add("Blur is enabled. Set it to 0 for the lowest GPU cost.");
         }
+        await PopulateStreamWatchdogAsync(report, state, injection, cancellationToken);
         return report;
+    }
+
+    private static async Task PopulateStreamWatchdogAsync(
+        DiagnosticReport report,
+        AppState state,
+        CdpInjectionService? injection,
+        CancellationToken cancellationToken)
+    {
+        var target = report.StreamWatchdog;
+        target.LiveControllerAttached = injection is not null;
+        if (injection is null) return;
+
+        var runtime = injection.GetStreamWatchdogSnapshot();
+        target.ActiveCapture = runtime.ActiveCapture;
+        target.RecoveryCount = runtime.RecoveryCount;
+        target.LastRecoveryKind = runtime.LastRecoveryKind;
+        target.LastRecoveryAt = runtime.LastRecoveryAt;
+        target.CurrentHealth = runtime.ActiveCapture ? "Probe unavailable" : "Inactive";
+        if (!runtime.ActiveCapture || !injection.IsConnected) return;
+
+        try
+        {
+            var diagnostics = await injection.GetActiveStreamDiagnosticsAsync(cancellationToken);
+            var health = StreamHealthPolicy.Evaluate(
+                diagnostics, state.Settings.PauseWhenHidden, DateTimeOffset.UtcNow);
+            target.CurrentHealth = health.Kind.ToString();
+            target.LastPresentationAt = diagnostics.LastPresentation;
+            target.PageHidden = diagnostics.PageHidden;
+            target.Mode = diagnostics.Mode;
+            target.ReceivedFrames = diagnostics.Received;
+            target.PresentedFrames = diagnostics.Presented;
+            target.DroppedFrames = diagnostics.Dropped;
+            target.DecodeErrors = diagnostics.DecodeErrors;
+            target.CapturedFrames = diagnostics.Native?.CapturedFrames;
+            target.EncodedFrames = diagnostics.Native?.EncodedFrames;
+            target.TransportErrorPresent = !string.IsNullOrWhiteSpace(diagnostics.TransportError);
+        }
+        catch (Exception exception)
+        {
+            // Exception types are enough to route support. Messages can contain
+            // local paths and are already available in the private rotating log.
+            target.ProbeErrorType = exception.GetType().Name;
+        }
     }
 
     internal static CdpTarget SanitizeTarget(CdpTarget target) => target with

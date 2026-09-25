@@ -30,6 +30,12 @@ public sealed record ActiveStreamDiagnostics(
     string? TransportError,
     NativeStreamMetrics? Native);
 
+public sealed record StreamWatchdogRuntimeSnapshot(
+    bool ActiveCapture,
+    long RecoveryCount,
+    string? LastRecoveryKind,
+    DateTimeOffset? LastRecoveryAt);
+
 public sealed class CdpInjectionService : IAsyncDisposable
 {
     private const int UploadChunkSize = 64 * 1024;
@@ -45,12 +51,29 @@ public sealed class CdpInjectionService : IAsyncDisposable
     private CaptureLease? _captureLease;
     private readonly SemaphoreSlim _transitionLock = new(1, 1);
     private long _recoveryCount;
+    private string? _lastRecoveryKind;
+    private long _lastRecoveryUnixMilliseconds = -1;
 
     public bool IsConnected => _client?.IsConnected == true;
     public bool HasActiveCapture => _captureLease?.Session.IsRunning == true;
     public Task ActiveCaptureCompletion => _captureLease?.Session.Completion ?? Task.CompletedTask;
     public CdpTarget? Target => _client?.Target;
-    public void RecordRecoveryAttempt() => Interlocked.Increment(ref _recoveryCount);
+    public void RecordRecoveryAttempt(LiveStreamHealthKind kind = LiveStreamHealthKind.StreamEnded)
+    {
+        Interlocked.Increment(ref _recoveryCount);
+        Volatile.Write(ref _lastRecoveryKind, kind.ToString());
+        Interlocked.Exchange(ref _lastRecoveryUnixMilliseconds, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+    }
+
+    public StreamWatchdogRuntimeSnapshot GetStreamWatchdogSnapshot()
+    {
+        var milliseconds = Interlocked.Read(ref _lastRecoveryUnixMilliseconds);
+        return new StreamWatchdogRuntimeSnapshot(
+            HasActiveCapture,
+            Interlocked.Read(ref _recoveryCount),
+            Volatile.Read(ref _lastRecoveryKind),
+            milliseconds >= 0 ? DateTimeOffset.FromUnixTimeMilliseconds(milliseconds) : null);
+    }
 
     public async Task<bool> CheckConnectionAsync(CancellationToken cancellationToken = default)
     {

@@ -5,6 +5,7 @@ public enum LiveStreamHealthKind
     Healthy,
     WarmingUp,
     PausedWhileHidden,
+    StreamEnded,
     CaptureStalled,
     EncoderStalled,
     TransportStalled,

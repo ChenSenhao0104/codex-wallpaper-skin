@@ -486,6 +486,13 @@ public static class Program
         Console.WriteLine($"Requested Scene FPS: {report.RequestedSceneFrameRate}");
         Console.WriteLine($"Wallpaper Engine FPS limit: {report.WallpaperEngineFrameRateLimit?.ToString() ?? "unknown"}");
         Console.WriteLine($"Hardware H.264 available: {report.HardwareH264Available}");
+        Console.WriteLine($"Live watchdog attached: {report.StreamWatchdog.LiveControllerAttached}");
+        Console.WriteLine($"Live watchdog health: {report.StreamWatchdog.CurrentHealth}");
+        Console.WriteLine($"Live watchdog recoveries: {report.StreamWatchdog.RecoveryCount}");
+        if (!string.IsNullOrWhiteSpace(report.StreamWatchdog.LastRecoveryKind))
+        {
+            Console.WriteLine($"Last watchdog recovery: {report.StreamWatchdog.LastRecoveryKind} at {report.StreamWatchdog.LastRecoveryAt:O}");
+        }
         foreach (var encoder in report.HardwareH264Encoders)
         {
             Console.WriteLine("Hardware H.264 encoder: " + encoder);

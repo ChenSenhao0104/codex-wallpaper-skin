@@ -2,7 +2,7 @@
 
 English | [简体中文](README.md)
 
-An independent Windows 11 x64 desktop application that adds local images, videos, and installed Wallpaper Engine projects as Codex Desktop backgrounds. The current GUI development version is `0.6.0` and requires the official x64 `OpenAI.Codex` Store/MSIX package.
+An independent Windows 11 x64 desktop application that adds local images, videos, and installed Wallpaper Engine projects as Codex Desktop backgrounds. The current GUI development version is `0.6.1` and requires the official x64 `OpenAI.Codex` Store/MSIX package.
 
 The application uses a loopback-only Chrome DevTools Protocol (CDP) session to add a reversible background layer to the real Codex page. Codex loads Image/Video media independently; complex Scene projects are rendered natively by a private local Wallpaper Engine window and transferred to Codex. The application does not patch `WindowsApps`, `app.asar`, the official signature, chats, or authentication data.
 
@@ -23,6 +23,7 @@ The application uses a loopback-only Chrome DevTools Protocol (CDP) session to a
 - A top-level English/Chinese button switches the interface immediately and remembers the choice. **Start / reconnect Codex** is the only Codex startup and reconnection entry point.
 - Decode-before-swap, preservation of the old background on failure, pause when hidden, bounded cleanup, and **Restore Codex background**.
 - A live-stream watchdog checks the last frame actually presented by Codex. Silent capture, encode, transport, or decoder-presentation stalls receive at most two automatic recoveries, while intentional hidden-window pausing is exempt.
+- **Doctor** reports the current watchdog health class, frame counters, recovery count, and the most recent recovery reason and time. Its structured report omits the selected wallpaper's absolute path and replaces window titles that may contain task content.
 - A per-user installer that needs no elevation. Upgrades preserve the wallpaper library, presets, and settings; uninstall offers to retain or remove this app's user data and never closes Codex.
 - The window title exposes the actual application version. Release builds emit a machine-readable manifest containing sizes, SHA-256 hashes, source revision, and Authenticode status.
 
@@ -91,6 +92,14 @@ With Inno Setup 7 installed, build the verified per-user installer and SHA-256 f
 pwsh -NoProfile -File .\scripts\build-installer.ps1
 ```
 
+After exiting the running controller, validate a real upgrade from the previous stable installer to the current candidate. The test installs the old version, upgrades it in place, runs the upgraded self-test, uninstalls it, and verifies that `state.json` and `library.json` were never modified:
+
+```powershell
+pwsh -NoProfile -File .\scripts\installer-cross-version-smoke-test.ps1 `
+  -PreviousSetupPath ".\dist\CodexWallpaperSkin-Setup-v0.5.1-win-x64.exe" `
+  -CurrentSetupPath ".\dist\CodexWallpaperSkin-Setup-v0.6.1-win-x64.exe"
+```
+
 When a code-signing certificate is available in the current user's certificate store, sign both the inner executable and final installer without copying a private key into the repository or release directory:
 
 ```powershell
@@ -99,6 +108,6 @@ pwsh -NoProfile -File .\scripts\build-installer.ps1 `
   -TimestampUrl "https://your-certificate-provider.example/timestamp"
 ```
 
-Without a certificate, the same command still produces test packages and records `NotSigned` in `release-manifest.json`; it never labels an unsigned artifact as signed. `.github/workflows/release-candidate.yml` can run the full build plus isolated install, in-place upgrade, and uninstall tests on a Windows GitHub Actions runner without automatically publishing a Release.
+Without a certificate, the same command still produces test packages and records `NotSigned` in `release-manifest.json`; it never labels an unsigned artifact as signed. `.github/workflows/release-candidate.yml` builds the previous stable baseline from `main` and runs an isolated stable-to-candidate install, in-place upgrade, self-test, and uninstall sequence without automatically publishing a Release.
 
 `SKILL.md`, `agents/`, and `references/` are retained only as possible future Codex integration entry points. They are not part of the current GUI delivery and are not used by the portable application. See the [Apache-2.0 license](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md).

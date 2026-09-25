@@ -354,7 +354,7 @@ public partial class MainWindow : Window
         await RunBusyAsync(async cancellationToken =>
         {
             SyncConnectionState();
-            var report = await DiagnosticsService.RunAsync(_state, cancellationToken);
+            var report = await DiagnosticsService.RunAsync(_state, _injection, cancellationToken);
             var text = JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true });
             var dialog = new DiagnosticWindow(text) { Owner = this };
             dialog.ShowDialog();
@@ -786,7 +786,7 @@ public partial class MainWindow : Window
             while (StreamHealthPolicy.HasRecoveryBudget(_streamRecoveryAttempts))
             {
                 var attempt = ++_streamRecoveryAttempts;
-                _injection.RecordRecoveryAttempt();
+                _injection.RecordRecoveryAttempt(LiveStreamHealthKind.StreamEnded);
                 await Dispatcher.InvokeAsync(() =>
                     SetStatus($"Recovering the live stream for {title} (attempt {attempt} of {StreamHealthPolicy.MaximumRecoveryAttempts}). The last good frame remains visible…"));
                 await Task.Delay(attempt == 1 ? TimeSpan.FromSeconds(1) : TimeSpan.FromSeconds(3));
@@ -1141,7 +1141,7 @@ public partial class MainWindow : Window
         if (!StreamHealthPolicy.HasRecoveryBudget(_streamRecoveryAttempts)) return;
 
         var attempt = ++_streamRecoveryAttempts;
-        _injection.RecordRecoveryAttempt();
+        _injection.RecordRecoveryAttempt(decision.Kind);
         AppLog.Warning($"stream-watchdog-recovery kind={decision.Kind} attempt={attempt}");
         SetStatus(UiLanguage.IsChinese
             ? $"检测到动态壁纸画面停止更新，正在进行第 {attempt}/{StreamHealthPolicy.MaximumRecoveryAttempts} 次有界恢复。最后一帧会继续保留。"

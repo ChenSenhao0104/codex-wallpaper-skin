@@ -266,6 +266,27 @@ public sealed record WallpaperApplyResult(PaletteResult? Palette, string Mode, s
 
 public sealed record CdpTarget(string Id, string Type, string Title, string Url, string WebSocketDebuggerUrl);
 
+public sealed class StreamWatchdogDiagnosticReport
+{
+    public bool LiveControllerAttached { get; set; }
+    public bool ActiveCapture { get; set; }
+    public string CurrentHealth { get; set; } = "Unavailable";
+    public long RecoveryCount { get; set; }
+    public string? LastRecoveryKind { get; set; }
+    public DateTimeOffset? LastRecoveryAt { get; set; }
+    public DateTimeOffset? LastPresentationAt { get; set; }
+    public bool PageHidden { get; set; }
+    public string? Mode { get; set; }
+    public long ReceivedFrames { get; set; }
+    public long PresentedFrames { get; set; }
+    public long DroppedFrames { get; set; }
+    public long DecodeErrors { get; set; }
+    public long? CapturedFrames { get; set; }
+    public long? EncodedFrames { get; set; }
+    public bool TransportErrorPresent { get; set; }
+    public string? ProbeErrorType { get; set; }
+}
+
 public sealed class DiagnosticReport
 {
     public DateTimeOffset Timestamp { get; set; } = DateTimeOffset.Now;
@@ -283,12 +304,14 @@ public sealed class DiagnosticReport
     public string? CdpError { get; set; }
     public List<CdpTarget> Targets { get; set; } = [];
     public List<string> AumidCandidates { get; set; } = [];
-    public string? SavedWallpaper { get; set; }
+    public string? SavedWallpaperSource { get; set; }
+    public string? SavedWallpaperKind { get; set; }
     public bool SavedWallpaperExists { get; set; }
     public int RequestedSceneFrameRate { get; set; }
     public int? WallpaperEngineFrameRateLimit { get; set; }
     public bool HardwareH264Available { get; set; }
     public List<string> HardwareH264Encoders { get; set; } = [];
     public string? HardwareH264ProbeError { get; set; }
+    public StreamWatchdogDiagnosticReport StreamWatchdog { get; set; } = new();
     public List<string> Notes { get; set; } = [];
 }

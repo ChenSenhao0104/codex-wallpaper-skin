@@ -174,7 +174,9 @@ Video 项目在 256 MiB 安全上限内会直接使用原始 MP4/WebM；更大�
 
 ## 6.1 诊断包
 
-点击顶部 **Doctor**，再点击 **Export diagnostic package…**，可以导出 ZIP。诊断包包含只读 Doctor 报告和滚动控制器日志，不包含壁纸媒体、完整 `state.json`、认证信息、对话内容或 Codex 任务标题。发送给他人前仍建议自行检查内容。
+点击顶部 **Doctor**，可以看到 CDP、编码器和动态流看门狗的只读状态。使用 GUI 打开时，报告还会显示当前健康分类、捕获/编码/接收/显示计数、自动恢复次数，以及最近一次恢复原因和时间；命令行独立运行 Doctor 时没有附着实时控制器，因此这部分会明确显示不可用。结构化报告不包含所选壁纸的绝对路径，并会替换可能带有任务内容的 Codex 窗口标题。
+
+再点击 **Export diagnostic package…** 可导出 ZIP。诊断包包含该只读报告和滚动控制器日志，不包含壁纸媒体、完整 `state.json`、认证信息、对话内容或 Codex 任务标题。发送给他人前仍建议自行检查内容。
 
 ## 7. 恢复原始背景
 
@@ -200,7 +202,7 @@ pwsh -NoProfile -File .\scripts\reset.ps1
 
 ### Connect 失败或显示 CDP 不可达
 
-点击 **Start / reconnect Codex**。如果 Codex 已普通启动，软件会保留当前任务并提供等待队列或用户确认的正常重启。只有排障时才展开高级设置，不要把地址改成 `localhost`、局域网 IP 或远程地址。
+点击 **Start / reconnect Codex**。如果 Codex 已普通启动，软件会提示你手动关闭 Codex；关闭后再次点击同一个按钮。软件不会排队自动关闭或自动重启 Codex。只有排障时才展开高级设置，不要把地址改成 `localhost`、局域网 IP 或远程地址。
 
 ### 提示端口监听者不是官方 OpenAI.Codex 包
 

@@ -113,8 +113,9 @@ public static class DeferredRestoreLauncher
                     if (injection.HasActiveCapture)
                     {
                         var completion = injection.ActiveCaptureCompletion;
-                        if (!await WaitForStreamRecoverySignalAsync(
-                                injection, state.Settings, completion, stopEvent, workerToken)) return 0;
+                        var recoveryKind = await WaitForStreamRecoverySignalAsync(
+                            injection, state.Settings, completion, stopEvent, workerToken);
+                        if (recoveryKind is null) return 0;
                         // Keep the last confirmed browser frame while a private
                         // Wallpaper Engine renderer is being recovered. Do not
                         // reopen Codex after the user intentionally closes it.
@@ -123,7 +124,7 @@ public static class DeferredRestoreLauncher
                              recoveryAttempt <= StreamHealthPolicy.MaximumRecoveryAttempts;
                              recoveryAttempt++)
                         {
-                            injection.RecordRecoveryAttempt();
+                            injection.RecordRecoveryAttempt(recoveryKind.Value);
                             if (await DelayOrStopAsync(
                                     stopEvent,
                                     recoveryAttempt == 1 ? TimeSpan.FromSeconds(1) : TimeSpan.FromSeconds(3),
@@ -136,8 +137,9 @@ public static class DeferredRestoreLauncher
                                 StateStore.Save(state);
                                 completion = injection.ActiveCaptureCompletion;
                                 if (!injection.HasActiveCapture) return 0;
-                                if (!await WaitForStreamRecoverySignalAsync(
-                                        injection, state.Settings, completion, stopEvent, workerToken)) return 0;
+                                recoveryKind = await WaitForStreamRecoverySignalAsync(
+                                    injection, state.Settings, completion, stopEvent, workerToken);
+                                if (recoveryKind is null) return 0;
                                 if (CdpProcessIdentity.FindRunningOfficialCodexProcessIds().Count == 0) return 0;
                             }
                             catch when (recoveryAttempt < StreamHealthPolicy.MaximumRecoveryAttempts)
@@ -177,7 +179,7 @@ public static class DeferredRestoreLauncher
     private static EventWaitHandle OpenStopEvent() =>
         new(false, EventResetMode.ManualReset, WorkerStopEventName);
 
-    private static async Task<bool> WaitForStreamRecoverySignalAsync(
+    private static async Task<LiveStreamHealthKind?> WaitForStreamRecoverySignalAsync(
         CdpInjectionService injection,
         WallpaperSettings settings,
         Task completion,
@@ -200,7 +202,7 @@ public static class DeferredRestoreLauncher
                 if (decision.ShouldRecover)
                 {
                     AppLog.Warning($"background-stream-watchdog kind={decision.Kind}");
-                    return true;
+                    return decision.Kind;
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -212,11 +214,11 @@ public static class DeferredRestoreLauncher
                 AppLog.Warning("background-stream-health-probe-unavailable " + exception.GetType().Name);
             }
         }
-        if (stopEvent.WaitOne(0)) return false;
+        if (stopEvent.WaitOne(0)) return null;
         try { await completion.WaitAsync(cancellationToken); }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch { }
-        return true;
+        return LiveStreamHealthKind.StreamEnded;
     }
 
     private static bool WaitForWorkerExit(TimeSpan timeout)

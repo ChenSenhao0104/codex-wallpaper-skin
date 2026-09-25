@@ -47,6 +47,40 @@ jobs:
           $version = [string]$project.Project.PropertyGroup.Version | Select-Object -First 1
           ./scripts/installer-smoke-test.ps1 -SetupPath "./dist/CodexWallpaperSkin-Setup-v$version-win-x64.exe"
 
+      - name: Check out the current stable baseline
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: previous-stable
+
+      - name: Inspect cross-version baseline
+        id: baseline
+        shell: pwsh
+        run: |
+          [xml]$currentProject = Get-Content ./companion/CodexWallpaperSkin.Companion.csproj -Raw
+          [xml]$previousProject = Get-Content ./previous-stable/companion/CodexWallpaperSkin.Companion.csproj -Raw
+          $current = [version]([string]$currentProject.Project.PropertyGroup.Version | Select-Object -First 1)
+          $previous = [version]([string]$previousProject.Project.PropertyGroup.Version | Select-Object -First 1)
+          $upgradeRequired = ($previous -lt $current).ToString().ToLowerInvariant()
+          "current_version=$current" >> $env:GITHUB_OUTPUT
+          "previous_version=$previous" >> $env:GITHUB_OUTPUT
+          "upgrade_required=$upgradeRequired" >> $env:GITHUB_OUTPUT
+
+      - name: Build stable baseline installer
+        if: steps.baseline.outputs.upgrade_required == 'true'
+        shell: pwsh
+        run: ./previous-stable/scripts/build-installer.ps1
+
+      - name: Exercise stable-to-candidate upgrade
+        if: steps.baseline.outputs.upgrade_required == 'true'
+        shell: pwsh
+        run: |
+          $previous = '${{ steps.baseline.outputs.previous_version }}'
+          $current = '${{ steps.baseline.outputs.current_version }}'
+          ./scripts/installer-cross-version-smoke-test.ps1 `
+            -PreviousSetupPath "./previous-stable/dist/CodexWallpaperSkin-Setup-v$previous-win-x64.exe" `
+            -CurrentSetupPath "./dist/CodexWallpaperSkin-Setup-v$current-win-x64.exe"
+
       - name: Upload release candidate
         uses: actions/upload-artifact@v4
         with:
