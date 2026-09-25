@@ -38,7 +38,7 @@ public static class DiagnosticsService
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
         report.HardwareH264Available = report.HardwareH264Encoders.Count > 0;
-        report.HardwareH264ProbeError = encoderProbe.Error;
+            report.HardwareH264ProbeError = DiagnosticPrivacy.RedactText(encoderProbe.Error);
         if (!report.HardwareH264Available)
         {
             report.Notes.Add(encoderProbe.Error is null
@@ -70,7 +70,7 @@ public static class DiagnosticsService
             }
             catch (Exception exception)
             {
-                report.CdpError = exception.Message;
+                report.CdpError = DiagnosticPrivacy.RedactText(exception.Message);
                 report.Notes.Add("CDP is not reachable. This tool never restarts Codex; start/activate it with a loopback remote-debugging port, then retry.");
             }
         }
@@ -94,6 +94,9 @@ public static class DiagnosticsService
             report.Notes.Add("Blur is enabled. Set it to 0 for the lowest GPU cost.");
         }
         await PopulateStreamWatchdogAsync(report, state, injection, cancellationToken);
+        report.Notes = report.Notes
+            .Select(note => DiagnosticPrivacy.RedactText(note) ?? string.Empty)
+            .ToList();
         return report;
     }
 
@@ -140,15 +143,6 @@ public static class DiagnosticsService
         }
     }
 
-    internal static CdpTarget SanitizeTarget(CdpTarget target) => target with
-    {
-        // Codex page titles can contain the current task title. It is not
-        // needed for support and must not be copied into a package the user
-        // may share.
-        Title = CdpDiscovery.IsPrimaryCodexPage(target)
-            ? "Codex main window"
-            : target.Url.StartsWith("app://", StringComparison.OrdinalIgnoreCase)
-                ? "Codex auxiliary window"
-                : target.Type
-    };
+    internal static CdpTarget SanitizeTarget(CdpTarget target) =>
+        DiagnosticPrivacy.SanitizeTarget(target);
 }

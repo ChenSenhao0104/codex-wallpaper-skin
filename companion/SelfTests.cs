@@ -369,11 +369,20 @@ public static class SelfTests
             try
             {
                 var path = Path.Combine(directory, "diagnostics.zip");
-                SupportBundleService.Export(path, "{\"CdpReachable\":true}");
+                var privatePath = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    "Private Wallpapers", "secret.mp4");
+                SupportBundleService.Export(path, JsonSerializer.Serialize(new { CdpReachable = true, PrivatePath = privatePath }));
                 using var archive = ZipFile.OpenRead(path);
-                True(archive.GetEntry("diagnostic.json") is not null);
+                var diagnosticEntry = archive.GetEntry("diagnostic.json");
+                True(diagnosticEntry is not null);
                 True(archive.GetEntry("README.txt") is not null);
                 True(archive.GetEntry("state.json") is null);
+                using var stream = diagnosticEntry!.Open();
+                using var reader = new StreamReader(stream);
+                var diagnostic = reader.ReadToEnd();
+                True(!diagnostic.Contains(Environment.UserName, StringComparison.OrdinalIgnoreCase));
+                True(!diagnostic.Contains(privatePath, StringComparison.OrdinalIgnoreCase));
             }
             finally
             {
@@ -387,7 +396,26 @@ public static class SelfTests
                 "ws://127.0.0.1:9222/devtools/page/main");
             var sanitized = DiagnosticsService.SanitizeTarget(target);
             Equal("Codex main window", sanitized.Title);
+            Equal("<redacted>", sanitized.Id);
+            Equal("app://-/index.html", sanitized.Url);
+            True(sanitized.WebSocketDebuggerUrl.EndsWith("/<redacted>", StringComparison.Ordinal));
             True(!sanitized.Title.Contains("private", StringComparison.OrdinalIgnoreCase));
+        });
+        Check("diagnostics redact local paths and session target details", () =>
+        {
+            var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var localPath = Path.Combine(profile, "Wallpaper Test", "private scene.pkg");
+            var redacted = DiagnosticPrivacy.RedactText($"Failed to open '{localPath}' for {Environment.UserName}.");
+            True(!redacted!.Contains(profile, StringComparison.OrdinalIgnoreCase));
+            True(!redacted.Contains(Environment.UserName, StringComparison.OrdinalIgnoreCase));
+            True(redacted.Contains("%USERPROFILE%", StringComparison.Ordinal));
+
+            var target = new CdpTarget(
+                "session-id", "webview", "private", "https://chatgpt.com/path?token=secret",
+                "ws://127.0.0.1:60239/devtools/page/session-id");
+            var sanitized = DiagnosticsService.SanitizeTarget(target);
+            Equal("https://chatgpt.com/<redacted>", sanitized.Url);
+            True(!JsonSerializer.Serialize(sanitized).Contains("session-id", StringComparison.Ordinal));
         });
         Check("watchdog diagnostics are bounded and privacy-safe", () =>
         {

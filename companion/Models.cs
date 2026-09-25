@@ -294,9 +294,10 @@ public sealed class DiagnosticReport
     public string Runtime { get; set; } = Environment.Version.ToString();
     public string Architecture { get; set; } = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString();
     public string AppVersion { get; set; } = string.Empty;
-    public string StatePath { get; set; } = StateStore.StatePath;
+    public string PrivacyMode { get; set; } = "Shareable (local paths and target identifiers redacted)";
+    public string StatePath { get; set; } = DiagnosticPrivacy.StatePath;
     public bool StateFileExists { get; set; }
-    public string LogPath { get; set; } = AppLog.LogPath;
+    public string LogPath { get; set; } = DiagnosticPrivacy.LogPath;
     public bool LogFileExists { get; set; }
     public string CdpEndpoint { get; set; } = string.Empty;
     public bool CdpEndpointIsLoopback { get; set; }

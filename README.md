@@ -2,7 +2,7 @@
 
 [English](README.en.md) | 简体中文
 
-一个独立运行的 Windows 11 x64 桌面程序，用本地图片、视频和已安装的 Wallpaper Engine 项目为 Codex Desktop 更换背景。当前 GUI 开发版本为 `0.6.1`，要求官方 x64 `OpenAI.Codex` Store/MSIX 桌面包。
+一个独立运行的 Windows 11 x64 桌面程序，用本地图片、视频和已安装的 Wallpaper Engine 项目为 Codex Desktop 更换背景。当前 GUI 开发版本为 `0.6.2`，要求官方 x64 `OpenAI.Codex` Store/MSIX 桌面包。
 
 程序通过仅绑定 `127.0.0.1` 的 Chrome DevTools Protocol（CDP），在真实 Codex 页面中添加可逆的背景层。Image/Video 由 Codex 独立加载；复杂 Scene 由本机 Wallpaper Engine 在隔离窗口中原生渲染后传给 Codex。程序不修改 `WindowsApps`、`app.asar`、官方签名、聊天内容或登录数据。
 
@@ -23,7 +23,7 @@
 - 顶部提供中英文一键切换并记住选择；**Start / reconnect Codex** 是唯一的 Codex 启动与重连入口。
 - 媒体解码成功后原子切换；失败保留旧背景；支持隐藏暂停、异常清理和 **Restore Codex background** 一键恢复。
 - 动态流看门狗会检查 Codex 最近一次真正显示画面的时间；捕获、编码、传输或解码呈现静默停止时最多自动恢复两次，隐藏暂停不会触发误恢复。
-- **Doctor** 会显示当前看门狗健康分类、画面计数、恢复次数、最近一次恢复原因和时间；结构化报告不写入所选壁纸的绝对路径，也会替换可能包含任务内容的窗口标题。
+- **Doctor** 会显示当前看门狗健康分类、画面计数、恢复次数、最近一次恢复原因和时间；复制和导出的报告会隐藏用户名、绝对路径、页面标识符、会话 URL 参数和可能包含任务内容的窗口标题，ZIP 内的控制器日志也会经过同一套脱敏。
 - 提供无需管理员权限的当前用户安装器；升级保留壁纸库、预设和设置，卸载时可选择保留或彻底删除本软件数据，且安装/卸载不会关闭 Codex。
 - 窗口标题显示实际程序版本；发布流程会生成包含文件大小、SHA-256、源码提交和 Authenticode 状态的机器可读清单。
 
@@ -96,8 +96,8 @@ pwsh -NoProfile -File .\scripts\build-installer.ps1
 
 ```powershell
 pwsh -NoProfile -File .\scripts\installer-cross-version-smoke-test.ps1 `
-  -PreviousSetupPath ".\dist\CodexWallpaperSkin-Setup-v0.5.1-win-x64.exe" `
-  -CurrentSetupPath ".\dist\CodexWallpaperSkin-Setup-v0.6.1-win-x64.exe"
+  -PreviousSetupPath ".\dist\CodexWallpaperSkin-Setup-v0.6.1-win-x64.exe" `
+  -CurrentSetupPath ".\dist\CodexWallpaperSkin-Setup-v0.6.2-win-x64.exe"
 ```
 
 如已在当前用户证书存储中配置代码签名证书，可同时签署内层程序和最终安装器；私钥不会进入仓库或发布目录：

@@ -2,7 +2,7 @@
 
 English | [简体中文](README.md)
 
-An independent Windows 11 x64 desktop application that adds local images, videos, and installed Wallpaper Engine projects as Codex Desktop backgrounds. The current GUI development version is `0.6.1` and requires the official x64 `OpenAI.Codex` Store/MSIX package.
+An independent Windows 11 x64 desktop application that adds local images, videos, and installed Wallpaper Engine projects as Codex Desktop backgrounds. The current GUI development version is `0.6.2` and requires the official x64 `OpenAI.Codex` Store/MSIX package.
 
 The application uses a loopback-only Chrome DevTools Protocol (CDP) session to add a reversible background layer to the real Codex page. Codex loads Image/Video media independently; complex Scene projects are rendered natively by a private local Wallpaper Engine window and transferred to Codex. The application does not patch `WindowsApps`, `app.asar`, the official signature, chats, or authentication data.
 
@@ -23,7 +23,7 @@ The application uses a loopback-only Chrome DevTools Protocol (CDP) session to a
 - A top-level English/Chinese button switches the interface immediately and remembers the choice. **Start / reconnect Codex** is the only Codex startup and reconnection entry point.
 - Decode-before-swap, preservation of the old background on failure, pause when hidden, bounded cleanup, and **Restore Codex background**.
 - A live-stream watchdog checks the last frame actually presented by Codex. Silent capture, encode, transport, or decoder-presentation stalls receive at most two automatic recoveries, while intentional hidden-window pausing is exempt.
-- **Doctor** reports the current watchdog health class, frame counters, recovery count, and the most recent recovery reason and time. Its structured report omits the selected wallpaper's absolute path and replaces window titles that may contain task content.
+- **Doctor** reports the current watchdog health class, frame counters, recovery count, and the most recent recovery reason and time. Copied and exported reports redact user names, absolute paths, page identifiers, session URL parameters, and window titles that may contain task content; controller logs inside the ZIP receive the same redaction.
 - A per-user installer that needs no elevation. Upgrades preserve the wallpaper library, presets, and settings; uninstall offers to retain or remove this app's user data and never closes Codex.
 - The window title exposes the actual application version. Release builds emit a machine-readable manifest containing sizes, SHA-256 hashes, source revision, and Authenticode status.
 
@@ -96,8 +96,8 @@ After exiting the running controller, validate a real upgrade from the previous 
 
 ```powershell
 pwsh -NoProfile -File .\scripts\installer-cross-version-smoke-test.ps1 `
-  -PreviousSetupPath ".\dist\CodexWallpaperSkin-Setup-v0.5.1-win-x64.exe" `
-  -CurrentSetupPath ".\dist\CodexWallpaperSkin-Setup-v0.6.1-win-x64.exe"
+  -PreviousSetupPath ".\dist\CodexWallpaperSkin-Setup-v0.6.1-win-x64.exe" `
+  -CurrentSetupPath ".\dist\CodexWallpaperSkin-Setup-v0.6.2-win-x64.exe"
 ```
 
 When a code-signing certificate is available in the current user's certificate store, sign both the inner executable and final installer without copying a private key into the repository or release directory:

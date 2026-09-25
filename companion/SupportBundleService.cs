@@ -21,20 +21,20 @@ public static class SupportBundleService
             using (var file = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             using (var archive = new ZipArchive(file, ZipArchiveMode.Create, leaveOpen: false))
             {
-                WriteText(archive, "diagnostic.json", diagnosticJson);
+                WriteText(archive, "diagnostic.json", DiagnosticPrivacy.RedactText(diagnosticJson) ?? string.Empty);
                 WriteText(
                     archive,
                     "README.txt",
                     "Codex Wallpaper Skin local diagnostic package\r\n"
                     + $"Generated: {DateTimeOffset.Now:O}\r\n"
                     + $"Version: {Assembly.GetExecutingAssembly().GetName().Version}\r\n\r\n"
-                    + "This package contains the read-only Doctor report and controller logs. "
-                    + "It does not contain wallpaper media, authentication data, conversation content, or the complete saved state file.\r\n");
-                AddLogIfPresent(archive, AppLog.LogPath, "controller.log");
-                AddLogIfPresent(archive, AppLog.PreviousLogPath, "controller.previous.log");
+                    + "This package contains a shareable Doctor report and redacted controller logs. "
+                    + "Local paths, user names, page identifiers, wallpaper media, authentication data, conversation content, and the complete saved state file are excluded.\r\n");
+                AddRedactedLogIfPresent(archive, AppLog.LogPath, "controller.log");
+                AddRedactedLogIfPresent(archive, AppLog.PreviousLogPath, "controller.previous.log");
             }
             File.Move(temporaryPath, fullPath, overwrite: true);
-            AppLog.Info($"support-bundle-exported path={fullPath}");
+            AppLog.Info("support-bundle-exported");
         }
         catch
         {
@@ -43,13 +43,13 @@ public static class SupportBundleService
         }
     }
 
-    private static void AddLogIfPresent(ZipArchive archive, string path, string entryName)
+    private static void AddRedactedLogIfPresent(ZipArchive archive, string path, string entryName)
     {
         if (!File.Exists(path)) return;
-        var entry = archive.CreateEntry(entryName, CompressionLevel.Optimal);
         using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        using var output = entry.Open();
-        input.CopyTo(output);
+        using var reader = new StreamReader(input, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        var redacted = DiagnosticPrivacy.RedactText(reader.ReadToEnd()) ?? string.Empty;
+        WriteText(archive, entryName, redacted);
     }
 
     private static void WriteText(ZipArchive archive, string name, string value)
