@@ -352,6 +352,7 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
         var encoderHeight = 0;
         var encoderFrameRate = 0;
         var nextSampleTime = 0L;
+        long? firstCaptureTimestamp = null;
         var consecutiveFailures = 0;
         try
         {
@@ -397,7 +398,16 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                         Volatile.Write(ref _activeEncoderBitrate, bitrate);
                     }
                     var encodeStarted = Stopwatch.GetTimestamp();
-                    var outputs = encoder.EncodeBgra(frame.Pixels, frame.Width, frame.Height, frame.Stride);
+                    if (frame.CapturedAtTimestamp > 0)
+                    {
+                        firstCaptureTimestamp ??= frame.CapturedAtTimestamp;
+                    }
+                    var capturedSampleTime = firstCaptureTimestamp is long origin
+                        ? StopwatchTicksToHundredNanoseconds(
+                            Math.Max(0, frame.CapturedAtTimestamp - origin))
+                        : (long?)null;
+                    var outputs = encoder.EncodeBgra(
+                        frame.Pixels, frame.Width, frame.Height, frame.Stride, capturedSampleTime);
                     nextSampleTime = encoder.NextSampleTime100Nanoseconds;
                     Interlocked.Add(ref _encodeTicks, Stopwatch.GetTimestamp() - encodeStarted);
                     Interlocked.Increment(ref _encoderInputs);
@@ -465,6 +475,11 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
 
     private static double StopwatchTicksToMilliseconds(long ticks) =>
         ticks <= 0 ? 0 : ticks * 1000d / Stopwatch.Frequency;
+
+    internal static long StopwatchTicksToHundredNanoseconds(long ticks) =>
+        ticks <= 0 ? 0 : checked((long)Math.Round(
+            ticks * (10_000_000d / Stopwatch.Frequency),
+            MidpointRounding.AwayFromZero));
 
     private async Task<byte[]> CaptureNextFrameAsync(CancellationToken cancellationToken)
     {

@@ -2,7 +2,7 @@
 
 English | [简体中文](README.md)
 
-An independent Windows 11 x64 desktop application that adds local images, videos, and installed Wallpaper Engine projects as Codex Desktop backgrounds. The current GUI development version is `0.7.0` and requires the official x64 `OpenAI.Codex` Store/MSIX package.
+An independent Windows 11 x64 desktop application that adds local images, videos, and installed Wallpaper Engine projects as Codex Desktop backgrounds. The current GUI development version is `0.7.1` and requires the official x64 `OpenAI.Codex` Store/MSIX package.
 
 The application uses a loopback-only Chrome DevTools Protocol (CDP) session to add a reversible background layer to the real Codex page. Codex loads Image/Video media independently; complex Scene projects are rendered natively by a private local Wallpaper Engine window and transferred to Codex. The application does not patch `WindowsApps`, `app.asar`, the official signature, chats, or authentication data.
 
@@ -98,7 +98,7 @@ After exiting the running controller, validate a real upgrade from the previous 
 ```powershell
 pwsh -NoProfile -File .\scripts\installer-cross-version-smoke-test.ps1 `
   -PreviousSetupPath ".\dist\CodexWallpaperSkin-Setup-v0.6.2-win-x64.exe" `
-  -CurrentSetupPath ".\dist\CodexWallpaperSkin-Setup-v0.7.0-win-x64.exe"
+  -CurrentSetupPath ".\dist\CodexWallpaperSkin-Setup-v0.7.1-win-x64.exe"
 ```
 
 When a code-signing certificate is available in the current user's certificate store, sign both the inner executable and final installer without copying a private key into the repository or release directory:

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Net.WebSockets;
@@ -445,6 +446,12 @@ public static class SelfTests
             True(sixty > thirty);
             True(CdpInjectionService.BootstrapScript.Contains("requestAnimationFrame(pumpPresentation)", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("state.h264Frames.length >= 8", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("firstTarget < now - 120", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("oldestLateness > 80", StringComparison.Ordinal));
+            Equal(10_000_000L,
+                WallpaperEngineCaptureSession.StopwatchTicksToHundredNanoseconds(Stopwatch.Frequency));
+            Equal(300_000L, MediaFoundationH264Encoder.SelectSampleTime(166_666L, 300_000L));
+            Equal(166_666L, MediaFoundationH264Encoder.SelectSampleTime(166_666L, 120_000L));
 
             var diagnostics = new ActiveStreamDiagnostics(
                 580, 570, 4, 0, 600, 300, 15_000_000, 1, 0, "stream",
@@ -782,7 +789,7 @@ public static class SelfTests
             True(!CdpInjectionService.BootstrapScript.Contains("body > :not", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("canvas.width = 32", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("cws-palette", StringComparison.Ordinal));
-            True(CdpInjectionService.BootstrapScript.Contains("existing.version === 18", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("existing.version === 19", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinBeginCapturedStream", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinSetCapturedFrame", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("decode-timeout", StringComparison.Ordinal));

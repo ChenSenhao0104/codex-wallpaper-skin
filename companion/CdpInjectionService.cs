@@ -1298,7 +1298,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
             throw new Error('Refusing to inject: this is not a ready Codex app:// page.');
           }
           const existing = window.__codexWallpaperSkin;
-          const existingHealthy = existing && existing.version === 18 && !existing.disposed
+          const existingHealthy = existing && existing.version === 19 && !existing.disposed
             && existing.host?.isConnected && existing.style?.isConnected && existing.overlay?.isConnected
             && document.getElementById('codex-wallpaper-skin-host') === existing.host
             && document.getElementById('codex-wallpaper-skin-style') === existing.style
@@ -1476,7 +1476,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
           document.body.appendChild(host);
 
           const state = window.__codexWallpaperSkin = {
-            version: 18, disposed: false, style, host, overlay, media: null, assetUrl: null,
+            version: 19, disposed: false, style, host, overlay, media: null, assetUrl: null,
             sceneController: null, pendingSceneController: null,
             pendingMedia: null, pendingUrl: null, pendingCancel: null,
             uploads: new Map(), marked: new Set(), settings: null, rawPalette: null,
@@ -1825,6 +1825,17 @@ public sealed class CdpInjectionService : IAsyncDisposable
                     state.h264BaseTimestamp = first.timestamp;
                     state.h264BaseNow = now;
                   }
+                  let firstTarget = state.h264BaseNow
+                    + Math.max(0, first.timestamp - state.h264BaseTimestamp) / 1000;
+                  // A capture pause or a slower-than-target producer can leave
+                  // an otherwise healthy stream behind its original wall
+                  // clock. Rebase after a genuine underflow instead of
+                  // classifying the next group of valid frames as obsolete.
+                  if (firstTarget < now - 120) {
+                    state.h264BaseTimestamp = first.timestamp;
+                    state.h264BaseNow = now;
+                    firstTarget = now;
+                  }
                   // If decoding or the renderer falls behind, keep the newest
                   // due frame and close older ones. Latency remains bounded.
                   let dueIndex = -1;
@@ -1834,7 +1845,14 @@ public sealed class CdpInjectionService : IAsyncDisposable
                     if (target <= now + 1) dueIndex = index; else break;
                   }
                   if (dueIndex >= 0) {
-                    for (let index = 0; index < dueIndex; index++) {
+                    // Normal CDP batches may contain two frames that become due
+                    // in adjacent display refreshes. Only collapse a backlog
+                    // when it is materially late; otherwise present one frame
+                    // per refresh and preserve motion continuity.
+                    const oldestLateness = Math.max(0, now - firstTarget);
+                    const discardCount = oldestLateness > 80 || state.h264Frames.length > 6
+                      ? dueIndex : 0;
+                    for (let index = 0; index < discardCount; index++) {
                       try { state.h264Frames.shift().close(); } catch (_) {}
                       state.captureDiagnostics.dropped++;
                     }

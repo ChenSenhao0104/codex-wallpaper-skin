@@ -125,7 +125,8 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
         byte[] bgra,
         int sourceWidth,
         int sourceHeight,
-        int sourceStride)
+        int sourceStride,
+        long? capturedSampleTime100Nanoseconds = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (sourceWidth < _width || sourceHeight < _height || sourceStride < sourceWidth * 4)
@@ -153,9 +154,15 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
             sample.AddBuffer(buffer);
         }
         var duration = 10_000_000L / _frameRate;
-        sample.SampleTime = _nextSampleTime;
+        // The configured frame rate is an encoder capability target, not proof
+        // that WGC supplied frames at that cadence. Preserve the real capture
+        // clock whenever it is available so the browser does not interpret a
+        // 30-40 FPS source as a late 60 FPS stream and discard valid frames.
+        var sampleTime = SelectSampleTime(
+            _nextSampleTime, capturedSampleTime100Nanoseconds);
+        sample.SampleTime = sampleTime;
         sample.SampleDuration = duration;
-        _nextSampleTime += duration;
+        _nextSampleTime = checked(sampleTime + duration);
         _transform.ProcessInput(0, sample, 0);
         _needInput = false;
 
@@ -320,6 +327,13 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
         ConvertBgraToNv12(bgra, width, height, stride, result);
         return result;
     }
+
+    internal static long SelectSampleTime(
+        long nextMonotonicTime100Nanoseconds,
+        long? capturedTime100Nanoseconds) =>
+        capturedTime100Nanoseconds is long captured
+            ? Math.Max(nextMonotonicTime100Nanoseconds, captured)
+            : nextMonotonicTime100Nanoseconds;
 
     private static void ConvertBgraToNv12(
         byte[] bgra,
