@@ -283,6 +283,18 @@ public sealed class StreamWatchdogDiagnosticReport
     public long DecodeErrors { get; set; }
     public long? CapturedFrames { get; set; }
     public long? EncodedFrames { get; set; }
+    public double? CapturedFramesPerSecond { get; set; }
+    public double? EncodedFramesPerSecond { get; set; }
+    public double? PresentedFramesPerSecond { get; set; }
+    public double? AverageCaptureMilliseconds { get; set; }
+    public double? AverageEncodeMilliseconds { get; set; }
+    public int? CaptureWidth { get; set; }
+    public int? CaptureHeight { get; set; }
+    public int? EncoderTargetFrameRate { get; set; }
+    public double? EncoderTargetMegabitsPerSecond { get; set; }
+    public long PublisherBatches { get; set; }
+    public double? TransportMegabitsPerSecond { get; set; }
+    public int DecoderQueueSize { get; set; }
     public bool TransportErrorPresent { get; set; }
     public string? ProbeErrorType { get; set; }
 }

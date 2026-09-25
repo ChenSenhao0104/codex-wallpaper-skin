@@ -436,6 +436,28 @@ public static class SelfTests
             True(!json.Contains("EffectivePath", StringComparison.OrdinalIgnoreCase));
             True(!json.Contains("SavedWallpaper\"", StringComparison.Ordinal));
         });
+        Check("60 FPS stream pacing preserves a higher clarity budget", () =>
+        {
+            var thirty = WallpaperEngineCaptureSession.CalculateH264Bitrate(2560, 1600, 30);
+            var sixty = WallpaperEngineCaptureSession.CalculateH264Bitrate(2560, 1600, 60);
+            Equal(40_960_000, thirty);
+            Equal(60_000_000, sixty);
+            True(sixty > thirty);
+            True(CdpInjectionService.BootstrapScript.Contains("requestAnimationFrame(pumpPresentation)", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("state.h264Frames.length >= 8", StringComparison.Ordinal));
+
+            var diagnostics = new ActiveStreamDiagnostics(
+                580, 570, 4, 0, 600, 300, 15_000_000, 1, 0, "stream",
+                DateTimeOffset.UtcNow, false, "h264-webcodecs", null,
+                new NativeStreamMetrics(600, 595, 590, 900, 2100, 10, 2560, 1600, 60, sixty));
+            var report = new StreamWatchdogDiagnosticReport();
+            DiagnosticsService.PopulatePerformanceMetrics(report, diagnostics);
+            Equal(60d, report.CapturedFramesPerSecond);
+            Equal(59d, report.EncodedFramesPerSecond);
+            Equal(57d, report.PresentedFramesPerSecond);
+            Equal(60d, report.EncoderTargetMegabitsPerSecond);
+            Equal(12d, report.TransportMegabitsPerSecond);
+        });
         Check("schema 6 sibling state round-trips without data loss", () =>
         {
             const string json = """
@@ -760,7 +782,7 @@ public static class SelfTests
             True(!CdpInjectionService.BootstrapScript.Contains("body > :not", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("canvas.width = 32", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("cws-palette", StringComparison.Ordinal));
-            True(CdpInjectionService.BootstrapScript.Contains("existing.version === 17", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("existing.version === 18", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinBeginCapturedStream", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinSetCapturedFrame", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("decode-timeout", StringComparison.Ordinal));

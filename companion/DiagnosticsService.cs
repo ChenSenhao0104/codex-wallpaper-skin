@@ -133,6 +133,7 @@ public static class DiagnosticsService
             target.DecodeErrors = diagnostics.DecodeErrors;
             target.CapturedFrames = diagnostics.Native?.CapturedFrames;
             target.EncodedFrames = diagnostics.Native?.EncodedFrames;
+            PopulatePerformanceMetrics(target, diagnostics);
             target.TransportErrorPresent = !string.IsNullOrWhiteSpace(diagnostics.TransportError);
         }
         catch (Exception exception)
@@ -142,6 +143,35 @@ public static class DiagnosticsService
             target.ProbeErrorType = exception.GetType().Name;
         }
     }
+
+    internal static void PopulatePerformanceMetrics(
+        StreamWatchdogDiagnosticReport target,
+        ActiveStreamDiagnostics diagnostics)
+    {
+        target.PublisherBatches = diagnostics.Batches;
+        target.DecoderQueueSize = diagnostics.DecodeQueueSize;
+        var native = diagnostics.Native;
+        if (native is null || native.ElapsedSeconds <= 0) return;
+        target.CapturedFramesPerSecond = Round(native.CapturedFrames / native.ElapsedSeconds);
+        target.EncodedFramesPerSecond = Round(native.EncodedFrames / native.ElapsedSeconds);
+        target.PresentedFramesPerSecond = Round(diagnostics.Presented / native.ElapsedSeconds);
+        target.AverageCaptureMilliseconds = native.CapturedFrames > 0
+            ? Round(native.CaptureMilliseconds / native.CapturedFrames)
+            : null;
+        target.AverageEncodeMilliseconds = native.EncoderInputs > 0
+            ? Round(native.EncodeMilliseconds / native.EncoderInputs)
+            : null;
+        target.CaptureWidth = native.CaptureWidth > 0 ? native.CaptureWidth : null;
+        target.CaptureHeight = native.CaptureHeight > 0 ? native.CaptureHeight : null;
+        target.EncoderTargetFrameRate = native.TargetFrameRate > 0 ? native.TargetFrameRate : null;
+        target.EncoderTargetMegabitsPerSecond = native.TargetBitrate > 0
+            ? Round(native.TargetBitrate / 1_000_000d)
+            : null;
+        target.TransportMegabitsPerSecond = Round(
+            diagnostics.EncodedBytes * 8d / native.ElapsedSeconds / 1_000_000d);
+    }
+
+    private static double Round(double value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
 
     internal static CdpTarget SanitizeTarget(CdpTarget target) =>
         DiagnosticPrivacy.SanitizeTarget(target);

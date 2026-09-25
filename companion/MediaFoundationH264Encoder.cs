@@ -28,6 +28,7 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
     private readonly int _height;
     private readonly int _frameRate;
     private readonly int _outputBufferSize;
+    private readonly byte[] _nv12Buffer;
     private bool _needInput;
     private long _nextSampleTime;
     private bool _disposed;
@@ -38,7 +39,8 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
         int width,
         int height,
         int frameRate,
-        int outputBufferSize)
+        int outputBufferSize,
+        long startSampleTime)
     {
         _transform = transform;
         _events = events;
@@ -46,16 +48,25 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
         _height = height;
         _frameRate = frameRate;
         _outputBufferSize = outputBufferSize;
+        _nv12Buffer = new byte[checked(width * height * 3 / 2)];
+        _nextSampleTime = Math.Max(0, startSampleTime);
     }
 
-    public static MediaFoundationH264Encoder Create(int width, int height, int frameRate, int bitrate)
+    public long NextSampleTime100Nanoseconds => _nextSampleTime;
+
+    public static MediaFoundationH264Encoder Create(
+        int width,
+        int height,
+        int frameRate,
+        int bitrate,
+        long startSampleTime = 0)
     {
         width &= ~1;
         height &= ~1;
         if (width is < 64 or > 4096 || height is < 64 or > 4096)
             throw new ArgumentOutOfRangeException(nameof(width));
         frameRate = Math.Clamp(frameRate, 15, 60);
-        bitrate = Math.Clamp(bitrate, 1_000_000, 40_000_000);
+        bitrate = Math.Clamp(bitrate, 1_000_000, 60_000_000);
 
         MediaFactory.MFStartup().CheckError();
         IMFTransform? transform = null;
@@ -95,10 +106,11 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
 
             events = transform.QueryInterface<IMFMediaEventGenerator>();
             var outputInfo = transform.GetOutputStreamInfo(0);
-            var outputBufferSize = Math.Max(outputInfo.Size, 2 * 1024 * 1024);
+            var outputBufferSize = Math.Max(outputInfo.Size, 4 * 1024 * 1024);
             transform.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
             transform.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
-            return new MediaFoundationH264Encoder(transform, events, width, height, frameRate, outputBufferSize);
+            return new MediaFoundationH264Encoder(
+                transform, events, width, height, frameRate, outputBufferSize, startSampleTime);
         }
         catch
         {
@@ -123,16 +135,16 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
 
         var outputs = new List<H264EncodedFrame>(2);
         WaitUntilInputIsNeeded(outputs);
-        var nv12 = ConvertBgraToNv12(bgra, _width, _height, sourceStride);
+        ConvertBgraToNv12(bgra, _width, _height, sourceStride, _nv12Buffer);
         using var sample = MediaFactory.MFCreateSample();
-        using (var buffer = MediaFactory.MFCreateMemoryBuffer(nv12.Length))
+        using (var buffer = MediaFactory.MFCreateMemoryBuffer(_nv12Buffer.Length))
         {
             buffer.Lock(out var destination, out var capacity, out _);
             try
             {
-                if (capacity < nv12.Length) throw new InvalidDataException("Media Foundation returned an undersized input buffer.");
-                Marshal.Copy(nv12, 0, destination, nv12.Length);
-                buffer.CurrentLength = nv12.Length;
+                if (capacity < _nv12Buffer.Length) throw new InvalidDataException("Media Foundation returned an undersized input buffer.");
+                Marshal.Copy(_nv12Buffer, 0, destination, _nv12Buffer.Length);
+                buffer.CurrentLength = _nv12Buffer.Length;
             }
             finally
             {
@@ -305,6 +317,20 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
         if ((width & 1) != 0 || (height & 1) != 0) throw new ArgumentException("NV12 dimensions must be even.");
         var yPlaneSize = checked(width * height);
         var result = new byte[checked(yPlaneSize + yPlaneSize / 2)];
+        ConvertBgraToNv12(bgra, width, height, stride, result);
+        return result;
+    }
+
+    private static void ConvertBgraToNv12(
+        byte[] bgra,
+        int width,
+        int height,
+        int stride,
+        byte[] result)
+    {
+        var yPlaneSize = checked(width * height);
+        if (result.Length < checked(yPlaneSize + yPlaneSize / 2))
+            throw new ArgumentException("The reusable NV12 buffer is too small.", nameof(result));
         Parallel.For(0, height, y =>
         {
             var sourceRow = y * stride;
@@ -342,7 +368,6 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
                 result[uvRow + x + 1] = ClampByte(((112 * red - 102 * green - 10 * blue + 128) >> 8) + 128);
             }
         });
-        return result;
     }
 
     private static byte ClampByte(int value) => (byte)Math.Clamp(value, 0, 255);

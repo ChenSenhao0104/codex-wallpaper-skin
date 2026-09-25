@@ -206,7 +206,7 @@
                                     Padding="8,2" Margin="10,0,0,0" VerticalAlignment="Center">
                                 <TextBlock x:Name="ConnectionStateText" Text="Not connected" FontSize="11" Foreground="White"/>
                             </Border>
-                            <TextBlock x:Name="VersionText" Text="v0.6.2" Foreground="{StaticResource MutedBrush}"
+                            <TextBlock x:Name="VersionText" Text="v0.7.0" Foreground="{StaticResource MutedBrush}"
                                        FontSize="11" Margin="9,0,0,0" VerticalAlignment="Center"/>
                         </StackPanel>
                         <TextBlock Text="One button handles normal startup and reconnection."

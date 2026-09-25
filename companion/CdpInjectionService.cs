@@ -107,12 +107,13 @@ public sealed class CdpInjectionService : IAsyncDisposable
 
     private sealed class H264BatchPublisher : IAsyncDisposable
     {
-        private const int MaximumBatchFrames = 12;
+        private const int MaximumBatchFrames = 6;
         private const int MaximumBatchBytes = 2 * 1024 * 1024;
         private readonly CdpClient _client;
         private readonly string _token;
+        private readonly TimeSpan _coalescingDelay;
         private readonly Channel<H264EncodedFrame> _frames = Channel.CreateBounded<H264EncodedFrame>(
-            new BoundedChannelOptions(36)
+            new BoundedChannelOptions(24)
             {
                 FullMode = BoundedChannelFullMode.Wait,
                 SingleReader = true,
@@ -126,10 +127,13 @@ public sealed class CdpInjectionService : IAsyncDisposable
         private long _bytes;
         private string? _lastError;
 
-        public H264BatchPublisher(CdpClient client, string token)
+        public H264BatchPublisher(CdpClient client, string token, int targetFrameRate)
         {
             _client = client;
             _token = token;
+            // Keep enough frames together to amortize CDP JSON overhead without
+            // delivering 60 FPS video in visibly uneven 50 ms bursts.
+            _coalescingDelay = TimeSpan.FromMilliseconds(targetFrameRate >= 60 ? 24 : 40);
             _worker = Task.Run(() => RunAsync(_lifetime.Token));
         }
 
@@ -159,9 +163,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
                         batch.Add(first);
                         byteLength += first.Data.Length;
                     }
-                    // One short coalescing window turns 60 per-frame CDP calls
-                    // into roughly 15 bounded compressed batches per second.
-                    await Task.Delay(TimeSpan.FromMilliseconds(50), cancellationToken);
+                    await Task.Delay(_coalescingDelay, cancellationToken);
                     while (batch.Count < MaximumBatchFrames
                         && byteLength < MaximumBatchBytes
                         && _frames.Reader.TryRead(out var frame))
@@ -367,7 +369,8 @@ public sealed class CdpInjectionService : IAsyncDisposable
                                     operationToken);
                                 if (ReadString(h264Started).Equals("ready", StringComparison.Ordinal))
                                 {
-                                    h264Publisher = new H264BatchPublisher(client, captureToken);
+                                    h264Publisher = new H264BatchPublisher(
+                                        client, captureToken, settings.SceneFrameRate);
                                     var h264Lease = new CaptureLease(session, captureToken, null, h264Publisher);
                                     _captureLease = h264Lease;
                                     session.StartH264Streaming(
@@ -1295,7 +1298,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
             throw new Error('Refusing to inject: this is not a ready Codex app:// page.');
           }
           const existing = window.__codexWallpaperSkin;
-          const existingHealthy = existing && existing.version === 17 && !existing.disposed
+          const existingHealthy = existing && existing.version === 18 && !existing.disposed
             && existing.host?.isConnected && existing.style?.isConnected && existing.overlay?.isConnected
             && document.getElementById('codex-wallpaper-skin-host') === existing.host
             && document.getElementById('codex-wallpaper-skin-style') === existing.style
@@ -1473,7 +1476,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
           document.body.appendChild(host);
 
           const state = window.__codexWallpaperSkin = {
-            version: 17, disposed: false, style, host, overlay, media: null, assetUrl: null,
+            version: 18, disposed: false, style, host, overlay, media: null, assetUrl: null,
             sceneController: null, pendingSceneController: null,
             pendingMedia: null, pendingUrl: null, pendingCancel: null,
             uploads: new Map(), marked: new Set(), settings: null, rawPalette: null,
@@ -1482,6 +1485,8 @@ public sealed class CdpInjectionService : IAsyncDisposable
             captureFrameBusy: false, captureStaging: null, captureToken: null,
             captureSocket: null, capturePendingPacket: null,
             h264Decoder: null, h264Generation: 0, h264Presented: 0, h264DecodeErrors: 0,
+            h264Frames: [], h264PresentationRaf: 0, h264BaseTimestamp: null, h264BaseNow: 0,
+            h264LastTimestamp: null,
             captureDiagnostics: { received: 0, presented: 0, dropped: 0, decodeErrors: 0, lastSequence: 0, lastPresentation: null },
             styleText, helpers: null
           };
@@ -1731,6 +1736,14 @@ public sealed class CdpInjectionService : IAsyncDisposable
           };
           const closeH264Decoder = () => {
             state.h264Generation++;
+            if (state.h264PresentationRaf) {
+              try { cancelAnimationFrame(state.h264PresentationRaf); } catch (_) {}
+              state.h264PresentationRaf = 0;
+            }
+            try { state.h264Frames.splice(0).forEach(frame => frame.close()); } catch (_) { state.h264Frames = []; }
+            state.h264BaseTimestamp = null;
+            state.h264BaseNow = 0;
+            state.h264LastTimestamp = null;
             const decoder = state.h264Decoder;
             state.h264Decoder = null;
             if (decoder) {
@@ -1785,27 +1798,78 @@ public sealed class CdpInjectionService : IAsyncDisposable
             state.h264Presented = 0;
             state.h264DecodeErrors = 0;
             state.captureDiagnostics = { received: 0, presented: 0, dropped: 0, decodeErrors: 0, lastSequence: 0, lastPresentation: null };
+            const presentFrame = frame => {
+              const frameWidth = Math.max(1, frame.displayWidth || frame.codedWidth);
+              const frameHeight = Math.max(1, frame.displayHeight || frame.codedHeight);
+              const context = media.getContext('2d', { alpha: false, desynchronized: true });
+              if (!context) throw new Error('canvas-unavailable');
+              if (media.width !== frameWidth || media.height !== frameHeight) {
+                media.width = frameWidth; media.height = frameHeight;
+              }
+              context.drawImage(frame, 0, 0, frameWidth, frameHeight);
+              state.h264Presented++;
+              state.captureDiagnostics.presented++;
+              state.captureDiagnostics.lastPresentation = new Date().toISOString();
+            };
+            const pumpPresentation = now => {
+              state.h264PresentationRaf = 0;
+              if (state.disposed || state.h264Decoder !== decoder || generation !== state.h264Generation
+                  || token !== state.captureToken || state.media !== media) {
+                try { state.h264Frames.splice(0).forEach(frame => frame.close()); } catch (_) {}
+                return;
+              }
+              try {
+                if (state.h264Frames.length > 0) {
+                  const first = state.h264Frames[0];
+                  if (state.h264BaseTimestamp === null) {
+                    state.h264BaseTimestamp = first.timestamp;
+                    state.h264BaseNow = now;
+                  }
+                  // If decoding or the renderer falls behind, keep the newest
+                  // due frame and close older ones. Latency remains bounded.
+                  let dueIndex = -1;
+                  for (let index = 0; index < state.h264Frames.length; index++) {
+                    const target = state.h264BaseNow
+                      + Math.max(0, state.h264Frames[index].timestamp - state.h264BaseTimestamp) / 1000;
+                    if (target <= now + 1) dueIndex = index; else break;
+                  }
+                  if (dueIndex >= 0) {
+                    for (let index = 0; index < dueIndex; index++) {
+                      try { state.h264Frames.shift().close(); } catch (_) {}
+                      state.captureDiagnostics.dropped++;
+                    }
+                    const frame = state.h264Frames.shift();
+                    try { presentFrame(frame); } finally { try { frame.close(); } catch (_) {} }
+                  }
+                }
+              } catch (_) {
+                state.h264DecodeErrors++;
+                state.captureDiagnostics.decodeErrors++;
+              }
+              if (state.h264Frames.length > 0) {
+                state.h264PresentationRaf = requestAnimationFrame(pumpPresentation);
+              }
+            };
             const decoder = new VideoDecoder({
               output: frame => {
-                try {
-                  if (state.disposed || state.h264Decoder !== decoder || generation !== state.h264Generation
-                      || token !== state.captureToken || state.media !== media) return;
-                  const frameWidth = Math.max(1, frame.displayWidth || frame.codedWidth);
-                  const frameHeight = Math.max(1, frame.displayHeight || frame.codedHeight);
-                  const context = media.getContext('2d', { alpha: false, desynchronized: true });
-                  if (!context) throw new Error('canvas-unavailable');
-                  if (media.width !== frameWidth || media.height !== frameHeight) {
-                    media.width = frameWidth; media.height = frameHeight;
-                  }
-                  context.drawImage(frame, 0, 0, frameWidth, frameHeight);
-                  state.h264Presented++;
-                  state.captureDiagnostics.presented++;
-                  state.captureDiagnostics.lastPresentation = new Date().toISOString();
-                } catch (_) {
-                  state.h264DecodeErrors++;
-                  state.captureDiagnostics.decodeErrors++;
-                } finally {
+                if (state.disposed || state.h264Decoder !== decoder || generation !== state.h264Generation
+                    || token !== state.captureToken || state.media !== media) {
                   try { frame.close(); } catch (_) {}
+                  return;
+                }
+                if (state.h264LastTimestamp !== null && frame.timestamp <= state.h264LastTimestamp) {
+                  try { state.h264Frames.splice(0).forEach(queued => queued.close()); } catch (_) {}
+                  state.h264BaseTimestamp = null;
+                  state.h264BaseNow = 0;
+                }
+                state.h264LastTimestamp = frame.timestamp;
+                while (state.h264Frames.length >= 8) {
+                  try { state.h264Frames.shift().close(); } catch (_) {}
+                  state.captureDiagnostics.dropped++;
+                }
+                state.h264Frames.push(frame);
+                if (!state.h264PresentationRaf) {
+                  state.h264PresentationRaf = requestAnimationFrame(pumpPresentation);
                 }
               },
               error: () => {
