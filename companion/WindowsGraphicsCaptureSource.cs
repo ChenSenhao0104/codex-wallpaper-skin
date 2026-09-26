@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading.Channels;
 using System.Windows;
@@ -12,12 +11,7 @@ using WinRT;
 
 namespace CodexWallpaperSkin;
 
-internal sealed record CapturedBgraFrame(
-    byte[] Pixels,
-    int Width,
-    int Height,
-    int Stride,
-    long CapturedAtTimestamp = 0)
+internal sealed record CapturedBgraFrame(byte[] Pixels, int Width, int Height, int Stride)
 {
     public BitmapSource ToBitmapSource()
     {
@@ -169,8 +163,7 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
                 {
                     Marshal.Copy(IntPtr.Add(mapped.Data, checked((int)(row * mapped.RowPitch))), pixels, row * stride, stride);
                 }
-                return new CapturedBgraFrame(
-                    pixels, width, height, stride, Stopwatch.GetTimestamp());
+                return new CapturedBgraFrame(pixels, width, height, stride);
             }
             finally
             {

@@ -295,6 +295,7 @@ public sealed class StreamWatchdogDiagnosticReport
     public long PublisherBatches { get; set; }
     public double? TransportMegabitsPerSecond { get; set; }
     public int DecoderQueueSize { get; set; }
+    public int PresentationQueueSize { get; set; }
     public bool TransportErrorPresent { get; set; }
     public string? ProbeErrorType { get; set; }
 }

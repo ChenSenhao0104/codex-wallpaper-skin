@@ -9,7 +9,8 @@ public enum LiveStreamHealthKind
     CaptureStalled,
     EncoderStalled,
     TransportStalled,
-    PresenterStalled
+    PresenterStalled,
+    PerformanceDegraded
 }
 
 public sealed record LiveStreamHealthDecision(
@@ -52,6 +53,15 @@ public static class StreamHealthPolicy
         if (diagnostics.LastPresentation is DateTimeOffset lastPresentation
             && now - lastPresentation <= PresentationStaleAfter)
         {
+            if (diagnostics.Mode.Equals("h264-webcodecs", StringComparison.OrdinalIgnoreCase)
+                && streamAge >= TimeSpan.FromSeconds(5)
+                && diagnostics.Received >= 60
+                && (diagnostics.Presented * 2 < diagnostics.Received
+                    || diagnostics.Dropped * 3 > diagnostics.Received))
+            {
+                return Decision(LiveStreamHealthKind.PerformanceDegraded, false,
+                    "Codex is receiving frames, but the presentation queue is discarding too many of them.");
+            }
             return Decision(LiveStreamHealthKind.Healthy, false,
                 "Codex presented a recent frame.");
         }

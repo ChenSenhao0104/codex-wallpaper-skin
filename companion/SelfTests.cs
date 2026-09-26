@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Net.WebSockets;
@@ -36,13 +35,18 @@ public static class SelfTests
                 NativeStreamMetrics? native = null,
                 long received = 100,
                 long presented = 95,
+                long dropped = 0,
                 long decodeErrors = 0) => new(
-                    received, presented, 0, decodeErrors, 100, 20, 1000, 0, 0,
+                    received, presented, dropped, decodeErrors, 100, 20, 1000, 0, 0, 0,
                     "test-stream", lastPresentation, hidden, mode, transportError,
                     native ?? healthyNative);
 
             Equal(LiveStreamHealthKind.Healthy,
                 StreamHealthPolicy.Evaluate(Diagnostic(now.AddSeconds(-2)), true, now).Kind);
+            Equal(LiveStreamHealthKind.PerformanceDegraded,
+                StreamHealthPolicy.Evaluate(
+                    Diagnostic(now.AddSeconds(-2), received: 100, presented: 10, dropped: 82),
+                    true, now).Kind);
             Equal(LiveStreamHealthKind.PausedWhileHidden,
                 StreamHealthPolicy.Evaluate(Diagnostic(null, hidden: true), true, now).Kind);
             Equal(LiveStreamHealthKind.WarmingUp,
@@ -446,15 +450,11 @@ public static class SelfTests
             True(sixty > thirty);
             True(CdpInjectionService.BootstrapScript.Contains("requestAnimationFrame(pumpPresentation)", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("state.h264Frames.length >= 8", StringComparison.Ordinal));
-            True(CdpInjectionService.BootstrapScript.Contains("firstTarget < now - 120", StringComparison.Ordinal));
-            True(CdpInjectionService.BootstrapScript.Contains("oldestLateness > 80", StringComparison.Ordinal));
-            Equal(10_000_000L,
-                WallpaperEngineCaptureSession.StopwatchTicksToHundredNanoseconds(Stopwatch.Frequency));
-            Equal(300_000L, MediaFoundationH264Encoder.SelectSampleTime(166_666L, 300_000L));
-            Equal(166_666L, MediaFoundationH264Encoder.SelectSampleTime(166_666L, 120_000L));
+            True(CdpInjectionService.BootstrapScript.Contains("smooth consecutive motion", StringComparison.Ordinal));
+            True(!CdpInjectionService.BootstrapScript.Contains("h264BaseTimestamp", StringComparison.Ordinal));
 
             var diagnostics = new ActiveStreamDiagnostics(
-                580, 570, 4, 0, 600, 300, 15_000_000, 1, 0, "stream",
+                580, 570, 4, 0, 600, 300, 15_000_000, 1, 2, 0, "stream",
                 DateTimeOffset.UtcNow, false, "h264-webcodecs", null,
                 new NativeStreamMetrics(600, 595, 590, 900, 2100, 10, 2560, 1600, 60, sixty));
             var report = new StreamWatchdogDiagnosticReport();
@@ -464,6 +464,7 @@ public static class SelfTests
             Equal(57d, report.PresentedFramesPerSecond);
             Equal(60d, report.EncoderTargetMegabitsPerSecond);
             Equal(12d, report.TransportMegabitsPerSecond);
+            Equal(2, report.PresentationQueueSize);
         });
         Check("schema 6 sibling state round-trips without data loss", () =>
         {
@@ -789,7 +790,7 @@ public static class SelfTests
             True(!CdpInjectionService.BootstrapScript.Contains("body > :not", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("canvas.width = 32", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("cws-palette", StringComparison.Ordinal));
-            True(CdpInjectionService.BootstrapScript.Contains("existing.version === 19", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("existing.version === 20", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinBeginCapturedStream", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinSetCapturedFrame", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("decode-timeout", StringComparison.Ordinal));

@@ -150,6 +150,7 @@ public static class DiagnosticsService
     {
         target.PublisherBatches = diagnostics.Batches;
         target.DecoderQueueSize = diagnostics.DecodeQueueSize;
+        target.PresentationQueueSize = diagnostics.PresentationQueueSize;
         var native = diagnostics.Native;
         if (native is null || native.ElapsedSeconds <= 0) return;
         target.CapturedFramesPerSecond = Round(native.CapturedFrames / native.ElapsedSeconds);
