@@ -2,11 +2,13 @@
 
 [English](README.en.md) | 简体中文
 
-一个独立运行的 Windows 11 x64 桌面程序，用本地图片、视频和已安装的 Wallpaper Engine 项目为 Codex Desktop 更换背景。当前 GUI 开发版本为 `0.8.0`，要求官方 x64 `OpenAI.Codex` Store/MSIX 桌面包。
+一个独立运行的 Windows 11 x64 桌面程序，用本地图片、视频和已安装的 Wallpaper Engine 项目为 Codex Desktop 更换背景。首个公开 Beta 版本为 `0.8.0`，要求官方 x64 `OpenAI.Codex` Store/MSIX 桌面包。
 
 程序通过仅绑定 `127.0.0.1` 的 Chrome DevTools Protocol（CDP），在真实 Codex 页面中添加可逆的背景层。Image/Video 由 Codex 独立加载；复杂 Scene 由本机 Wallpaper Engine 在隔离窗口中原生渲染后传给 Codex。程序不修改 `WindowsApps`、`app.asar`、官方签名、聊天内容或登录数据。
 
 > 本项目不是 OpenAI、Valve 或 Wallpaper Engine 的官方产品，也不受其认可或赞助。
+
+首个公开 Beta 的变更、下载说明和限制见 [v0.8.0 Release Notes](docs/releases/V0.8.0-BETA.md)。
 
 ## GUI 当前能力
 
@@ -50,7 +52,7 @@
 | `[IMAGE]` | 独立加载项目原始图片。 |
 | `[VIDEO]` | 独立循环播放项目 MP4/WebM。 |
 | `[WE NATIVE VIDEO]` | 由 Wallpaper Engine 播放大型 MP4/WebM，再经原生捕获与硬件 H.264 链路显示。 |
-| `[WE LIVE SCENE]` | 优先由 Wallpaper Engine 原生渲染并桥接动画/鼠标交互；失败时明确降级。 |
+| `[WE LIVE SCENE]` | 优先由 Wallpaper Engine 原生渲染并桥接动画；当前稳定 H.264 路径不转发鼠标互动，失败时会明确降级。 |
 | `[ANIMATED PREVIEW]` | 包不可用时使用经过验证的 GIF 预览。 |
 | `[STATIC FALLBACK]` | 使用安全静态预览。 |
 | `[REJECTED]` | 项目类型或素材未通过安全检查，不能应用。 |
@@ -62,6 +64,23 @@
 所有画面只通过回环 CDP 在本机内存中传入 Codex，不发送到互联网或局域网。高保真 Scene 由用户已安装的 Wallpaper Engine 执行并遵循其安全/性能设置；本程序自身不解释或执行 SceneScript。Web 壁纸代码与 Application 壁纸始终不会运行。同一 Windows 用户下的其他进程仍可能访问未认证的 CDP 端口，因此只应在可信会话中使用；完全退出以 CDP 参数启动的 Codex 才会关闭端口。
 
 本项目不附带或重新分发 Wallpaper Engine 壁纸。用户必须拥有 Wallpaper Engine 并遵守壁纸作者许可。漏洞报告方式见 [SECURITY.md](SECURITY.md)。
+
+## Beta 已知限制
+
+- 仅支持 Windows 11 x64，以及官方 x64 `OpenAI.Codex` Store/MSIX 桌面包；ARM64、x86、非打包版和改名副本不受支持。
+- Wallpaper Engine 的 Scene 和大型 Video 需要用户已经合法安装 Wallpaper Engine，并在播放期间保持其后台可用；普通本地图片和受支持的小型视频不需要 Wallpaper Engine。
+- 控制器负责动态画面的捕获、编码和恢复，因此关闭可见窗口只会隐藏到托盘；从托盘选择 **Remove wallpaper and exit** 后，动态背景不会继续播放。
+- 如果用户先以普通方式启动了 Codex，现有进程没有壁纸通道。请手动关闭 Codex，再点击 **Start / reconnect Codex**；本软件不会自动关闭或重启 Codex。
+- Scene 的实际清晰度、帧率和资源占用取决于壁纸复杂度、Wallpaper Engine 设置、显卡、显示分辨率和系统负载。`60 FPS` 是目标而非保证；Doctor 数据用于诊断，不是单独判断观感是否合格的评分。
+- 当前稳定 H.264 4:2:0 路径不转发鼠标互动，也不能保证与 Wallpaper Engine 直接桌面合成逐像素一致。
+- `0.8.0` 安装包尚未代码签名，Windows 可能显示未知发布者或 SmartScreen 提示。只应从本仓库的 GitHub Releases 下载，并核对同页 SHA-256；不要为安装本软件而全局关闭 Windows 安全功能。
+
+校验下载文件时，在下载目录打开 PowerShell，并把计算结果与同名 `.sha256` 文件比较：
+
+```powershell
+Get-FileHash .\CodexWallpaperSkin-Setup-v0.8.0-win-x64.exe -Algorithm SHA256
+Get-Content .\CodexWallpaperSkin-Setup-v0.8.0-win-x64.exe.sha256
+```
 
 ## 开发与验证
 

@@ -23,6 +23,17 @@ if (-not [int]::TryParse(($versionText -split '\.')[0], [ref]$major) -or $major 
 }
 if ($Publish) { $Configuration = 'Release' }
 
+$sourceCommit = $null
+if ($Publish) {
+  try {
+    $candidateCommit = (& git -C $skillRoot rev-parse HEAD 2>$null | Select-Object -First 1).Trim()
+    if ($LASTEXITCODE -eq 0 -and $candidateCommit -match '^[0-9a-f]{40}$') {
+      $sourceCommit = $candidateCommit
+    }
+  }
+  catch { $sourceCommit = $null }
+}
+
 function Remove-GeneratedDirectory {
   param(
     [Parameter(Mandatory = $true)][string]$Target,
@@ -153,7 +164,17 @@ if ($Publish) {
 & $dotnet.Source restore $project --nologo --ignore-failed-sources
 if ($LASTEXITCODE -ne 0) { throw 'dotnet restore failed.' }
 
-& $dotnet.Source build $project --configuration $Configuration --no-restore --nologo
+$buildArguments = @('build', $project, '--configuration', $Configuration, '--no-restore', '--nologo')
+if ($Publish) {
+  # A release build must not reuse a DLL compiled in another checkout. Rebuilding
+  # also keeps AssemblyInformationalVersion aligned with the current Git commit.
+  $buildArguments += '--no-incremental'
+  $buildArguments += '-p:DebugType=None'
+  $buildArguments += '-p:DebugSymbols=false'
+  $buildArguments += '-p:ContinuousIntegrationBuild=true'
+  if ($sourceCommit) { $buildArguments += "-p:SourceRevisionId=$sourceCommit" }
+}
+& $dotnet.Source @buildArguments
 if ($LASTEXITCODE -ne 0) { throw 'dotnet build failed.' }
 
 if ($Publish) {
@@ -164,10 +185,15 @@ if ($Publish) {
   & $node.Source (Join-Path $PSScriptRoot 'runtime-smoke-test.mjs')
   if ($LASTEXITCODE -ne 0) { throw 'Renderer runtime smoke test failed.' }
 
-  & $dotnet.Source publish $project --configuration Release --runtime win-x64 --self-contained true `
-    --no-restore --nologo -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
-    -p:DebugType=None -p:DebugSymbols=false `
-    --output $publishDirectory
+  $publishArguments = @(
+    'publish', $project, '--configuration', 'Release', '--runtime', 'win-x64',
+    '--self-contained', 'true', '--no-restore', '--nologo', '--no-build',
+    '-p:PublishSingleFile=true', '-p:IncludeNativeLibrariesForSelfExtract=true',
+    '-p:DebugType=None', '-p:DebugSymbols=false', '-p:ContinuousIntegrationBuild=true',
+    '--output', $publishDirectory
+  )
+  if ($sourceCommit) { $publishArguments += "-p:SourceRevisionId=$sourceCommit" }
+  & $dotnet.Source @publishArguments
   if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed.' }
 
   # The self-contained payload comes from NuGet runtime packs, which can differ
@@ -214,6 +240,26 @@ if ($Publish) {
   )
 
   $publishedExecutable = Join-Path $publishDirectory 'CodexWallpaperSkin.exe'
+  $publishedVersion = (Get-Item -LiteralPath $publishedExecutable).VersionInfo.ProductVersion
+  if ($sourceCommit -and -not $publishedVersion.EndsWith("+$sourceCommit", [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Published executable source revision '$publishedVersion' does not match HEAD $sourceCommit."
+  }
+
+  # Prevent release binaries from exposing the build checkout or Windows user
+  # profile through an embedded PDB path or other compiler metadata.
+  $binaryText = [Text.Encoding]::Latin1.GetString([IO.File]::ReadAllBytes($publishedExecutable))
+  $forbiddenBuildPaths = @(
+    $skillRoot,
+    [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+  ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+  foreach ($forbiddenPath in $forbiddenBuildPaths) {
+    if ($binaryText.Contains($forbiddenPath, [StringComparison]::OrdinalIgnoreCase) -or
+        $binaryText.Contains($forbiddenPath.Replace('\', '/'), [StringComparison]::OrdinalIgnoreCase)) {
+      throw "Published executable contains a local build path. Release output was rejected."
+    }
+  }
+  $binaryText = $null
+
   $selfTestProcess = Start-Process -FilePath $publishedExecutable -ArgumentList '--self-test' -PassThru -WindowStyle Hidden
   if (-not $selfTestProcess.WaitForExit(60000)) {
     try {

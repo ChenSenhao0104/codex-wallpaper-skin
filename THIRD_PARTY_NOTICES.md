@@ -23,14 +23,18 @@ The Windows build uses Microsoft's Windows SDK .NET targeting pack and C#/WinRT 
 
 The Windows build uses **Vortice.Direct3D11 3.6.2** and
 **Vortice.MediaFoundation 3.6.2** to convert captured textures on the GPU and
-access the operating system's Media Foundation H.264 encoder. These Vortice
-packages are distributed under the MIT License. The application does not
-bundle a video codec; encoding is performed by Windows.
+access the operating system's Media Foundation H.264 encoder. Their resolved
+MIT-licensed dependency family includes **Vortice.DXGI 3.6.2**,
+**Vortice.DirectX 3.6.2**, **Vortice.Mathematics 1.9.2**,
+**SharpGen.Runtime 2.2.0-beta**, and **SharpGen.Runtime.COM 2.2.0-beta**. The
+application does not bundle a video codec; encoding is performed by Windows.
 
 - Package: <https://www.nuget.org/packages/Vortice.Direct3D11/3.6.2>
 - Package: <https://www.nuget.org/packages/Vortice.MediaFoundation/3.6.2>
 - Upstream project: <https://github.com/amerkoleci/Vortice.Windows>
-- License: <https://github.com/amerkoleci/Vortice.Windows/blob/main/LICENSE>
+- License: <https://github.com/amerkoleci/Vortice.Windows/blob/cd916a03f206165bec67982ed501e88820d4182b/LICENSE>
+- SharpGen runtime: <https://github.com/SharpGenTools/SharpGenTools>
+- SharpGen license: <https://github.com/SharpGenTools/SharpGenTools/blob/a22348d2e1ff76dfbdc51d68800ed31e991d8b32/LICENSE.txt>
 
 ## Installer tooling
 

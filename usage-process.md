@@ -83,7 +83,7 @@ Windows 无法把 Chromium 调试参数动态补到已经运行的进程，因�
    | `[IMAGE]` | 将项目的本地图片独立加载到 Codex。 |
    | `[VIDEO]` | 将本地 MP4/WebM 独立加载并循环播放。 |
    | `[WE NATIVE VIDEO]` | 由 Wallpaper Engine 播放大型视频，再经 WGC/硬件 H.264 链路显示，避免把整个文件上传到 Codex。 |
-   | `[WE LIVE SCENE]` | 优先由 Wallpaper Engine 原生渲染，并桥接动画和鼠标交互。 |
+   | `[WE LIVE SCENE]` | 优先由 Wallpaper Engine 原生渲染并桥接动画；当前稳定 H.264 路径不转发鼠标互动。 |
    | `[ANIMATED PREVIEW]` | Scene/Web 的包或原始媒体不可用时，使用经过验证的 GIF 预览。 |
    | `[STATIC FALLBACK]` | 使用经过验证的静态预览。 |
    | 不可应用 | Application 或无法安全验证的项目会被拒绝。 |
@@ -91,7 +91,7 @@ Windows 无法把 Chromium 调试参数动态补到已经运行的进程，因�
 4. 选择项目后，在右侧检查参数。
 5. 点击 **Apply selected**，等待进度完成和成功提示。
 
-Image/Video 项目直接使用已经下载到本机的素材。Scene 项目会启动 Wallpaper Engine 的私有离屏窗口并保持后台运行；Codex 的鼠标移动和按压会映射给原壁纸，所以水波、视差、Puppet Warp、粒子、脚本和音频响应由官方引擎原样处理。原生后端不可用时，底部状态栏会明确说明已使用受限内置渲染器、包内纹理或预览回退。
+Image/Video 项目直接使用已经下载到本机的素材。Scene 项目会启动 Wallpaper Engine 的私有离屏窗口并保持后台运行；Puppet Warp、粒子、作者脚本和音频响应仍由官方引擎处理，但当前稳定 H.264 路径不会把 Codex 鼠标输入转发给壁纸。原生后端不可用时，底部状态栏会明确说明已使用受限内置渲染器、包内纹理或预览回退。
 
 ### 使用普通本地文件
 
@@ -202,13 +202,13 @@ pwsh -NoProfile -File .\scripts\reset.ps1
 
 ## 8. 常见问题
 
-### Connect 失败或显示 CDP 不可达
+### Start / reconnect Codex 失败或显示 CDP 不可达
 
 点击 **Start / reconnect Codex**。如果 Codex 已普通启动，软件会提示你手动关闭 Codex；关闭后再次点击同一个按钮。软件不会排队自动关闭或自动重启 Codex。只有排障时才展开高级设置，不要把地址改成 `localhost`、局域网 IP 或远程地址。
 
 ### 提示端口监听者不是官方 OpenAI.Codex 包
 
-`0.1.1` 会把安装在非系统盘（例如 `E:\WindowsApps`）的官方 Codex 错误识别成非官方程序；此问题从 `0.1.2` 起已修复。请完全退出旧版调节器，使用当前 `0.3.0` 或更新版本的 `CodexWallpaperSkin.exe`，然后重新点击 **Connect**。新版会核对 Windows 返回的官方包身份和实际可执行文件身份，不依赖 Codex 必须安装在 C 盘。如果仍显示这条提示，不要绕过校验；运行下方只读诊断并提交脱敏后的结果。
+`0.1.1` 会把安装在非系统盘（例如 `E:\WindowsApps`）的官方 Codex 错误识别成非官方程序；此问题从 `0.1.2` 起已修复。请完全退出旧版调节器，使用当前版本的 `CodexWallpaperSkin.exe`，然后重新点击 **Start / reconnect Codex**。新版会核对 Windows 返回的官方包身份和实际可执行文件身份，不依赖 Codex 必须安装在 C 盘。如果仍显示这条提示，不要绕过校验；运行下方只读诊断并提交脱敏后的结果。
 
 ### 扫描不到 Wallpaper Engine
 
@@ -222,9 +222,9 @@ pwsh -NoProfile -File .\scripts\reset.ps1
 
 `0.2.1` 可能把多个嵌套的全屏容器重复当作半透明面板，深色层叠加后会遮暗壁纸；自动取色暂时失败时还可能保留旧取色状态，重连也可能误选辅助页面。上述问题已在 `0.2.2` 修复。请使用当前 `0.3.0` 或更新版本重新连接并应用壁纸。
 
-### 更新后 Scene 仍保持旧版的放大、模糊、错位或无鼠标水波
+### 更新后 Scene 仍保持旧版的放大、模糊或错位
 
-旧版尝试在浏览器中近似解释 `scene.pkg`，无法完整实现 Wallpaper Engine 的反馈缓冲、Puppet Warp、作者脚本、粒子等语义，因此“画面在动”也可能只是错误图层。`0.3.0` 对 Scene 改用 Wallpaper Engine 官方离屏渲染，并转发 Codex 鼠标坐标；玛奇玛、Pastel 与 Saki 三份报告素材已按此路径验证。请用 `0.3.0` 重新扫描并 Apply。
+旧版尝试在浏览器中近似解释 `scene.pkg`，无法完整实现 Wallpaper Engine 的反馈缓冲、Puppet Warp、作者脚本、粒子等语义，因此“画面在动”也可能只是错误图层。当前版本对 Scene 改用 Wallpaper Engine 官方离屏渲染，但稳定 H.264 路径不转发 Codex 鼠标坐标。请使用当前版本重新扫描并点击 **Apply selected**。
 
 ### 项目显示 WE LIVE SCENE，但应用后提示部分兼容或静态回退
 

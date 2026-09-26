@@ -2,11 +2,13 @@
 
 English | [简体中文](README.md)
 
-An independent Windows 11 x64 desktop application that adds local images, videos, and installed Wallpaper Engine projects as Codex Desktop backgrounds. The current GUI development version is `0.8.0` and requires the official x64 `OpenAI.Codex` Store/MSIX package.
+An independent Windows 11 x64 desktop application that adds local images, videos, and installed Wallpaper Engine projects as Codex Desktop backgrounds. The first public Beta is `0.8.0` and requires the official x64 `OpenAI.Codex` Store/MSIX package.
 
 The application uses a loopback-only Chrome DevTools Protocol (CDP) session to add a reversible background layer to the real Codex page. Codex loads Image/Video media independently; complex Scene projects are rendered natively by a private local Wallpaper Engine window and transferred to Codex. The application does not patch `WindowsApps`, `app.asar`, the official signature, chats, or authentication data.
 
 > This is an unofficial project and is not affiliated with or endorsed by OpenAI, Valve, or Wallpaper Engine.
+
+See the [v0.8.0 Release Notes](docs/releases/V0.8.0-BETA.md) for the first public Beta's changes, download guidance, and limitations.
 
 ## Current GUI capabilities
 
@@ -50,7 +52,7 @@ After the first successful Apply, the controller remembers that wallpaper. Windo
 | `[IMAGE]` | Loads the project's original image independently. |
 | `[VIDEO]` | Loops the project's MP4/WebM independently. |
 | `[WE NATIVE VIDEO]` | Lets Wallpaper Engine play a large MP4/WebM and presents it through native capture and hardware H.264. |
-| `[WE LIVE SCENE]` | Uses native Wallpaper Engine rendering and bridges animation/pointer interaction, with an explicit fallback if unavailable. |
+| `[WE LIVE SCENE]` | Uses native Wallpaper Engine rendering and bridges animation. The stable H.264 path does not forward pointer interaction and reports any fallback explicitly. |
 | `[ANIMATED PREVIEW]` | Uses a validated GIF preview if the package is unavailable. |
 | `[STATIC FALLBACK]` | Uses a validated static preview. |
 | `[REJECTED]` | The project type or media failed the safety boundary and cannot be applied. |
@@ -62,6 +64,23 @@ Static images have the lowest overhead. Video decodes in Codex. High-fidelity Sc
 Frames travel only through loopback CDP into Codex renderer memory and are never uploaded by this app. High-fidelity Scenes execute inside the user's installed Wallpaper Engine and follow its security/performance settings; this app does not interpret SceneScript itself. Web wallpaper code and Application wallpapers are never run. Other processes under the same Windows user can still reach an unauthenticated CDP port, so use it only in a trusted session and fully exit the CDP-enabled Codex process to close the port.
 
 No Wallpaper Engine media is bundled or redistributed. Users must own Wallpaper Engine and follow each wallpaper author's license. See [SECURITY.md](SECURITY.md) for private vulnerability reporting.
+
+## Beta known limitations
+
+- Only Windows 11 x64 and the official x64 `OpenAI.Codex` Store/MSIX desktop package are supported. ARM64, x86, unpackaged, and renamed copies are unsupported.
+- Wallpaper Engine Scene projects and large Video projects require the user to own and install Wallpaper Engine and keep it available in the background. Ordinary local images and supported smaller videos do not require Wallpaper Engine.
+- The controller owns capture, encoding, and recovery for dynamic backgrounds. Closing its visible window keeps it in the notification area; choosing **Remove wallpaper and exit** stops dynamic playback.
+- A Codex process started normally has no wallpaper channel. Close it manually and choose **Start / reconnect Codex**. This application never closes or restarts Codex automatically.
+- Scene clarity, frame rate, and resource use depend on wallpaper complexity, Wallpaper Engine settings, GPU, display resolution, and system load. `60 FPS` is a target, not a guarantee. Doctor values are diagnostic evidence, not a standalone visual-quality score.
+- The stable H.264 4:2:0 path does not forward pointer interaction and cannot be pixel-identical to Wallpaper Engine's direct desktop composition.
+- The `0.8.0` installer is not code-signed, so Windows may show an unknown-publisher or SmartScreen warning. Download only from this repository's GitHub Releases, verify the adjacent SHA-256 file, and do not disable Windows security globally.
+
+To verify a download, open PowerShell in the download directory and compare the computed value with the matching `.sha256` file:
+
+```powershell
+Get-FileHash .\CodexWallpaperSkin-Setup-v0.8.0-win-x64.exe -Algorithm SHA256
+Get-Content .\CodexWallpaperSkin-Setup-v0.8.0-win-x64.exe.sha256
+```
 
 ## Development and verification
 

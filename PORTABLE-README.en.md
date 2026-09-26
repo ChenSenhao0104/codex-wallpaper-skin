@@ -28,7 +28,8 @@ Open PowerShell in this directory:
 .\CodexWallpaperSkin.exe --doctor --json
 .\CodexWallpaperSkin.exe --self-test
 .\CodexWallpaperSkin.exe --restore
-Get-FileHash ..\CodexWallpaperSkin-win-x64.zip -Algorithm SHA256
+Get-FileHash ..\CodexWallpaperSkin-v0.8.0-portable-win-x64.zip -Algorithm SHA256
+Get-Content ..\CodexWallpaperSkin-v0.8.0-portable-win-x64.zip.sha256
 ```
 
 Compare the last result with the `.sha256` file beside the release archive. Do not disable PowerShell execution policy or Windows security controls system-wide.
@@ -36,3 +37,12 @@ Compare the last result with the `.sha256` file beside the release archive. Do n
 Video and Scene backgrounds add decode, Windows Graphics Capture/D3D11, GPU/CPU, and battery cost. Scene playback targets 60 FPS and falls back to 30 FPS or the lower Wallpaper Engine global limit when necessary. Supported GPUs convert captured textures and feed the hardware H.264 encoder without a CPU readback; incompatible drivers automatically keep the established CPU conversion path, while unavailable WGC/hardware H.264 is explicitly reported before compatibility capture. Choose among named plans in **Visual preset**, create or edit them through **Manage presets…**, and use **Apply preset**; every right-side control remains editable afterward. Presets cannot eliminate every difference between H.264 4:2:0 and Wallpaper Engine's direct desktop composition. A static image, zero blur, lower Scene scale, and pause-when-hidden are the lightest choices. Frames remain in the local controlled path and are not uploaded by this app. CDP is unauthenticated to other processes running as the same Windows user, so enable it only in a trusted session.
 
 No Wallpaper Engine media is bundled. You must own Wallpaper Engine and follow each wallpaper author's license. Report security issues privately using the bundled `SECURITY.md` process.
+
+## Beta known limitations
+
+- Only Windows 11 x64 and the official x64 `OpenAI.Codex` Store/MSIX desktop package are supported.
+- Scene projects and large Wallpaper Engine Video projects require Wallpaper Engine. Dynamic backgrounds require this controller to remain running in the notification area.
+- If Codex was started normally, close it manually before choosing **Start / reconnect Codex**. This application never closes Codex automatically.
+- `60 FPS` is a target, not a guarantee. Clarity, frame rate, and resource use depend on the wallpaper, Wallpaper Engine, GPU, resolution, and system load; Doctor values are diagnostic.
+- The stable H.264 4:2:0 path does not forward pointer interaction and cannot be pixel-identical to direct desktop composition.
+- This Beta is unsigned. Windows may show an unknown-publisher or SmartScreen warning; download only from the trusted Release, verify SHA-256, and do not disable Windows security globally.

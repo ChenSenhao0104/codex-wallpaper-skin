@@ -49,12 +49,15 @@ if (!edge) {
 }
 
 const explicitProjects = process.argv.slice(2).filter(argument => !argument.startsWith('--')).map(argument => resolve(argument));
+const configuredWorkshopRoots = (process.env.CWS_STEAM_WORKSHOP_ROOTS || '')
+  .split(';')
+  .map(value => value.trim())
+  .filter(Boolean);
 const workshopRoots = [
-  'C:/Program Files (x86)/Steam/steamapps/workshop/content/431960',
-  'C:/Program Files/Steam/steamapps/workshop/content/431960',
-  'D:/steam/steamapps/workshop/content/431960',
-  'E:/steam/steamapps/workshop/content/431960'
-].map(candidate => resolve(candidate));
+  join(process.env['ProgramFiles(x86)'] || '', 'Steam/steamapps/workshop/content/431960'),
+  join(process.env.ProgramFiles || '', 'Steam/steamapps/workshop/content/431960'),
+  ...configuredWorkshopRoots
+].filter(Boolean).map(candidate => resolve(candidate));
 const projectDirectories = explicitProjects.length ? explicitProjects : workshopRoots
   .filter(existsSync)
   .flatMap(root => readdirSync(root, { withFileTypes: true })
