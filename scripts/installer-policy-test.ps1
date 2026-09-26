@@ -18,6 +18,7 @@ $required = [ordered]@{
   'stable product identity' = 'AppId={{2E164A64-2E9C-4BCA-A461-D1DD71C6032F}'
   'current-user install' = 'PrivilegesRequired=lowest'
   'current-user program directory' = 'DefaultDirName={localappdata}\Programs\Codex Wallpaper Skin'
+  'installation directory page always visible' = 'DisableDirPage=no'
   'Windows 11 floor' = 'MinVersion=10.0.22000'
   'custom installer icon' = 'SetupIconFile={#SourceDir}\CodexWallpaperSkin.ico'
   'no automatic application close' = 'CloseApplications=no'

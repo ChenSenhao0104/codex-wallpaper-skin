@@ -28,6 +28,7 @@ VersionInfoCompany=Codex Wallpaper Skin contributors
 VersionInfoDescription=Codex Wallpaper Skin installer
 VersionInfoProductName=Codex Wallpaper Skin
 DefaultDirName={localappdata}\Programs\Codex Wallpaper Skin
+DisableDirPage=no
 DefaultGroupName=Codex Wallpaper Skin
 DisableProgramGroupPage=yes
 AllowNoIcons=yes
