@@ -33,6 +33,7 @@ public partial class MainWindow : Window
     private string? _streamRecoveryWallpaperId;
     private int _streamRecoveryAttempts;
     private System.Windows.Forms.NotifyIcon? _trayIcon;
+    private System.Drawing.Icon? _trayIconImage;
     private bool _allowExit;
     private bool _trayTipShown;
     private bool _exitSequenceRunning;
@@ -1880,6 +1881,8 @@ public partial class MainWindow : Window
                 _trayIcon.Dispose();
                 _trayIcon = null;
             }
+            _trayIconImage?.Dispose();
+            _trayIconImage = null;
             Application.Current.Shutdown();
         }
     }
@@ -1898,6 +1901,8 @@ public partial class MainWindow : Window
             _trayIcon.Visible = false;
             _trayIcon.Dispose();
         }
+        _trayIconImage?.Dispose();
+        _trayIconImage = LoadApplicationIcon();
         var menu = new System.Windows.Forms.ContextMenuStrip();
         var openItem = new System.Windows.Forms.ToolStripMenuItem(UiLanguage.Text("Open adjustment window"));
         openItem.Click += (_, _) => Dispatcher.BeginInvoke(ShowFromTray);
@@ -1912,11 +1917,29 @@ public partial class MainWindow : Window
         _trayIcon = new System.Windows.Forms.NotifyIcon
         {
             Text = "Codex Wallpaper Skin",
-            Icon = System.Drawing.SystemIcons.Application,
+            Icon = _trayIconImage,
             ContextMenuStrip = menu,
             Visible = wasVisible
         };
         _trayIcon.DoubleClick += (_, _) => Dispatcher.BeginInvoke(ShowFromTray);
+    }
+
+    private static System.Drawing.Icon LoadApplicationIcon()
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(Environment.ProcessPath))
+            {
+                using var extracted = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath);
+                if (extracted is not null) return (System.Drawing.Icon)extracted.Clone();
+            }
+        }
+        catch
+        {
+            // Keep the tray available even if Windows cannot read the executable icon.
+        }
+
+        return (System.Drawing.Icon)System.Drawing.SystemIcons.Application.Clone();
     }
 
     private void ShowFromTray()

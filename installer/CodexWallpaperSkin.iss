@@ -41,6 +41,7 @@ SolidCompression=yes
 OutputDir={#OutputDir}
 OutputBaseFilename=CodexWallpaperSkin-Setup-v{#AppVersion}-win-x64
 LicenseFile={#SourceDir}\LICENSE
+SetupIconFile={#SourceDir}\CodexWallpaperSkin.ico
 UninstallDisplayIcon={app}\{#AppExeName}
 UninstallDisplayName=Codex Wallpaper Skin {#AppVersion}
 UsePreviousAppDir=yes

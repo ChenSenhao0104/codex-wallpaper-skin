@@ -19,6 +19,7 @@ $required = [ordered]@{
   'current-user install' = 'PrivilegesRequired=lowest'
   'current-user program directory' = 'DefaultDirName={localappdata}\Programs\Codex Wallpaper Skin'
   'Windows 11 floor' = 'MinVersion=10.0.22000'
+  'custom installer icon' = 'SetupIconFile={#SourceDir}\CodexWallpaperSkin.ico'
   'no automatic application close' = 'CloseApplications=no'
   'no automatic restart' = 'RestartApplications=no'
   'GUI mutex guard' = 'Local\CodexWallpaperSkin.Companion.Gui'

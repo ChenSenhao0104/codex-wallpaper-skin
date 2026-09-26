@@ -249,6 +249,10 @@ if ($Publish) {
   )
 
   $publishedExecutable = Join-Path $publishDirectory 'CodexWallpaperSkin.exe'
+  $publishedIcon = Join-Path $publishDirectory 'CodexWallpaperSkin.ico'
+  if (-not (Test-Path -LiteralPath $publishedIcon -PathType Leaf)) {
+    throw 'Published companion is missing the custom Windows application icon.'
+  }
   $publishedVersion = (Get-Item -LiteralPath $publishedExecutable).VersionInfo.ProductVersion
   if ($sourceCommit -and -not $publishedVersion.EndsWith("+$sourceCommit", [StringComparison]::OrdinalIgnoreCase)) {
     throw "Published executable source revision '$publishedVersion' does not match HEAD $sourceCommit."

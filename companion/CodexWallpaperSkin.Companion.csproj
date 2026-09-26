@@ -17,6 +17,7 @@
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>false</SelfContained>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\CodexWallpaperSkin.ico</ApplicationIcon>
     <NoWarn>$(NoWarn);WFAC010</NoWarn>
     <StartupObject>CodexWallpaperSkin.Program</StartupObject>
     <CsWinRTEnabled>false</CsWinRTEnabled>
@@ -24,6 +25,7 @@
   <ItemGroup>
     <EmbeddedResource Include="ThirdParty\we-scene\src\**\*.js" />
     <EmbeddedResource Include="Runtime\scene-host.js" />
+    <None Update="Assets\CodexWallpaperSkin.ico" CopyToOutputDirectory="PreserveNewest" TargetPath="CodexWallpaperSkin.ico" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Windows.CsWinRT" Version="2.1.5" />
