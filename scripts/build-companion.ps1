@@ -187,7 +187,7 @@ if ($Publish) {
 
   $publishArguments = @(
     'publish', $project, '--configuration', 'Release', '--runtime', 'win-x64',
-    '--self-contained', 'true', '--no-restore', '--nologo', '--no-build',
+    '--self-contained', 'true', '--no-restore', '--nologo',
     '-p:PublishSingleFile=true', '-p:IncludeNativeLibrariesForSelfExtract=true',
     '-p:DebugType=None', '-p:DebugSymbols=false', '-p:ContinuousIntegrationBuild=true',
     '--output', $publishDirectory
