@@ -151,13 +151,18 @@ if ($Publish) {
   # never leave an older ZIP that looks like the result of the current command.
   $node = Get-Command node -ErrorAction SilentlyContinue
   if ($null -eq $node) { throw 'Node.js is required for the release runtime smoke test.' }
-  foreach ($document in @('PORTABLE-README.md', 'PORTABLE-README.en.md', 'usage-process.md', 'LICENSE', 'SECURITY.md', 'THIRD_PARTY_NOTICES.md')) {
+  foreach ($document in @('PORTABLE-README.md', 'PORTABLE-README.en.md', 'usage-process.md', 'LICENSE', 'NOTICE', 'SECURITY.md', 'THIRD_PARTY_NOTICES.md')) {
     if (-not (Test-Path -LiteralPath (Join-Path $skillRoot $document) -PathType Leaf)) {
       throw "Required release document was not found: $document"
     }
   }
   if (-not (Test-Path -LiteralPath (Join-Path $skillRoot 'companion\ThirdParty\we-scene\LICENSE') -PathType Leaf)) {
     throw 'Required we-scene MIT license was not found.'
+  }
+  foreach ($license in @('Vortice.Windows.LICENSE.txt', 'SharpGenTools.LICENSE.txt')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $skillRoot "companion\ThirdParty\$license") -PathType Leaf)) {
+      throw "Required third-party license was not found: $license"
+    }
   }
 }
 
@@ -226,11 +231,15 @@ if ($Publish) {
 
   Copy-Item -LiteralPath (Join-Path $skillRoot 'PORTABLE-README.md') -Destination (Join-Path $publishDirectory 'README.md') -Force
   Copy-Item -LiteralPath (Join-Path $skillRoot 'PORTABLE-README.en.md') -Destination (Join-Path $publishDirectory 'README.en.md') -Force
-  foreach ($document in @('usage-process.md', 'LICENSE', 'SECURITY.md', 'THIRD_PARTY_NOTICES.md')) {
+  foreach ($document in @('usage-process.md', 'LICENSE', 'NOTICE', 'SECURITY.md', 'THIRD_PARTY_NOTICES.md')) {
     Copy-Item -LiteralPath (Join-Path $skillRoot $document) -Destination $publishDirectory -Force
   }
   Copy-Item -LiteralPath (Join-Path $skillRoot 'companion\ThirdParty\we-scene\LICENSE') `
     -Destination (Join-Path $publishDirectory 'WE-SCENE-LICENSE.txt') -Force
+  Copy-Item -LiteralPath (Join-Path $skillRoot 'companion\ThirdParty\Vortice.Windows.LICENSE.txt') `
+    -Destination (Join-Path $publishDirectory 'VORTICE-LICENSE.txt') -Force
+  Copy-Item -LiteralPath (Join-Path $skillRoot 'companion\ThirdParty\SharpGenTools.LICENSE.txt') `
+    -Destination (Join-Path $publishDirectory 'SHARPGEN-LICENSE.txt') -Force
   foreach ($asset in $runtimeLicenseAssets) {
     Copy-Item -LiteralPath $asset.source -Destination (Join-Path $publishDirectory $asset.destination) -Force
   }

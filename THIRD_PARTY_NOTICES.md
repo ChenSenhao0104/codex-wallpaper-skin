@@ -35,6 +35,9 @@ application does not bundle a video codec; encoding is performed by Windows.
 - License: <https://github.com/amerkoleci/Vortice.Windows/blob/cd916a03f206165bec67982ed501e88820d4182b/LICENSE>
 - SharpGen runtime: <https://github.com/SharpGenTools/SharpGenTools>
 - SharpGen license: <https://github.com/SharpGenTools/SharpGenTools/blob/a22348d2e1ff76dfbdc51d68800ed31e991d8b32/LICENSE.txt>
+- Bundled license copies: `companion/ThirdParty/Vortice.Windows.LICENSE.txt` and
+  `companion/ThirdParty/SharpGenTools.LICENSE.txt`; portable releases include
+  them as `VORTICE-LICENSE.txt` and `SHARPGEN-LICENSE.txt`.
 
 ## Installer tooling
 
