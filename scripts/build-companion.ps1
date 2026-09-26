@@ -243,6 +243,8 @@ if ($Publish) {
   foreach ($asset in $runtimeLicenseAssets) {
     Copy-Item -LiteralPath $asset.source -Destination (Join-Path $publishDirectory $asset.destination) -Force
   }
+  Copy-Item -LiteralPath (Join-Path $skillRoot 'companion\Assets\CodexWallpaperSkin.ico') `
+    -Destination (Join-Path $publishDirectory 'CodexWallpaperSkin.ico') -Force
   Set-Content -LiteralPath (Join-Path $publishDirectory 'DOTNET-RUNTIME-PACKS.txt') -Encoding ascii -Value @(
     "$corePackId $corePackVersion",
     "$desktopPackId $desktopPackVersion"
