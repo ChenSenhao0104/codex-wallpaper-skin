@@ -456,13 +456,14 @@ public static class SelfTests
             var diagnostics = new ActiveStreamDiagnostics(
                 580, 570, 4, 0, 600, 300, 15_000_000, 1, 2, 0, "stream",
                 DateTimeOffset.UtcNow, false, "h264-webcodecs", null,
-                new NativeStreamMetrics(600, 595, 590, 900, 2100, 10, 2560, 1600, 60, sixty));
+                new NativeStreamMetrics(600, 595, 590, 900, 2100, 10, 2560, 1600, 60, sixty, "gpu-d3d11"));
             var report = new StreamWatchdogDiagnosticReport();
             DiagnosticsService.PopulatePerformanceMetrics(report, diagnostics);
             Equal(60d, report.CapturedFramesPerSecond);
             Equal(59d, report.EncodedFramesPerSecond);
             Equal(57d, report.PresentedFramesPerSecond);
             Equal(60d, report.EncoderTargetMegabitsPerSecond);
+            Equal("gpu-d3d11", report.EncoderInputMode);
             Equal(12d, report.TransportMegabitsPerSecond);
             Equal(2, report.PresentationQueueSize);
         });

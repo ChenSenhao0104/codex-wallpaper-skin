@@ -1,5 +1,7 @@
 using System.Runtime.InteropServices;
 using SharpGen.Runtime;
+using Vortice.Direct3D11;
+using Vortice.DXGI;
 using Vortice.MediaFoundation;
 
 namespace CodexWallpaperSkin;
@@ -11,10 +13,9 @@ internal sealed record H264EncodedFrame(
 
 /// <summary>
 /// Low-latency H.264 elementary-stream encoder backed by a Windows hardware
-/// Media Foundation transform. Input is NV12 system memory for the first v0.4
-/// milestone; the transport and browser decoder do not depend on this input
-/// representation, so the subsequent D3D11 texture path can replace it without
-/// another browser protocol change.
+/// Media Foundation transform. The preferred path converts the captured D3D11
+/// BGRA texture to an NV12 DXGI surface on the GPU. A bounded system-memory
+/// NV12 path remains available for incompatible drivers.
 /// </summary>
 internal sealed class MediaFoundationH264Encoder : IDisposable
 {
@@ -28,7 +29,8 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
     private readonly int _height;
     private readonly int _frameRate;
     private readonly int _outputBufferSize;
-    private readonly byte[] _nv12Buffer;
+    private readonly byte[]? _nv12Buffer;
+    private readonly GpuInputPipeline? _gpuInput;
     private bool _needInput;
     private long _nextSampleTime;
     private bool _disposed;
@@ -40,7 +42,8 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
         int height,
         int frameRate,
         int outputBufferSize,
-        long startSampleTime)
+        long startSampleTime,
+        GpuInputPipeline? gpuInput)
     {
         _transform = transform;
         _events = events;
@@ -48,7 +51,8 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
         _height = height;
         _frameRate = frameRate;
         _outputBufferSize = outputBufferSize;
-        _nv12Buffer = new byte[checked(width * height * 3 / 2)];
+        _gpuInput = gpuInput;
+        _nv12Buffer = gpuInput is null ? new byte[checked(width * height * 3 / 2)] : null;
         _nextSampleTime = Math.Max(0, startSampleTime);
     }
 
@@ -61,6 +65,32 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
         int bitrate,
         long startSampleTime = 0)
     {
+        return CreateCore(width, height, frameRate, bitrate, startSampleTime, null, null);
+    }
+
+    public static MediaFoundationH264Encoder CreateGpu(
+        ID3D11Device device,
+        ID3D11DeviceContext context,
+        int width,
+        int height,
+        int frameRate,
+        int bitrate,
+        long startSampleTime = 0)
+    {
+        ArgumentNullException.ThrowIfNull(device);
+        ArgumentNullException.ThrowIfNull(context);
+        return CreateCore(width, height, frameRate, bitrate, startSampleTime, device, context);
+    }
+
+    private static MediaFoundationH264Encoder CreateCore(
+        int width,
+        int height,
+        int frameRate,
+        int bitrate,
+        long startSampleTime,
+        ID3D11Device? device,
+        ID3D11DeviceContext? context)
+    {
         width &= ~1;
         height &= ~1;
         if (width is < 64 or > 4096 || height is < 64 or > 4096)
@@ -71,10 +101,18 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
         MediaFactory.MFStartup().CheckError();
         IMFTransform? transform = null;
         IMFMediaEventGenerator? events = null;
+        GpuInputPipeline? gpuInput = null;
         try
         {
             transform = ActivateHardwareEncoder();
             transform.Attributes.Set(TransformAttributeKeys.TransformAsyncUnlock, true).CheckError();
+            if (device is not null && context is not null)
+            {
+                gpuInput = GpuInputPipeline.Create(device, context, width, height, frameRate);
+                transform.ProcessMessage(
+                    TMessageType.MessageSetD3DManager,
+                    unchecked((nuint)gpuInput.DeviceManager.NativePointer.ToInt64()));
+            }
 
             using (var outputType = MediaFactory.MFCreateMediaType())
             {
@@ -110,10 +148,16 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
             transform.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
             transform.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
             return new MediaFoundationH264Encoder(
-                transform, events, width, height, frameRate, outputBufferSize, startSampleTime);
+                transform, events, width, height, frameRate, outputBufferSize, startSampleTime, gpuInput);
         }
         catch
         {
+            gpuInput?.Dispose();
+            if (gpuInput is null)
+            {
+                context?.Dispose();
+                device?.Dispose();
+            }
             events?.Dispose();
             transform?.Dispose();
             try { MediaFactory.MFShutdown().CheckError(); } catch { }
@@ -135,16 +179,18 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
 
         var outputs = new List<H264EncodedFrame>(2);
         WaitUntilInputIsNeeded(outputs);
-        ConvertBgraToNv12(bgra, _width, _height, sourceStride, _nv12Buffer);
+        var nv12Buffer = _nv12Buffer
+            ?? throw new InvalidOperationException("This encoder accepts D3D11 textures, not CPU frames.");
+        ConvertBgraToNv12(bgra, _width, _height, sourceStride, nv12Buffer);
         using var sample = MediaFactory.MFCreateSample();
-        using (var buffer = MediaFactory.MFCreateMemoryBuffer(_nv12Buffer.Length))
+        using (var buffer = MediaFactory.MFCreateMemoryBuffer(nv12Buffer.Length))
         {
             buffer.Lock(out var destination, out var capacity, out _);
             try
             {
-                if (capacity < _nv12Buffer.Length) throw new InvalidDataException("Media Foundation returned an undersized input buffer.");
-                Marshal.Copy(_nv12Buffer, 0, destination, _nv12Buffer.Length);
-                buffer.CurrentLength = _nv12Buffer.Length;
+                if (capacity < nv12Buffer.Length) throw new InvalidDataException("Media Foundation returned an undersized input buffer.");
+                Marshal.Copy(nv12Buffer, 0, destination, nv12Buffer.Length);
+                buffer.CurrentLength = nv12Buffer.Length;
             }
             finally
             {
@@ -152,12 +198,51 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
             }
             sample.AddBuffer(buffer);
         }
+        SubmitInputSample(sample);
+
+        return WaitForOutputOrNextInput(outputs);
+    }
+
+    public IReadOnlyList<H264EncodedFrame> EncodeTexture(
+        ID3D11Texture2D texture,
+        int sourceWidth,
+        int sourceHeight)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(texture);
+        if (sourceWidth < _width || sourceHeight < _height)
+            throw new ArgumentException("The source texture is smaller than the configured encoder surface.", nameof(texture));
+        var gpuInput = _gpuInput
+            ?? throw new InvalidOperationException("This encoder accepts CPU frames, not D3D11 textures.");
+
+        var outputs = new List<H264EncodedFrame>(2);
+        WaitUntilInputIsNeeded(outputs);
+        var nv12Texture = gpuInput.Convert(texture);
+        using var sample = MediaFactory.MFCreateSample();
+        using (var buffer = MediaFactory.MFCreateDXGISurfaceBuffer(
+            typeof(ID3D11Texture2D).GUID,
+            nv12Texture,
+            0,
+            false))
+        {
+            sample.AddBuffer(buffer);
+        }
+        SubmitInputSample(sample);
+        return WaitForOutputOrNextInput(outputs);
+    }
+
+    private void SubmitInputSample(IMFSample sample)
+    {
         var duration = 10_000_000L / _frameRate;
         sample.SampleTime = _nextSampleTime;
         sample.SampleDuration = duration;
         _nextSampleTime += duration;
         _transform.ProcessInput(0, sample, 0);
         _needInput = false;
+    }
+
+    private IReadOnlyList<H264EncodedFrame> WaitForOutputOrNextInput(List<H264EncodedFrame> outputs)
+    {
 
         // An asynchronous MFT may immediately produce output or request the
         // next input first. Never manufacture a duplicate frame to satisfy it;
@@ -179,6 +264,159 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
             }
             if (mediaEvent.EventType == MediaEventTypes.Error)
                 throw new InvalidOperationException("The Windows H.264 hardware encoder reported a fatal event.");
+        }
+    }
+
+    private sealed class GpuInputPipeline : IDisposable
+    {
+        private readonly ID3D11Device _device;
+        private readonly ID3D11DeviceContext _context;
+        private readonly ID3D11VideoDevice _videoDevice;
+        private readonly ID3D11VideoContext _videoContext;
+        private readonly ID3D11VideoProcessorEnumerator _enumerator;
+        private readonly ID3D11VideoProcessor _processor;
+        private readonly ID3D11Texture2D[] _targets;
+        private readonly ID3D11VideoProcessorOutputView[] _outputViews;
+        private int _targetIndex;
+
+        private GpuInputPipeline(
+            ID3D11Device device,
+            ID3D11DeviceContext context,
+            ID3D11VideoDevice videoDevice,
+            ID3D11VideoContext videoContext,
+            ID3D11VideoProcessorEnumerator enumerator,
+            ID3D11VideoProcessor processor,
+            ID3D11Texture2D[] targets,
+            ID3D11VideoProcessorOutputView[] outputViews,
+            IMFDXGIDeviceManager deviceManager)
+        {
+            _device = device;
+            _context = context;
+            _videoDevice = videoDevice;
+            _videoContext = videoContext;
+            _enumerator = enumerator;
+            _processor = processor;
+            _targets = targets;
+            _outputViews = outputViews;
+            DeviceManager = deviceManager;
+        }
+
+        public IMFDXGIDeviceManager DeviceManager { get; }
+
+        public static GpuInputPipeline Create(
+            ID3D11Device device,
+            ID3D11DeviceContext context,
+            int width,
+            int height,
+            int frameRate)
+        {
+            ID3D11VideoDevice? videoDevice = null;
+            ID3D11VideoContext? videoContext = null;
+            ID3D11VideoProcessorEnumerator? enumerator = null;
+            ID3D11VideoProcessor? processor = null;
+            IMFDXGIDeviceManager? manager = null;
+            var targets = new List<ID3D11Texture2D>(2);
+            var outputViews = new List<ID3D11VideoProcessorOutputView>(2);
+            try
+            {
+                videoDevice = device.QueryInterface<ID3D11VideoDevice>();
+                videoContext = context.QueryInterface<ID3D11VideoContext>();
+                var content = new VideoProcessorContentDescription
+                {
+                    InputFrameFormat = VideoFrameFormat.Progressive,
+                    InputFrameRate = new Rational((uint)frameRate, 1),
+                    InputWidth = (uint)width,
+                    InputHeight = (uint)height,
+                    OutputFrameRate = new Rational((uint)frameRate, 1),
+                    OutputWidth = (uint)width,
+                    OutputHeight = (uint)height,
+                    Usage = VideoUsage.OptimalSpeed
+                };
+                enumerator = videoDevice.CreateVideoProcessorEnumerator(content);
+                var bgraSupport = enumerator.CheckVideoProcessorFormat(Format.B8G8R8A8_UNorm);
+                var nv12Support = enumerator.CheckVideoProcessorFormat(Format.NV12);
+                if ((bgraSupport & VideoProcessorFormatSupport.Input) == 0
+                    || (nv12Support & VideoProcessorFormatSupport.Output) == 0)
+                {
+                    throw new NotSupportedException("The active GPU cannot convert captured BGRA textures to encoder-ready NV12 surfaces.");
+                }
+                processor = videoDevice.CreateVideoProcessor(enumerator, 0);
+                videoContext.VideoProcessorSetStreamFrameFormat(processor, 0, VideoFrameFormat.Progressive);
+                videoContext.VideoProcessorSetStreamAutoProcessingMode(processor, 0, false);
+
+                var targetDescription = new Texture2DDescription(
+                    Format.NV12,
+                    (uint)width,
+                    (uint)height,
+                    1,
+                    1,
+                    BindFlags.RenderTarget,
+                    ResourceUsage.Default,
+                    CpuAccessFlags.None,
+                    1,
+                    0,
+                    ResourceOptionFlags.None);
+                var outputDescription = new VideoProcessorOutputViewDescription
+                {
+                    ViewDimension = VideoProcessorOutputViewDimension.Texture2D,
+                    Texture2D = new Texture2DVideoProcessorOutputView { MipSlice = 0 }
+                };
+                for (var index = 0; index < 2; index++)
+                {
+                    var target = device.CreateTexture2D(in targetDescription);
+                    targets.Add(target);
+                    outputViews.Add(videoDevice.CreateVideoProcessorOutputView(target, enumerator, outputDescription));
+                }
+
+                manager = MediaFactory.MFCreateDXGIDeviceManager();
+                manager.ResetDevice(device).CheckError();
+                return new GpuInputPipeline(
+                    device, context, videoDevice, videoContext, enumerator, processor,
+                    targets.ToArray(), outputViews.ToArray(), manager);
+            }
+            catch
+            {
+                manager?.Dispose();
+                foreach (var view in outputViews) view.Dispose();
+                foreach (var target in targets) target.Dispose();
+                processor?.Dispose();
+                enumerator?.Dispose();
+                videoContext?.Dispose();
+                videoDevice?.Dispose();
+                throw;
+            }
+        }
+
+        public ID3D11Texture2D Convert(ID3D11Texture2D source)
+        {
+            var inputDescription = new VideoProcessorInputViewDescription
+            {
+                FourCC = 0,
+                ViewDimension = VideoProcessorInputViewDimension.Texture2D,
+                Texture2D = new Texture2DVideoProcessorInputView { MipSlice = 0, ArraySlice = 0 }
+            };
+            using var inputView = _videoDevice.CreateVideoProcessorInputView(source, _enumerator, inputDescription);
+            var index = _targetIndex++ & 1;
+            var stream = new VideoProcessorStream
+            {
+                Enable = true,
+                InputSurface = inputView
+            };
+            _videoContext.VideoProcessorBlt(_processor, _outputViews[index], 0, 1, [stream]);
+            return _targets[index];
+        }
+
+        public void Dispose()
+        {
+            DeviceManager.Dispose();
+            foreach (var view in _outputViews) view.Dispose();
+            foreach (var target in _targets) target.Dispose();
+            _processor.Dispose();
+            _enumerator.Dispose();
+            _videoContext.Dispose();
+            _videoDevice.Dispose();
+            _context.Dispose();
+            _device.Dispose();
         }
     }
 
@@ -402,6 +640,7 @@ internal sealed class MediaFoundationH264Encoder : IDisposable
         try { _transform.ProcessMessage(TMessageType.MessageCommandFlush, UIntPtr.Zero); } catch { }
         _events.Dispose();
         _transform.Dispose();
+        _gpuInput?.Dispose();
         try { MediaFactory.MFShutdown().CheckError(); } catch { }
     }
 }

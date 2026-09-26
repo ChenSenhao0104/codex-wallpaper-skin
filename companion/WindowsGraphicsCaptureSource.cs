@@ -8,6 +8,7 @@ using Windows.Graphics.Capture;
 using Windows.Graphics.DirectX;
 using Windows.Graphics.DirectX.Direct3D11;
 using WinRT;
+using Vortice.Direct3D11;
 
 namespace CodexWallpaperSkin;
 
@@ -22,10 +23,30 @@ internal sealed record CapturedBgraFrame(byte[] Pixels, int Width, int Height, i
     }
 }
 
+internal sealed class CapturedGpuFrame : IDisposable
+{
+    private ID3D11Texture2D? _texture;
+
+    public CapturedGpuFrame(ID3D11Texture2D texture, int width, int height)
+    {
+        _texture = texture;
+        Width = width;
+        Height = height;
+    }
+
+    public ID3D11Texture2D Texture =>
+        _texture ?? throw new ObjectDisposedException(nameof(CapturedGpuFrame));
+    public int Width { get; }
+    public int Height { get; }
+
+    public void Dispose() => Interlocked.Exchange(ref _texture, null)?.Dispose();
+}
+
 /// <summary>
-/// Captures an HWND through Windows Graphics Capture and copies the newest
-/// D3D11 surface into a CPU-readable bitmap. The frame channel has capacity one
-/// so a slow consumer never builds latency by replaying obsolete animation.
+/// Captures an HWND through Windows Graphics Capture. The preferred channel
+/// retains the newest D3D11 texture on the GPU; the compatibility channel copies
+/// it into a CPU-readable bitmap. Both paths are bounded so a slow consumer
+/// never builds latency by replaying obsolete animation.
 /// </summary>
 internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
 {
@@ -49,6 +70,13 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
             SingleReader = true,
             SingleWriter = true
         });
+    private readonly Channel<CapturedGpuFrame> _gpuFrames = Channel.CreateBounded<CapturedGpuFrame>(
+        new BoundedChannelOptions(1)
+        {
+            FullMode = BoundedChannelFullMode.Wait,
+            SingleReader = true,
+            SingleWriter = true
+        });
     private readonly GraphicsCaptureItem _item;
     private readonly IDirect3DDevice _winRtDevice;
     private readonly Direct3D11CaptureFramePool _framePool;
@@ -57,6 +85,7 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
     private IntPtr _d3dContext;
     private IntPtr _stagingTexture;
     private D3D11Texture2DDesc _stagingDescription;
+    private int _gpuCaptureEnabled;
     private bool _disposed;
 
     private WindowsGraphicsCaptureSource(
@@ -103,6 +132,29 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
     public ValueTask<CapturedBgraFrame> ReadFrameAsync(CancellationToken cancellationToken) =>
         _frames.Reader.ReadAsync(cancellationToken);
 
+    public ValueTask<CapturedGpuFrame> ReadGpuFrameAsync(CancellationToken cancellationToken) =>
+        _gpuFrames.Reader.ReadAsync(cancellationToken);
+
+    public void EnableGpuCapture() => Volatile.Write(ref _gpuCaptureEnabled, 1);
+
+    public void DisableGpuCapture()
+    {
+        Volatile.Write(ref _gpuCaptureEnabled, 0);
+        while (_gpuFrames.Reader.TryRead(out var frame)) frame.Dispose();
+    }
+
+    public (ID3D11Device Device, ID3D11DeviceContext Context) RentD3D11Device()
+    {
+        lock (_gate)
+        {
+            if (_disposed || _d3dDevice == IntPtr.Zero || _d3dContext == IntPtr.Zero)
+                throw new ObjectDisposedException(nameof(WindowsGraphicsCaptureSource));
+            Marshal.AddRef(_d3dDevice);
+            Marshal.AddRef(_d3dContext);
+            return (new ID3D11Device(_d3dDevice), new ID3D11DeviceContext(_d3dContext));
+        }
+    }
+
     public int CaptureWidth => _item.Size.Width;
     public int CaptureHeight => _item.Size.Height;
 
@@ -115,18 +167,75 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
             {
                 using var frame = sender.TryGetNextFrame();
                 if (frame is null) return;
-                var bitmap = CopySurface(frame.Surface);
-                _frames.Writer.TryWrite(bitmap);
+                if (Volatile.Read(ref _gpuCaptureEnabled) != 0)
+                {
+                    QueueLatestGpuFrame(BorrowSurface(frame.Surface));
+                }
+                else
+                {
+                    var bitmap = CopySurface(frame.Surface);
+                    _frames.Writer.TryWrite(bitmap);
+                }
             }
             catch (Exception exception)
             {
-                _frames.Writer.TryComplete(exception);
+                CompleteFrameChannels(exception);
             }
         }
     }
 
     private void Item_Closed(GraphicsCaptureItem sender, object args) =>
-        _frames.Writer.TryComplete(new IOException("The Wallpaper Engine capture window was closed."));
+        CompleteFrameChannels(new IOException("The Wallpaper Engine capture window was closed."));
+
+    private void CompleteFrameChannels(Exception exception)
+    {
+        _frames.Writer.TryComplete(exception);
+        _gpuFrames.Writer.TryComplete(exception);
+    }
+
+    private void QueueLatestGpuFrame(CapturedGpuFrame frame)
+    {
+        while (!_gpuFrames.Writer.TryWrite(frame))
+        {
+            if (_gpuFrames.Reader.TryRead(out var obsolete))
+            {
+                obsolete.Dispose();
+                continue;
+            }
+            frame.Dispose();
+            return;
+        }
+    }
+
+    private static CapturedGpuFrame BorrowSurface(IDirect3DSurface surface)
+    {
+        var access = surface.As<IDirect3DDxgiInterfaceAccess>();
+        var textureGuid = D3D11Texture2DGuid;
+        ThrowIfFailed(access.GetInterface(ref textureGuid, out var pointer));
+        ID3D11Texture2D? texture = null;
+        try
+        {
+            texture = new ID3D11Texture2D(pointer);
+            var description = texture.Description;
+            var width = checked((int)description.Width);
+            var height = checked((int)description.Height);
+            if (width < 64 || height < 64 || width > 4096 || height > 4096
+                || (long)width * height > 10_000_000)
+            {
+                throw new InvalidDataException("Windows Graphics Capture returned an unsafe GPU frame size.");
+            }
+            var result = new CapturedGpuFrame(texture, width, height);
+            texture = null;
+            return result;
+        }
+        finally
+        {
+            if (texture is not null)
+            {
+                texture.Dispose();
+            }
+        }
+    }
 
     private CapturedBgraFrame CopySurface(IDirect3DSurface surface)
     {
@@ -290,6 +399,8 @@ internal sealed class WindowsGraphicsCaptureSource : IAsyncDisposable
             if (_disposed) return ValueTask.CompletedTask;
             _disposed = true;
             _frames.Writer.TryComplete();
+            _gpuFrames.Writer.TryComplete();
+            while (_gpuFrames.Reader.TryRead(out var frame)) frame.Dispose();
             try { _framePool.FrameArrived -= FramePool_FrameArrived; } catch { }
             try { _item.Closed -= Item_Closed; } catch { }
             try { _captureSession.Dispose(); } catch { }

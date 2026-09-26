@@ -168,6 +168,8 @@ public static class DiagnosticsService
         target.EncoderTargetMegabitsPerSecond = native.TargetBitrate > 0
             ? Round(native.TargetBitrate / 1_000_000d)
             : null;
+        target.EncoderInputMode = native.InputMode;
+        target.GpuFallbackError = native.GpuFallbackError;
         target.TransportMegabitsPerSecond = Round(
             diagnostics.EncodedBytes * 8d / native.ElapsedSeconds / 1_000_000d);
     }

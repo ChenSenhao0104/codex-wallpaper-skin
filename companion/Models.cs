@@ -292,6 +292,8 @@ public sealed class StreamWatchdogDiagnosticReport
     public int? CaptureHeight { get; set; }
     public int? EncoderTargetFrameRate { get; set; }
     public double? EncoderTargetMegabitsPerSecond { get; set; }
+    public string? EncoderInputMode { get; set; }
+    public string? GpuFallbackError { get; set; }
     public long PublisherBatches { get; set; }
     public double? TransportMegabitsPerSecond { get; set; }
     public int DecoderQueueSize { get; set; }

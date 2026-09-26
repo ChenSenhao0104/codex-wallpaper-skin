@@ -8,7 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>CodexWallpaperSkin</AssemblyName>
     <RootNamespace>CodexWallpaperSkin</RootNamespace>
-    <Version>0.7.2</Version>
+    <Version>0.8.0</Version>
     <Authors>Codex Wallpaper Skin contributors</Authors>
     <Description>Reversible local and Wallpaper Engine backgrounds for Codex Desktop.</Description>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
@@ -19,12 +19,15 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <NoWarn>$(NoWarn);WFAC010</NoWarn>
     <StartupObject>CodexWallpaperSkin.Program</StartupObject>
+    <CsWinRTEnabled>false</CsWinRTEnabled>
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="ThirdParty\we-scene\src\**\*.js" />
     <EmbeddedResource Include="Runtime\scene-host.js" />
   </ItemGroup>
   <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.CsWinRT" Version="2.1.5" />
+    <PackageReference Include="Vortice.Direct3D11" Version="3.6.2" />
     <PackageReference Include="Vortice.MediaFoundation" Version="3.6.2" />
   </ItemGroup>
 </Project>

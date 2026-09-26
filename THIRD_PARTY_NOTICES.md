@@ -15,17 +15,19 @@ Local changes add bounded package/texture/shader handling, browser lifecycle cle
 
 The Windows build uses Microsoft's Windows SDK .NET targeting pack and C#/WinRT runtime projection to access Windows Graphics Capture and Direct3D 11. Published packages may include `Microsoft.Windows.SDK.NET.dll` and `WinRT.Runtime.dll` from that Microsoft-provided framework pack.
 
-- Package: `Microsoft.Windows.SDK.NET.Ref`
+- Packages: `Microsoft.Windows.SDK.NET.Ref` and `Microsoft.Windows.CsWinRT 2.1.5`
 - Publisher: Microsoft Corporation
 - License terms: <https://aka.ms/WinSDKLicenseURL>
 
-## Media Foundation interop
+## Direct3D and Media Foundation interop
 
-The Windows build uses **Vortice.MediaFoundation 3.6.2** to access the
-operating system's Media Foundation H.264 encoder. Vortice.MediaFoundation is
-distributed under the MIT License. The application does not bundle a video
-codec; encoding is performed by Windows.
+The Windows build uses **Vortice.Direct3D11 3.6.2** and
+**Vortice.MediaFoundation 3.6.2** to convert captured textures on the GPU and
+access the operating system's Media Foundation H.264 encoder. These Vortice
+packages are distributed under the MIT License. The application does not
+bundle a video codec; encoding is performed by Windows.
 
+- Package: <https://www.nuget.org/packages/Vortice.Direct3D11/3.6.2>
 - Package: <https://www.nuget.org/packages/Vortice.MediaFoundation/3.6.2>
 - Upstream project: <https://github.com/amerkoleci/Vortice.Windows>
 - License: <https://github.com/amerkoleci/Vortice.Windows/blob/main/LICENSE>

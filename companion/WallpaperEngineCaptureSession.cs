@@ -26,7 +26,9 @@ public sealed record NativeStreamMetrics(
     int CaptureWidth = 0,
     int CaptureHeight = 0,
     int TargetFrameRate = 0,
-    int TargetBitrate = 0);
+    int TargetBitrate = 0,
+    string InputMode = "inactive",
+    string? GpuFallbackError = null);
 
 /// <summary>
 /// Uses Wallpaper Engine itself as the renderer for Scene projects and large
@@ -88,6 +90,8 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     private long _encodeTicks;
     private long _streamStarted;
     private int _activeEncoderBitrate;
+    private string _activeEncoderInputMode = "inactive";
+    private string? _gpuFallbackError;
 
     private WallpaperEngineCaptureSession(
         string engineExecutable,
@@ -138,7 +142,9 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                 CaptureWidth,
                 CaptureHeight,
                 Volatile.Read(ref _frameRate),
-                Volatile.Read(ref _activeEncoderBitrate));
+                Volatile.Read(ref _activeEncoderBitrate),
+                Volatile.Read(ref _activeEncoderInputMode),
+                Volatile.Read(ref _gpuFallbackError));
         }
     }
 
@@ -347,6 +353,127 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
     {
         var graphicsCapture = _graphicsCapture
             ?? throw new NotSupportedException("Windows Graphics Capture is required for H.264 streaming.");
+        try
+        {
+            await StreamGpuH264FramesAsync(graphicsCapture, publishFrame, cancellationToken);
+            return;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (Exception exception)
+        {
+            // Not every Windows GPU/driver exposes a D3D11-aware H.264 MFT.
+            // Preserve the proven v0.7.2 CPU conversion path as a transparent
+            // compatibility fallback instead of ending the live wallpaper.
+            Volatile.Write(
+                ref _gpuFallbackError,
+                FormatExceptionChain(exception));
+        }
+        finally
+        {
+            graphicsCapture.DisableGpuCapture();
+        }
+
+        if (Volatile.Read(ref _stopRequested) == 0
+            && !cancellationToken.IsCancellationRequested
+            && IsWindow(_windowHandle))
+        {
+            Volatile.Write(ref _activeEncoderInputMode, "cpu-nv12-fallback");
+            await StreamCpuH264FramesAsync(graphicsCapture, publishFrame, cancellationToken);
+        }
+    }
+
+    private async Task StreamGpuH264FramesAsync(
+        WindowsGraphicsCaptureSource graphicsCapture,
+        Func<H264EncodedFrame, CancellationToken, Task> publishFrame,
+        CancellationToken cancellationToken)
+    {
+        MediaFoundationH264Encoder? encoder = null;
+        var encoderWidth = 0;
+        var encoderHeight = 0;
+        var encoderFrameRate = 0;
+        var nextSampleTime = 0L;
+        graphicsCapture.EnableGpuCapture();
+        Volatile.Write(ref _activeEncoderInputMode, "gpu-d3d11");
+        try
+        {
+            while (Volatile.Read(ref _stopRequested) == 0
+                && !cancellationToken.IsCancellationRequested
+                && IsWindow(_windowHandle))
+            {
+                if (_pauseWhenHidden && _lastPageHidden)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
+                    continue;
+                }
+                var started = Stopwatch.GetTimestamp();
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(TimeSpan.FromSeconds(3));
+                var captureStarted = Stopwatch.GetTimestamp();
+                using var frame = await graphicsCapture.ReadGpuFrameAsync(timeout.Token);
+                Interlocked.Add(ref _captureTicks, Stopwatch.GetTimestamp() - captureStarted);
+                Interlocked.Increment(ref _capturedFrames);
+                var width = frame.Width & ~1;
+                var height = frame.Height & ~1;
+                var frameRate = NormalizeFrameRate(Volatile.Read(ref _frameRate));
+                if (encoder is null
+                    || encoderWidth != width
+                    || encoderHeight != height
+                    || encoderFrameRate != frameRate)
+                {
+                    if (encoder is not null)
+                    {
+                        nextSampleTime = encoder.NextSampleTime100Nanoseconds;
+                        encoder.Dispose();
+                    }
+                    var bitrate = CalculateH264Bitrate(width, height, frameRate);
+                    var rented = graphicsCapture.RentD3D11Device();
+                    encoder = MediaFoundationH264Encoder.CreateGpu(
+                        rented.Device, rented.Context,
+                        width, height, frameRate, bitrate, nextSampleTime);
+                    encoderWidth = width;
+                    encoderHeight = height;
+                    encoderFrameRate = frameRate;
+                    Volatile.Write(ref _activeEncoderBitrate, bitrate);
+                }
+                var encodeStarted = Stopwatch.GetTimestamp();
+                var outputs = encoder.EncodeTexture(frame.Texture, frame.Width, frame.Height);
+                nextSampleTime = encoder.NextSampleTime100Nanoseconds;
+                Interlocked.Add(ref _encodeTicks, Stopwatch.GetTimestamp() - encodeStarted);
+                Interlocked.Increment(ref _encoderInputs);
+                foreach (var encoded in outputs)
+                {
+                    Interlocked.Increment(ref _encodedFrames);
+                    await publishFrame(encoded, cancellationToken);
+                }
+                var elapsed = Stopwatch.GetElapsedTime(started);
+                var interval = TimeSpan.FromSeconds(1d / Math.Max(1, Volatile.Read(ref _frameRate)));
+                if (elapsed < interval) await Task.Delay(interval - elapsed, cancellationToken);
+            }
+        }
+        finally
+        {
+            encoder?.Dispose();
+        }
+    }
+
+    private static string FormatExceptionChain(Exception exception)
+    {
+        var parts = new List<string>(4);
+        for (var current = exception; current is not null && parts.Count < 4; current = current.InnerException)
+        {
+            parts.Add($"{current.GetType().Name}:0x{current.HResult:X8}");
+        }
+        return string.Join(" -> ", parts);
+    }
+
+    private async Task StreamCpuH264FramesAsync(
+        WindowsGraphicsCaptureSource graphicsCapture,
+        Func<H264EncodedFrame, CancellationToken, Task> publishFrame,
+        CancellationToken cancellationToken)
+    {
         MediaFoundationH264Encoder? encoder = null;
         var encoderWidth = 0;
         var encoderHeight = 0;
@@ -373,24 +500,19 @@ public sealed class WallpaperEngineCaptureSession : IAsyncDisposable
                     var frame = await graphicsCapture.ReadFrameAsync(timeout.Token);
                     Interlocked.Add(ref _captureTicks, Stopwatch.GetTimestamp() - captureStarted);
                     Interlocked.Increment(ref _capturedFrames);
-                    if (!CapturedFrameQuality.IsAcceptable(frame))
-                    {
-                        // Hold the browser's last decoded frame instead of
-                        // encoding a transient black/white capture surface.
-                        continue;
-                    }
+                    if (!CapturedFrameQuality.IsAcceptable(frame)) continue;
                     var width = frame.Width & ~1;
                     var height = frame.Height & ~1;
                     var frameRate = NormalizeFrameRate(Volatile.Read(ref _frameRate));
-                    if (encoder is null
-                        || encoderWidth != width
-                        || encoderHeight != height
-                        || encoderFrameRate != frameRate)
+                    if (encoder is null || encoderWidth != width || encoderHeight != height || encoderFrameRate != frameRate)
                     {
-                        encoder?.Dispose();
+                        if (encoder is not null)
+                        {
+                            nextSampleTime = encoder.NextSampleTime100Nanoseconds;
+                            encoder.Dispose();
+                        }
                         var bitrate = CalculateH264Bitrate(width, height, frameRate);
-                        encoder = MediaFoundationH264Encoder.Create(
-                            width, height, frameRate, bitrate, nextSampleTime);
+                        encoder = MediaFoundationH264Encoder.Create(width, height, frameRate, bitrate, nextSampleTime);
                         encoderWidth = width;
                         encoderHeight = height;
                         encoderFrameRate = frameRate;

@@ -382,9 +382,9 @@ public static class Program
                 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(35));
                 await using var session = await WallpaperEngineCaptureSession.StartAsync(
                     wallpaper,
-                    new WallpaperSettings { Muted = true, SceneFrameRate = 60, SceneResolutionScale = .75, PauseWhenHidden = false },
+                    new WallpaperSettings { Muted = true, SceneFrameRate = 60, SceneResolutionScale = 1, PauseWhenHidden = false },
+                    2560,
                     1600,
-                    1000,
                     timeout.Token);
                 var frames = 0;
                 var bytes = 0L;
