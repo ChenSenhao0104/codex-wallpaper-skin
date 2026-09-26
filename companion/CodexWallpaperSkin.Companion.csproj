@@ -25,7 +25,10 @@
   <ItemGroup>
     <EmbeddedResource Include="ThirdParty\we-scene\src\**\*.js" />
     <EmbeddedResource Include="Runtime\scene-host.js" />
-    <None Update="Assets\CodexWallpaperSkin.ico" CopyToOutputDirectory="PreserveNewest" TargetPath="CodexWallpaperSkin.ico" />
+    <None Update="Assets\CodexWallpaperSkin.ico"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest"
+          TargetPath="CodexWallpaperSkin.ico" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Windows.CsWinRT" Version="2.1.5" />
