@@ -17,9 +17,15 @@ try {
     throw "Forbidden generated or sensitive paths are tracked:`n$($forbidden -join "`n")"
   }
 
+  # Media stays deny-by-default. Project-owned assets may be admitted only
+  # after their origin and redistribution terms are recorded in assets/README.md.
+  $approvedMedia = @(
+    'assets/CWS-logo-v3.0.png'
+  )
   $media = @($tracked | Where-Object { $_ -match '(?i)\.(png|jpe?g|gif|webp|mp4|webm|mov|avi)$' })
-  if ($media.Count -gt 0) {
-    throw "Media files require explicit licensing review and are not accepted by the baseline policy:`n$($media -join "`n")"
+  $unreviewedMedia = @($media | Where-Object { $_ -notin $approvedMedia })
+  if ($unreviewedMedia.Count -gt 0) {
+    throw "Media files require explicit licensing review and are not accepted by the baseline policy:`n$($unreviewedMedia -join "`n")"
   }
 
   $large = foreach ($path in $tracked) {
@@ -42,7 +48,7 @@ try {
     }
   }
 
-  Write-Output "Repository hygiene: PASS ($($tracked.Count) tracked files, no forbidden paths, media, large files, credentials, private emails, or user-profile paths)."
+  Write-Output "Repository hygiene: PASS ($($tracked.Count) tracked files, no forbidden paths, unreviewed media, large files, credentials, private emails, or user-profile paths)."
 }
 finally {
   Pop-Location
