@@ -51,13 +51,13 @@ See the [v0.8.0 Release Notes](docs/releases/V0.8.0-BETA.md) for the first publi
 <table>
   <tr>
     <td align="center" width="33%"><img src="docs/images/showcase/media-static-image.png" width="100%" alt="Static image background"></td>
-    <td align="center" width="33%"><a href="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-video-frog.mp4"><img src="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-video-frog.gif" width="100%" alt="Local video background preview"></a></td>
-    <td align="center" width="33%"><a href="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-wallpaper-engine-live-scene.mp4"><img src="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-wallpaper-engine-live-scene.gif" width="100%" alt="Wallpaper Engine Live Scene preview"></a></td>
+    <td align="center" width="33%"><a href="https://chensenhao0104.github.io/codex-wallpaper-skin/demos/video-wallpaper.html"><img src="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-video-frog.gif" width="100%" alt="Local video background preview"></a></td>
+    <td align="center" width="33%"><a href="https://chensenhao0104.github.io/codex-wallpaper-skin/demos/wallpaper-engine-live-scene.html"><img src="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-wallpaper-engine-live-scene.gif" width="100%" alt="Wallpaper Engine Live Scene preview"></a></td>
   </tr>
   <tr>
     <td align="center"><strong>Image · PNG / JPEG / WebP</strong></td>
-    <td align="center"><strong>Video · MP4 / WebM</strong><br><a href="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-video-frog.mp4">▶ Watch the HD MP4</a></td>
-    <td align="center"><strong>Wallpaper Engine · Live Scene</strong><br><a href="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-wallpaper-engine-live-scene.mp4">▶ Watch the HD MP4</a></td>
+    <td align="center"><strong>Video · MP4 / WebM</strong><br><a href="https://chensenhao0104.github.io/codex-wallpaper-skin/demos/video-wallpaper.html">▶ Watch the HD demo online</a></td>
+    <td align="center"><strong>Wallpaper Engine · Live Scene</strong><br><a href="https://chensenhao0104.github.io/codex-wallpaper-skin/demos/wallpaper-engine-live-scene.html">▶ Watch the HD demo online</a></td>
   </tr>
 </table>
 
@@ -77,7 +77,7 @@ See the [v0.8.0 Release Notes](docs/releases/V0.8.0-BETA.md) for the first publi
 </table>
 
 > [!NOTE]
-> Screenshots and recordings demonstrate local runtime behavior; click an animated preview for its HD MP4. The repository, installer, and portable package contain no importable Wallpaper Engine projects or original third-party wallpaper source files. Rights in third-party works visible in the demonstrations remain with their respective owners.
+> Screenshots and recordings demonstrate local runtime behavior; clicking an animated preview opens a web player and does not start a download automatically. The repository, installer, and portable package contain no importable Wallpaper Engine projects or original third-party wallpaper source files. Rights in third-party works visible in the demonstrations remain with their respective owners.
 
 ## Current GUI capabilities
 

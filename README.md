@@ -51,13 +51,13 @@
 <table>
   <tr>
     <td align="center" width="33%"><img src="docs/images/showcase/media-static-image.png" width="100%" alt="静态图片背景"></td>
-    <td align="center" width="33%"><a href="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-video-frog.mp4"><img src="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-video-frog.gif" width="100%" alt="本地视频背景动态预览"></a></td>
-    <td align="center" width="33%"><a href="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-wallpaper-engine-live-scene.mp4"><img src="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-wallpaper-engine-live-scene.gif" width="100%" alt="Wallpaper Engine Live Scene 动态预览"></a></td>
+    <td align="center" width="33%"><a href="https://chensenhao0104.github.io/codex-wallpaper-skin/demos/video-wallpaper.html"><img src="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-video-frog.gif" width="100%" alt="本地视频背景动态预览"></a></td>
+    <td align="center" width="33%"><a href="https://chensenhao0104.github.io/codex-wallpaper-skin/demos/wallpaper-engine-live-scene.html"><img src="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-wallpaper-engine-live-scene.gif" width="100%" alt="Wallpaper Engine Live Scene 动态预览"></a></td>
   </tr>
   <tr>
     <td align="center"><strong>Image · PNG / JPEG / WebP</strong></td>
-    <td align="center"><strong>Video · MP4 / WebM</strong><br><a href="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-video-frog.mp4">▶ 查看高清 MP4</a></td>
-    <td align="center"><strong>Wallpaper Engine · Live Scene</strong><br><a href="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-wallpaper-engine-live-scene.mp4">▶ 查看高清 MP4</a></td>
+    <td align="center"><strong>Video · MP4 / WebM</strong><br><a href="https://chensenhao0104.github.io/codex-wallpaper-skin/demos/video-wallpaper.html">▶ 网页观看高清演示</a></td>
+    <td align="center"><strong>Wallpaper Engine · Live Scene</strong><br><a href="https://chensenhao0104.github.io/codex-wallpaper-skin/demos/wallpaper-engine-live-scene.html">▶ 网页观看高清演示</a></td>
   </tr>
 </table>
 
@@ -77,7 +77,7 @@
 </table>
 
 > [!NOTE]
-> 截图和录屏仅用于展示本软件在本地加载背景时的效果；点击动态预览可查看高清 MP4。仓库、安装包和便携包均不包含可导入的原始 Wallpaper Engine 项目或第三方壁纸源文件，画面中第三方作品的权利归各自权利人所有。
+> 截图和录屏仅用于展示本软件在本地加载背景时的效果；点击动态预览会打开网页播放器，不会自动下载视频。仓库、安装包和便携包均不包含可导入的原始 Wallpaper Engine 项目或第三方壁纸源文件，画面中第三方作品的权利归各自权利人所有。
 
 ## GUI 当前能力
 
