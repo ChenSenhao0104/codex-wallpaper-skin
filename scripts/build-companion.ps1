@@ -166,7 +166,17 @@ if ($Publish) {
   }
 }
 
-& $dotnet.Source restore $project --nologo --ignore-failed-sources
+$restoreArguments = @('restore', $project, '--nologo', '--ignore-failed-sources')
+if ($Publish) {
+  # Newer SDKs installed side-by-side on CI runners do not necessarily restore
+  # the self-contained runtime packs during a framework-dependent restore.
+  # Restore the exact publish RID up front so the later --no-restore publish is
+  # deterministic on both .NET 8-only machines and newer runner images.
+  $restoreArguments += '--runtime'
+  $restoreArguments += 'win-x64'
+  $restoreArguments += '-p:SelfContained=true'
+}
+& $dotnet.Source @restoreArguments
 if ($LASTEXITCODE -ne 0) { throw 'dotnet restore failed.' }
 
 $buildArguments = @('build', $project, '--configuration', $Configuration, '--no-restore', '--nologo')
