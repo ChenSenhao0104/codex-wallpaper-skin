@@ -17,10 +17,21 @@ try {
     throw "Forbidden generated or sensitive paths are tracked:`n$($forbidden -join "`n")"
   }
 
-  # Media stays deny-by-default. Project-owned assets may be admitted only
-  # after their origin and redistribution terms are recorded in assets/README.md.
+  # Media stays deny-by-default. Project-owned assets and documentation
+  # screenshots may be admitted only after their origin and terms are recorded.
   $approvedMedia = @(
-    'assets/CWS-logo-v3.0.png'
+    'assets/CWS-logo-v3.0.png',
+    'docs/images/showcase/controller-en.png',
+    'docs/images/showcase/controller-zh.png',
+    'docs/images/showcase/media-static-image.png',
+    'docs/images/showcase/opacity-100.png',
+    'docs/images/showcase/opacity-44.png',
+    'docs/images/showcase/opacity-66.png',
+    'docs/images/showcase/overview.png',
+    'docs/images/showcase/style-bright-texture.png',
+    'docs/images/showcase/style-high-saturation.png',
+    'docs/images/showcase/style-soft-low-contrast.png',
+    'docs/images/showcase/workspace-background.png'
   )
   $media = @($tracked | Where-Object { $_ -match '(?i)\.(png|jpe?g|gif|webp|mp4|webm|mov|avi)$' })
   $unreviewedMedia = @($media | Where-Object { $_ -notin $approvedMedia })

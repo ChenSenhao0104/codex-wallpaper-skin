@@ -10,6 +10,75 @@
 
 首个公开 Beta 的变更、下载说明和限制见 [v0.8.0 Release Notes](docs/releases/V0.8.0-BETA.md)。
 
+## 效果展示
+
+<p align="center">
+  <img src="docs/images/showcase/overview.png" width="100%" alt="Codex Wallpaper Skin 背景效果概览">
+</p>
+
+### 跨风格背景适配效果
+
+<table>
+  <tr>
+    <td align="center" width="33%"><img src="docs/images/showcase/style-soft-low-contrast.png" width="100%" alt="柔和低对比背景"></td>
+    <td align="center" width="33%"><img src="docs/images/showcase/style-high-saturation.png" width="100%" alt="高饱和高对比背景"></td>
+    <td align="center" width="33%"><img src="docs/images/showcase/style-bright-texture.png" width="100%" alt="高亮复杂纹理背景"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>柔和低对比背景</strong></td>
+    <td align="center"><strong>高饱和高对比背景</strong></td>
+    <td align="center"><strong>高亮复杂纹理背景</strong></td>
+  </tr>
+</table>
+
+### 背景不透明度与界面可读性对比
+
+<table>
+  <tr>
+    <td align="center" width="33%"><img src="docs/images/showcase/opacity-100.png" width="100%" alt="100% 背景不透明度"></td>
+    <td align="center" width="33%"><img src="docs/images/showcase/opacity-66.png" width="100%" alt="66% 背景不透明度"></td>
+    <td align="center" width="33%"><img src="docs/images/showcase/opacity-44.png" width="100%" alt="44% 背景不透明度"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>100% · 完整背景表现</strong></td>
+    <td align="center"><strong>66% · 背景与可读性平衡</strong></td>
+    <td align="center"><strong>44% · 高可读性界面</strong></td>
+  </tr>
+</table>
+
+### 多媒体壁纸与 Wallpaper Engine 支持
+
+<table>
+  <tr>
+    <td align="center" width="33%"><img src="docs/images/showcase/media-static-image.png" width="100%" alt="静态图片背景"></td>
+    <td align="center" width="33%"><a href="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-video-frog.mp4"><img src="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-video-frog.gif" width="100%" alt="本地视频背景动态预览"></a></td>
+    <td align="center" width="33%"><a href="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-wallpaper-engine-live-scene.mp4"><img src="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-wallpaper-engine-live-scene.gif" width="100%" alt="Wallpaper Engine Live Scene 动态预览"></a></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Image · PNG / JPEG / WebP</strong></td>
+    <td align="center"><strong>Video · MP4 / WebM</strong><br><a href="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-video-frog.mp4">▶ 查看高清 MP4</a></td>
+    <td align="center"><strong>Wallpaper Engine · Live Scene</strong><br><a href="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-wallpaper-engine-live-scene.mp4">▶ 查看高清 MP4</a></td>
+  </tr>
+</table>
+
+### 实际使用效果与控制器界面
+
+<table>
+  <tr>
+    <td align="center" width="33%"><img src="docs/images/showcase/workspace-background.png" width="100%" alt="Codex 工作区实际背景效果"></td>
+    <td align="center" width="33%"><img src="docs/images/showcase/controller-zh.png" width="100%" alt="控制器中文界面"></td>
+    <td align="center" width="33%"><img src="docs/images/showcase/controller-en.png" width="100%" alt="控制器英文界面"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Codex 工作区实际背景效果</strong></td>
+    <td align="center"><strong>控制器中文界面</strong></td>
+    <td align="center"><strong>控制器英文界面</strong></td>
+  </tr>
+</table>
+
+> [!NOTE]
+> 截图和录屏仅用于展示本软件在本地加载背景时的效果；点击动态预览可查看高清 MP4。仓库、安装包和便携包均不包含可导入的原始 Wallpaper Engine 项目或第三方壁纸源文件，画面中第三方作品的权利归各自权利人所有。
+
 ## GUI 当前能力
 
 - 加载 PNG、JPEG、WebP、GIF、MP4 和 WebM。

@@ -10,6 +10,75 @@ The application uses a loopback-only Chrome DevTools Protocol (CDP) session to a
 
 See the [v0.8.0 Release Notes](docs/releases/V0.8.0-BETA.md) for the first public Beta's changes, download guidance, and limitations.
 
+## Showcase
+
+<p align="center">
+  <img src="docs/images/showcase/overview.png" width="100%" alt="Codex Wallpaper Skin background overview">
+</p>
+
+### Background adaptation across visual styles
+
+<table>
+  <tr>
+    <td align="center" width="33%"><img src="docs/images/showcase/style-soft-low-contrast.png" width="100%" alt="Soft low-contrast background"></td>
+    <td align="center" width="33%"><img src="docs/images/showcase/style-high-saturation.png" width="100%" alt="High-saturation high-contrast background"></td>
+    <td align="center" width="33%"><img src="docs/images/showcase/style-bright-texture.png" width="100%" alt="Bright complex-texture background"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Soft, low contrast</strong></td>
+    <td align="center"><strong>High saturation and contrast</strong></td>
+    <td align="center"><strong>Bright, complex texture</strong></td>
+  </tr>
+</table>
+
+### Background opacity and interface readability
+
+<table>
+  <tr>
+    <td align="center" width="33%"><img src="docs/images/showcase/opacity-100.png" width="100%" alt="100% background opacity"></td>
+    <td align="center" width="33%"><img src="docs/images/showcase/opacity-66.png" width="100%" alt="66% background opacity"></td>
+    <td align="center" width="33%"><img src="docs/images/showcase/opacity-44.png" width="100%" alt="44% background opacity"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>100% · Full background impact</strong></td>
+    <td align="center"><strong>66% · Balanced readability</strong></td>
+    <td align="center"><strong>44% · High-readability interface</strong></td>
+  </tr>
+</table>
+
+### Multimedia wallpapers and Wallpaper Engine support
+
+<table>
+  <tr>
+    <td align="center" width="33%"><img src="docs/images/showcase/media-static-image.png" width="100%" alt="Static image background"></td>
+    <td align="center" width="33%"><a href="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-video-frog.mp4"><img src="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-video-frog.gif" width="100%" alt="Local video background preview"></a></td>
+    <td align="center" width="33%"><a href="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-wallpaper-engine-live-scene.mp4"><img src="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-wallpaper-engine-live-scene.gif" width="100%" alt="Wallpaper Engine Live Scene preview"></a></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Image · PNG / JPEG / WebP</strong></td>
+    <td align="center"><strong>Video · MP4 / WebM</strong><br><a href="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-video-frog.mp4">▶ Watch the HD MP4</a></td>
+    <td align="center"><strong>Wallpaper Engine · Live Scene</strong><br><a href="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/download/v0.8.0/demo-wallpaper-engine-live-scene.mp4">▶ Watch the HD MP4</a></td>
+  </tr>
+</table>
+
+### Real-world result and controller interface
+
+<table>
+  <tr>
+    <td align="center" width="33%"><img src="docs/images/showcase/workspace-background.png" width="100%" alt="Background applied to a Codex workspace"></td>
+    <td align="center" width="33%"><img src="docs/images/showcase/controller-zh.png" width="100%" alt="Controller in Chinese"></td>
+    <td align="center" width="33%"><img src="docs/images/showcase/controller-en.png" width="100%" alt="Controller in English"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Codex workspace background</strong></td>
+    <td align="center"><strong>Chinese controller</strong></td>
+    <td align="center"><strong>English controller</strong></td>
+  </tr>
+</table>
+
+> [!NOTE]
+> Screenshots and recordings demonstrate local runtime behavior; click an animated preview for its HD MP4. The repository, installer, and portable package contain no importable Wallpaper Engine projects or original third-party wallpaper source files. Rights in third-party works visible in the demonstrations remain with their respective owners.
+
 ## Current GUI capabilities
 
 - PNG, JPEG, WebP, GIF, MP4, and WebM media.
