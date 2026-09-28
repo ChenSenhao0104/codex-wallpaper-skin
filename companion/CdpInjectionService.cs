@@ -1202,6 +1202,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
             try { state.captureSocket && state.captureSocket.close(1000, 'cleanup'); } catch (_) {}
             try { state.h264Decoder && state.h264Decoder.close(); } catch (_) {}
             try { state.observer && state.observer.disconnect(); } catch (_) {}
+            try { state.themeObserver && state.themeObserver.disconnect(); } catch (_) {}
             try { state.rafId && cancelAnimationFrame(state.rafId); } catch (_) {}
             try { state.visibilityHandler && document.removeEventListener('visibilitychange', state.visibilityHandler); } catch (_) {}
             try { state.capturePointerHandlers && window.removeEventListener('pointermove', state.capturePointerHandlers.move, true); } catch (_) {}
@@ -1235,7 +1236,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
           try { document.getElementById('codex-wallpaper-skin-host')?.remove(); } catch (_) {}
           try { document.getElementById('codex-wallpaper-skin-style')?.remove(); } catch (_) {}
           try { document.querySelectorAll('.cws-media, .cws-overlay').forEach(element => element.remove()); } catch (_) {}
-          root.classList.remove('cws-active', 'cws-palette', 'cws-tint-text');
+          root.classList.remove('cws-active', 'cws-palette', 'cws-tint-text', 'cws-native-light', 'cws-native-dark');
           [...root.style].filter(name => name.startsWith('--cws-')).forEach(name => root.style.removeProperty(name));
           document.querySelectorAll('[data-cws-surface]').forEach(x => x.removeAttribute('data-cws-surface'));
           delete window.__codexWallpaperSkin;
@@ -1268,6 +1269,8 @@ public sealed class CdpInjectionService : IAsyncDisposable
             && !root.classList.contains('cws-active')
             && !root.classList.contains('cws-palette')
             && !root.classList.contains('cws-tint-text')
+            && !root.classList.contains('cws-native-light')
+            && !root.classList.contains('cws-native-dark')
             && ![...root.style].some(name => name.startsWith('--cws-'))
             && typeof window.__codexWallpaperSkinBeginUpload === 'undefined'
             && typeof window.__codexWallpaperSkinPushChunk === 'undefined'
@@ -1301,7 +1304,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
             throw new Error('Refusing to inject: this is not a ready Codex app:// page.');
           }
           const existing = window.__codexWallpaperSkin;
-          const existingHealthy = existing && existing.version === 20 && !existing.disposed
+          const existingHealthy = existing && existing.version === 21 && !existing.disposed
             && existing.host?.isConnected && existing.style?.isConnected && existing.overlay?.isConnected
             && document.getElementById('codex-wallpaper-skin-host') === existing.host
             && document.getElementById('codex-wallpaper-skin-style') === existing.style
@@ -1349,6 +1352,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
             try { old.captureSocket && old.captureSocket.close(1000, 'replaced'); } catch (_) {}
             try { old.h264Decoder && old.h264Decoder.close(); } catch (_) {}
             try { old.observer && old.observer.disconnect(); } catch (_) {}
+            try { old.themeObserver && old.themeObserver.disconnect(); } catch (_) {}
             try { old.rafId && cancelAnimationFrame(old.rafId); } catch (_) {}
             try { old.visibilityHandler && document.removeEventListener('visibilitychange', old.visibilityHandler); } catch (_) {}
             try { old.capturePointerHandlers && window.removeEventListener('pointermove', old.capturePointerHandlers.move, true); } catch (_) {}
@@ -1382,7 +1386,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
           try { document.getElementById('codex-wallpaper-skin-style')?.remove(); } catch (_) {}
           try { document.querySelectorAll('.cws-media, .cws-overlay').forEach(element => element.remove()); } catch (_) {}
           document.querySelectorAll('[data-cws-surface]').forEach(x => x.removeAttribute('data-cws-surface'));
-          root.classList.remove('cws-active', 'cws-palette', 'cws-tint-text');
+          root.classList.remove('cws-active', 'cws-palette', 'cws-tint-text', 'cws-native-light', 'cws-native-dark');
           [...root.style].filter(name => name.startsWith('--cws-')).forEach(name => root.style.removeProperty(name));
           delete window.__codexWallpaperSkin;
           delete window.__codexWallpaperSkinBeginUpload;
@@ -1420,8 +1424,10 @@ public sealed class CdpInjectionService : IAsyncDisposable
             }
             html.cws-active.cws-palette [data-cws-surface="root"] { background-color: rgba(var(--cws-surface-rgb), var(--cws-root-alpha)) !important; }
             html.cws-active.cws-palette [data-cws-surface="panel"] { background-color: rgba(var(--cws-surface-rgb), var(--cws-panel-alpha)) !important; }
+            html.cws-active.cws-palette [data-cws-surface="elevated"] { background-color: rgba(var(--cws-surface-rgb), var(--cws-elevated-alpha)) !important; }
             html.cws-active:not(.cws-palette) [data-cws-surface="root"] { background-color: color-mix(in srgb, var(--cws-native-surface) calc(var(--cws-root-alpha) * 100%), transparent) !important; }
             html.cws-active:not(.cws-palette) [data-cws-surface="panel"] { background-color: color-mix(in srgb, var(--cws-native-surface) calc(var(--cws-panel-alpha) * 100%), transparent) !important; }
+            html.cws-active:not(.cws-palette) [data-cws-surface="elevated"] { background-color: color-mix(in srgb, var(--cws-native-surface) calc(var(--cws-elevated-alpha) * 100%), transparent) !important; }
             html.cws-palette {
               --app-color-background-surface: transparent !important;
               --app-color-background-surface-under: transparent !important;
@@ -1479,11 +1485,12 @@ public sealed class CdpInjectionService : IAsyncDisposable
           document.body.appendChild(host);
 
           const state = window.__codexWallpaperSkin = {
-            version: 20, disposed: false, style, host, overlay, media: null, assetUrl: null,
+            version: 21, disposed: false, style, host, overlay, media: null, assetUrl: null,
             sceneController: null, pendingSceneController: null,
             pendingMedia: null, pendingUrl: null, pendingCancel: null,
             uploads: new Map(), marked: new Set(), settings: null, rawPalette: null,
-            palette: null, observer: null, rafId: 0, visibilityHandler: null, nativeSurface,
+            palette: null, observer: null, themeObserver: null, rafId: 0, visibilityHandler: null,
+            nativeSurface, nativeTheme: null,
             capturePointer: { x: .5, y: .5, buttons: 0, wheel: 0, inside: false }, capturePointerHandlers: null,
             captureFrameBusy: false, captureStaging: null, captureToken: null,
             captureSocket: null, capturePendingPacket: null,
@@ -1502,6 +1509,37 @@ public sealed class CdpInjectionService : IAsyncDisposable
           const luminance = value => .2126 * linear(value[0]) + .7152 * linear(value[1]) + .0722 * linear(value[2]);
           const contrast = (a, b) => { const first = luminance(a), second = luminance(b); return (Math.max(first, second) + .05) / (Math.min(first, second) + .05); };
           const saturation = value => { const max = Math.max(...value), min = Math.min(...value); return max === 0 ? 0 : (max - min) / max; };
+          const parseCssColor = value => {
+            try {
+              const canvas = document.createElement('canvas'); canvas.width = 1; canvas.height = 1;
+              const context = canvas.getContext('2d', { willReadFrequently: true });
+              context.clearRect(0, 0, 1, 1); context.fillStyle = '#000'; context.fillStyle = value;
+              context.fillRect(0, 0, 1, 1);
+              const pixel = context.getImageData(0, 0, 1, 1).data;
+              return [pixel[0], pixel[1], pixel[2]];
+            } catch (_) { return null; }
+          };
+          const detectNativeTheme = () => {
+            const nodes = [root, document.body].filter(Boolean);
+            const explicit = nodes.flatMap(node => ['data-theme', 'data-color-scheme', 'data-mode']
+              .map(name => node.getAttribute(name)).filter(Boolean)).join(' ').toLowerCase();
+            if (/(^|[\s_-])light($|[\s_-])/.test(explicit)) return 'light';
+            if (/(^|[\s_-])dark($|[\s_-])/.test(explicit)) return 'dark';
+            const classes = nodes.flatMap(node => Array.from(node.classList || [])).filter(name => !name.startsWith('cws-')).map(name => name.toLowerCase());
+            if (classes.some(name => /^(light|theme-light|color-scheme-light)$/.test(name))) return 'light';
+            if (classes.some(name => /^(dark|theme-dark|color-scheme-dark)$/.test(name))) return 'dark';
+            const scheme = String(getComputedStyle(root).colorScheme || '').toLowerCase().trim();
+            if (scheme === 'light' || scheme === 'only light') return 'light';
+            if (scheme === 'dark' || scheme === 'only dark') return 'dark';
+            const nativeRgb = parseCssColor(nativeSurface);
+            return nativeRgb && luminance(nativeRgb) > .50 ? 'light' : 'dark';
+          };
+          const setNativeThemeClasses = theme => {
+            root.classList.toggle('cws-native-light', theme === 'light');
+            root.classList.toggle('cws-native-dark', theme === 'dark');
+          };
+          state.nativeTheme = detectNativeTheme();
+          setNativeThemeClasses(state.nativeTheme);
           const vivid = value => {
             const gray = (value[0] + value[1] + value[2]) / 3;
             const boosted = value.map(channel => clamp(gray + (channel - gray) * 1.7, 0, 255));
@@ -1514,7 +1552,11 @@ public sealed class CdpInjectionService : IAsyncDisposable
           const buildPalette = raw => {
             if (!raw || !state.settings) return null;
             const strength = clamp(state.settings.paletteStrength, 0, 1);
-            const lightTheme = raw.averageLuminance > .58;
+            // Surface and text polarity follow the user's Codex theme. The
+            // wallpaper only supplies a restrained tint and accent. Otherwise
+            // a dark wallpaper in light mode can produce white text on native
+            // white popovers and settings cards.
+            const lightTheme = state.nativeTheme === 'light';
             const neutralSurface = lightTheme ? [244, 246, 249] : [20, 23, 29];
             const tintedSurface = mix(raw.dominant, lightTheme ? [255, 255, 255] : [0, 0, 0], lightTheme ? .80 : .70);
             const surface = mix(neutralSurface, tintedSurface, strength);
@@ -1586,6 +1628,15 @@ public sealed class CdpInjectionService : IAsyncDisposable
             return { dominant: palette.dominant, surface: palette.surface, accent: palette.accent, text: palette.text, accentText: palette.accentText, textContrast: palette.textContrast };
           };
 
+          const refreshNativeTheme = () => {
+            const nextTheme = detectNativeTheme();
+            if (nextTheme === state.nativeTheme) return;
+            state.nativeTheme = nextTheme;
+            setNativeThemeClasses(nextTheme);
+            applyPalette();
+            scheduleSurfaceScan();
+          };
+
           const clearSurfaceMarkers = () => {
             state.marked.forEach(element => { try { element.removeAttribute('data-cws-surface'); } catch (_) {} });
             state.marked.clear();
@@ -1594,16 +1645,20 @@ public sealed class CdpInjectionService : IAsyncDisposable
             if (state.disposed || !root.classList.contains('cws-active')) return;
             clearSurfaceMarkers();
             const width = Math.max(root.clientWidth, 1), height = Math.max(root.clientHeight, 1), viewportArea = width * height;
-            const candidates = new Set([...document.body.children, ...document.querySelectorAll('main, aside, nav, [role="dialog"], [role="region"]')]);
+            const elevatedSelector = '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], [role="tooltip"], [data-radix-popper-content-wrapper] > *';
+            const panelSelector = 'main, aside, nav, [role="region"]';
+            const candidates = new Set([...document.body.children, ...document.querySelectorAll(`${panelSelector}, ${elevatedSelector}`)]);
             for (const element of candidates) {
               if (!(element instanceof HTMLElement) || element === host || host.contains(element)) continue;
               if (element.matches('pre, code, kbd, samp, input, textarea, [contenteditable="true"], [role="textbox"]')) continue;
               const rect = element.getBoundingClientRect();
+              if (rect.width < 1 || rect.height < 1) continue;
               const ratio = rect.width * rect.height / viewportArea;
-              const semanticPanel = element.matches('aside, nav, [role="dialog"], [role="region"]');
-              if (ratio < (semanticPanel ? .06 : .32)) continue;
+              const elevated = element.matches(elevatedSelector);
+              const semanticPanel = element.matches(panelSelector);
+              if (!elevated && ratio < (semanticPanel ? .06 : .32)) continue;
               if (getComputedStyle(element).pointerEvents === 'none') continue;
-              const marker = ratio >= .60 ? 'root' : 'panel';
+              const marker = elevated ? 'elevated' : ratio >= .60 ? 'root' : 'panel';
               const markedAncestor = element.parentElement?.closest('[data-cws-surface]');
               if (markedAncestor?.getAttribute('data-cws-surface') === marker) continue;
               element.setAttribute('data-cws-surface', marker);
@@ -1703,7 +1758,8 @@ public sealed class CdpInjectionService : IAsyncDisposable
             root.style.setProperty('--cws-native-surface', state.nativeSurface);
             root.style.setProperty('--cws-panel-alpha', String(panelAlpha));
             root.style.setProperty('--cws-under-alpha', String(Math.min(.18, panelAlpha * .25)));
-            root.style.setProperty('--cws-elevated-alpha', String(Math.min(.98, panelAlpha + .12)));
+            const elevatedFloor = state.nativeTheme === 'light' ? .92 : .86;
+            root.style.setProperty('--cws-elevated-alpha', String(Math.min(.98, Math.max(elevatedFloor, panelAlpha + .12))));
             // Never place an automatic full-workspace veil over the wallpaper.
             // Users who want global dimming can opt into the explicit overlay control.
             root.style.setProperty('--cws-root-alpha', '0');
@@ -2194,7 +2250,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
                 document.addEventListener('visibilitychange', state.visibilityHandler);
               }
               if (!state.observer) {
-                const semanticSelector = 'main, aside, nav, [role="dialog"], [role="region"]';
+                const semanticSelector = 'main, aside, nav, [role="region"], [role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], [role="tooltip"], [data-radix-popper-content-wrapper]';
                 state.observer = new MutationObserver(records => {
                   const runtimeIntact = state.host?.isConnected && state.host.parentNode === document.body
                     && state.overlay?.isConnected && state.overlay.parentNode === state.host
@@ -2224,6 +2280,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
                       try { closeCaptureSocket('runtime-invalid'); } catch (_) {}
                       try { closeH264Decoder(); } catch (_) {}
                       try { state.observer.disconnect(); } catch (_) {}
+                      try { state.themeObserver && state.themeObserver.disconnect(); } catch (_) {}
                       try { state.visibilityHandler && document.removeEventListener('visibilitychange', state.visibilityHandler); } catch (_) {}
                       try { state.capturePointerHandlers && window.removeEventListener('pointermove', state.capturePointerHandlers.move, true); } catch (_) {}
                       try { state.capturePointerHandlers && window.removeEventListener('pointerenter', state.capturePointerHandlers.enter, true); } catch (_) {}
@@ -2258,6 +2315,12 @@ public sealed class CdpInjectionService : IAsyncDisposable
                 state.observer.observe(root, { childList: true });
                 state.observer.observe(style, { childList: true, characterData: true, subtree: true });
               }
+              if (!state.themeObserver) {
+                state.themeObserver = new MutationObserver(() => refreshNativeTheme());
+                const themeOptions = { attributes: true, attributeFilter: ['class', 'data-theme', 'data-color-scheme', 'data-mode'] };
+                state.themeObserver.observe(root, themeOptions);
+                state.themeObserver.observe(document.body, themeOptions);
+              }
               scanSurfaces();
               return { byteLength, type: upload.mime, mode: sceneController?.mode || mediaKind, warning: sceneController?.warning || null, palette: state.palette ? {
                 dominant: state.palette.dominant, surface: state.palette.surface, accent: state.palette.accent,
@@ -2283,6 +2346,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
             try { closeCaptureSocket('cleanup'); } catch (_) {}
             try { closeH264Decoder(); } catch (_) {}
             try { current.observer && current.observer.disconnect(); } catch (_) {}
+            try { current.themeObserver && current.themeObserver.disconnect(); } catch (_) {}
             try { current.rafId && cancelAnimationFrame(current.rafId); } catch (_) {}
             try { current.visibilityHandler && document.removeEventListener('visibilitychange', current.visibilityHandler); } catch (_) {}
             try { current.capturePointerHandlers && window.removeEventListener('pointermove', current.capturePointerHandlers.move, true); } catch (_) {}
@@ -2305,7 +2369,7 @@ public sealed class CdpInjectionService : IAsyncDisposable
             try { discardAllUploads(); } catch (_) { current.uploads.clear(); }
             if (ownsGlobals) {
               clearSurfaceMarkers();
-              root.classList.remove('cws-active', 'cws-palette', 'cws-tint-text');
+              root.classList.remove('cws-active', 'cws-palette', 'cws-tint-text', 'cws-native-light', 'cws-native-dark');
               [...root.style].filter(name => name.startsWith('--cws-')).forEach(name => root.style.removeProperty(name));
             }
             try { current.host && current.host.remove(); } catch (_) {}

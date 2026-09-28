@@ -791,7 +791,11 @@ public static class SelfTests
             True(!CdpInjectionService.BootstrapScript.Contains("body > :not", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("canvas.width = 32", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("cws-palette", StringComparison.Ordinal));
-            True(CdpInjectionService.BootstrapScript.Contains("existing.version === 20", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("existing.version === 21", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("const lightTheme = state.nativeTheme === 'light'", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("[data-cws-surface=\"elevated\"]", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("[role=\"menu\"]", StringComparison.Ordinal));
+            True(CdpInjectionService.BootstrapScript.Contains("state.themeObserver", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinBeginCapturedStream", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("__codexWallpaperSkinSetCapturedFrame", StringComparison.Ordinal));
             True(CdpInjectionService.BootstrapScript.Contains("decode-timeout", StringComparison.Ordinal));

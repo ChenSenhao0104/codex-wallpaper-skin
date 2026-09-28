@@ -46,6 +46,7 @@ class ClassList {
   remove(...names) { names.forEach(name => this.#values.delete(name)); }
   contains(name) { return this.#values.has(name); }
   toggle(name, enabled) { enabled ? this.#values.add(name) : this.#values.delete(name); }
+  [Symbol.iterator]() { return this.#values.values(); }
 }
 
 class MockElement {
@@ -168,15 +169,20 @@ const shell = new MockElement('div');
 const app = new MockElement('main');
 const sidebar = new MockElement('aside');
 const navigation = new MockElement('nav');
+const accountMenu = new MockElement('div');
 const inertOverlay = new MockElement('div');
 app.rectWidth = 950;
 sidebar.rectWidth = 250;
 navigation.rectWidth = 250;
+accountMenu.rectWidth = 320;
+accountMenu.rectHeight = 280;
+accountMenu.setAttribute('role', 'menu');
 inertOverlay.pointerEvents = 'none';
 sidebar.appendChild(navigation);
 shell.appendChild(app);
 shell.appendChild(sidebar);
 body.appendChild(shell);
+body.appendChild(accountMenu);
 body.appendChild(inertOverlay);
 root.appendChild(head);
 root.appendChild(body);
@@ -221,7 +227,7 @@ globalThis.document = {
       return elements.filter(element => element.hasAttribute('data-cws-surface')
         || ['cws-media', 'cws-overlay'].includes(element.className));
     }
-    if (selector === 'main, aside, nav, [role="dialog"], [role="region"]') {
+    if (selector.includes('main, aside, nav') && selector.includes('[role="dialog"]')) {
       return elements.filter(element => element.matches(selector));
     }
     return [];
@@ -235,6 +241,7 @@ globalThis.location = { href: 'app://codex/' };
 let nativeSurfaceValue = '#17191f';
 globalThis.getComputedStyle = element => ({
   pointerEvents: element?.pointerEvents ?? 'auto',
+  colorScheme: nativeSurfaceValue.toLowerCase() === '#f7f7f7' ? 'light' : 'dark',
   getPropertyValue(name) { return name === '--app-color-background-surface' ? nativeSurfaceValue : ''; }
 });
 globalThis.MutationObserver = class { constructor(callback) { this.callback = callback; } observe() {} disconnect() {} };
@@ -331,6 +338,7 @@ assert(shell.getAttribute('data-cws-surface') === 'root', 'outer application she
 assert(!app.hasAttribute('data-cws-surface'), 'nested full-size surface would stack another root veil');
 assert(sidebar.getAttribute('data-cws-surface') === 'panel', 'outer semantic panel was not marked');
 assert(!navigation.hasAttribute('data-cws-surface'), 'nested semantic panel would stack another panel veil');
+assert(accountMenu.getAttribute('data-cws-surface') === 'elevated', 'small menu was not protected as an elevated surface');
 assert(!inertOverlay.hasAttribute('data-cws-surface'), 'pointer-inert overlay was incorrectly tinted');
 
 const captureLease = 'capturelease1234567890';
@@ -443,6 +451,20 @@ assert(cleanup === 'cleaned', 'cleanup did not report success');
 assert(!root.classList.contains('cws-active'), 'cleanup left the active class');
 assert(!globalThis.__codexWallpaperSkin, 'cleanup left runtime state');
 assert(Function(`return ${cleanupVerification}`)() === true, 'post-cleanup verification did not confirm the native Codex surface');
+
+nativeSurfaceValue = '#f7f7f7';
+assert(bootstrap() === 'ready', 'runtime did not start against a light Codex theme');
+window.__codexWallpaperSkinBeginUpload('light-theme', 'image/png');
+window.__codexWallpaperSkinPushChunk('light-theme', btoa('light-theme-image'));
+const lightApplied = await window.__codexWallpaperSkinFinishUpload('light-theme', 'image', settings, null);
+assert(root.classList.contains('cws-native-light'), 'light Codex theme was not detected');
+assert(!root.classList.contains('cws-native-dark'), 'light Codex theme retained the dark marker');
+assert(parseInt(lightApplied.palette.text.slice(1, 3), 16) < 128, 'light Codex theme did not select dark readable text');
+assert(Number(root.style.getPropertyValue('--cws-elevated-alpha')) >= .92, 'light-theme elevated surfaces remained too transparent');
+assert(accountMenu.getAttribute('data-cws-surface') === 'elevated', 'light-theme menu lost elevated-surface protection');
+Function(`return ${cleanupRuntime}`)();
+assert(Function(`return ${cleanupVerification}`)() === true, 'light-theme cleanup left runtime artifacts');
+nativeSurfaceValue = '#17191f';
 
 assert(bootstrap() === 'ready', 'runtime did not restart for pending-decode cleanup test');
 globalThis.deferMediaDecode = true;
