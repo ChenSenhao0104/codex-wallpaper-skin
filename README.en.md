@@ -2,13 +2,16 @@
 
 English | [简体中文](README.md)
 
-An independent Windows 11 x64 desktop application that adds local images, videos, and installed Wallpaper Engine projects as Codex Desktop backgrounds. The first public Beta is `0.8.0` and requires the official x64 `OpenAI.Codex` Store/MSIX package.
+An independent Windows 11 x64 desktop application that adds local images, videos, and installed Wallpaper Engine projects as Codex Desktop backgrounds. The current public Beta is `0.8.1` and requires the official x64 `OpenAI.Codex` Store/MSIX package.
 
 The application uses a loopback-only Chrome DevTools Protocol (CDP) session to add a reversible background layer to the real Codex page. Codex loads Image/Video media independently; complex Scene projects are rendered natively by a private local Wallpaper Engine window and transferred to Codex. The application does not patch `WindowsApps`, `app.asar`, the official signature, chats, or authentication data.
 
 > This is an unofficial project and is not affiliated with or endorsed by OpenAI, Valve, or Wallpaper Engine.
 
-See the [v0.8.0 Release Notes](docs/releases/V0.8.0-BETA.md) for the first public Beta's changes, download guidance, and limitations.
+> [!IMPORTANT]
+> **Check compatibility before downloading: the current build supports only Windows 11 x64 with the official x64 `OpenAI.Codex` Store/MSIX desktop package. macOS, Linux, Windows ARM64, Windows x86, unpackaged builds, and renamed copies are not currently supported.**
+
+See the [v0.8.1 Release Notes](docs/releases/V0.8.1-BETA.md) for the current Beta's changes, download guidance, and limitations.
 
 ## Showcase
 
@@ -136,19 +139,19 @@ No Wallpaper Engine media is bundled or redistributed. Users must own Wallpaper 
 
 ## Beta known limitations
 
-- Only Windows 11 x64 and the official x64 `OpenAI.Codex` Store/MSIX desktop package are supported. ARM64, x86, unpackaged, and renamed copies are unsupported.
+- Only Windows 11 x64 and the official x64 `OpenAI.Codex` Store/MSIX desktop package are supported. macOS, Linux, Windows ARM64, Windows x86, unpackaged builds, and renamed copies are unsupported.
 - Wallpaper Engine Scene projects and large Video projects require the user to own and install Wallpaper Engine and keep it available in the background. Ordinary local images and supported smaller videos do not require Wallpaper Engine.
 - The controller owns capture, encoding, and recovery for dynamic backgrounds. Closing its visible window keeps it in the notification area; choosing **Remove wallpaper and exit** stops dynamic playback.
 - A Codex process started normally has no wallpaper channel. Close it manually and choose **Start / reconnect Codex**. This application never closes or restarts Codex automatically.
 - Scene clarity, frame rate, and resource use depend on wallpaper complexity, Wallpaper Engine settings, GPU, display resolution, and system load. `60 FPS` is a target, not a guarantee. Doctor values are diagnostic evidence, not a standalone visual-quality score.
 - The stable H.264 4:2:0 path does not forward pointer interaction and cannot be pixel-identical to Wallpaper Engine's direct desktop composition.
-- The `0.8.0` installer is not code-signed, so Windows may show an unknown-publisher or SmartScreen warning. Download only from this repository's GitHub Releases, verify the adjacent SHA-256 file, and do not disable Windows security globally.
+- The `0.8.1` installer is not code-signed, so Windows may show an unknown-publisher or SmartScreen warning. Download only from this repository's GitHub Releases, verify the adjacent SHA-256 file, and do not disable Windows security globally.
 
 To verify a download, open PowerShell in the download directory and compare the computed value with the matching `.sha256` file:
 
 ```powershell
-Get-FileHash .\CodexWallpaperSkin-Setup-v0.8.0-win-x64.exe -Algorithm SHA256
-Get-Content .\CodexWallpaperSkin-Setup-v0.8.0-win-x64.exe.sha256
+Get-FileHash .\CodexWallpaperSkin-Setup-v0.8.1-win-x64.exe -Algorithm SHA256
+Get-Content .\CodexWallpaperSkin-Setup-v0.8.1-win-x64.exe.sha256
 ```
 
 ## Development and verification
@@ -186,7 +189,7 @@ After exiting the running controller, validate a real upgrade from the previous 
 ```powershell
 pwsh -NoProfile -File .\scripts\installer-cross-version-smoke-test.ps1 `
   -PreviousSetupPath ".\dist\CodexWallpaperSkin-Setup-v0.6.2-win-x64.exe" `
-  -CurrentSetupPath ".\dist\CodexWallpaperSkin-Setup-v0.8.0-win-x64.exe"
+  -CurrentSetupPath ".\dist\CodexWallpaperSkin-Setup-v0.8.1-win-x64.exe"
 ```
 
 When a code-signing certificate is available in the current user's certificate store, sign both the inner executable and final installer without copying a private key into the repository or release directory:

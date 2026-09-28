@@ -14,6 +14,7 @@
 
 - Windows 11 x64。
 - 官方 x64 `OpenAI.Codex` Store/MSIX 桌面版。
+- macOS、Linux、Windows ARM64 和 Windows x86 当前不受支持，请勿在这些系统上下载安装包。
 - 如需使用 Wallpaper Engine 项目，必须已经在 Steam 中安装 Wallpaper Engine，并等待订阅壁纸下载完成。
 - 当前版本不支持非打包版、改名副本、ARM64 或 x86 Codex。
 - 社区发布的 EXE 可能没有代码签名并触发 SmartScreen。只运行你信任的 Release，不要全局关闭 Windows 安全功能。

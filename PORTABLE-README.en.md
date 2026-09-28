@@ -1,6 +1,6 @@
 # Codex Wallpaper Skin portable build
 
-This is a self-contained Windows 11 x64 companion. It needs no Python, PyYAML, or .NET installation. This release requires the official x64 `OpenAI.Codex` Store/MSIX desktop package; unpackaged or renamed copies and ARM64/x86 builds are unsupported. Download it only from this project's trusted release page, extract the complete ZIP, and then run `CodexWallpaperSkin.exe`.
+This is a self-contained Windows 11 x64 companion. It needs no Python, PyYAML, or .NET installation. This release supports only the official x64 `OpenAI.Codex` Store/MSIX desktop package; macOS, Linux, Windows ARM64, Windows x86, unpackaged builds, and renamed copies are unsupported. Download it only from this project's trusted release page, extract the complete ZIP, and then run `CodexWallpaperSkin.exe`.
 
 This directory is the portable distribution and does not register an uninstaller. Use the matching `CodexWallpaperSkin-Setup-vX.Y.Z-win-x64.exe` instead when Start-menu integration, in-place upgrades, and standard Windows uninstall are preferred.
 
@@ -28,8 +28,8 @@ Open PowerShell in this directory:
 .\CodexWallpaperSkin.exe --doctor --json
 .\CodexWallpaperSkin.exe --self-test
 .\CodexWallpaperSkin.exe --restore
-Get-FileHash ..\CodexWallpaperSkin-v0.8.0-portable-win-x64.zip -Algorithm SHA256
-Get-Content ..\CodexWallpaperSkin-v0.8.0-portable-win-x64.zip.sha256
+Get-FileHash ..\CodexWallpaperSkin-v0.8.1-portable-win-x64.zip -Algorithm SHA256
+Get-Content ..\CodexWallpaperSkin-v0.8.1-portable-win-x64.zip.sha256
 ```
 
 Compare the last result with the `.sha256` file beside the release archive. Do not disable PowerShell execution policy or Windows security controls system-wide.
@@ -40,7 +40,7 @@ No Wallpaper Engine media is bundled. You must own Wallpaper Engine and follow e
 
 ## Beta known limitations
 
-- Only Windows 11 x64 and the official x64 `OpenAI.Codex` Store/MSIX desktop package are supported.
+- Only Windows 11 x64 and the official x64 `OpenAI.Codex` Store/MSIX desktop package are supported; macOS, Linux, Windows ARM64, and Windows x86 are unsupported.
 - Scene projects and large Wallpaper Engine Video projects require Wallpaper Engine. Dynamic backgrounds require this controller to remain running in the notification area.
 - If Codex was started normally, close it manually before choosing **Start / reconnect Codex**. This application never closes Codex automatically.
 - `60 FPS` is a target, not a guarantee. Clarity, frame rate, and resource use depend on the wallpaper, Wallpaper Engine, GPU, resolution, and system load; Doctor values are diagnostic.

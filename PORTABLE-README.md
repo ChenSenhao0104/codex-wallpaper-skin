@@ -1,6 +1,6 @@
 # Codex Wallpaper Skin 便携版
 
-这是 Windows 11 x64 的自包含调节器，无需安装 Python、PyYAML 或 .NET。当前版本要求官方 x64 `OpenAI.Codex` Store/MSIX 桌面包；非打包版、改名副本、ARM64 和 x86 版本不受支持。请只从本项目的可信 Release 页面下载，并将 ZIP 完整解压后再运行 `CodexWallpaperSkin.exe`。
+这是 Windows 11 x64 的自包含调节器，无需安装 Python、PyYAML 或 .NET。当前版本只支持官方 x64 `OpenAI.Codex` Store/MSIX 桌面包；macOS、Linux、Windows ARM64、Windows x86、非打包版和改名副本均不受支持。请只从本项目的可信 Release 页面下载，并将 ZIP 完整解压后再运行 `CodexWallpaperSkin.exe`。
 
 本目录是便携版，不会注册卸载器。希望使用开始菜单、原位升级和标准卸载流程的用户应改用同版本的 `CodexWallpaperSkin-Setup-vX.Y.Z-win-x64.exe`。
 
@@ -30,8 +30,8 @@ Image 与不超过 256 MiB 的 Video 项目直接使用已安装的原始素材�
 .\CodexWallpaperSkin.exe --doctor --json
 .\CodexWallpaperSkin.exe --self-test
 .\CodexWallpaperSkin.exe --restore
-Get-FileHash ..\CodexWallpaperSkin-v0.8.0-portable-win-x64.zip -Algorithm SHA256
-Get-Content ..\CodexWallpaperSkin-v0.8.0-portable-win-x64.zip.sha256
+Get-FileHash ..\CodexWallpaperSkin-v0.8.1-portable-win-x64.zip -Algorithm SHA256
+Get-Content ..\CodexWallpaperSkin-v0.8.1-portable-win-x64.zip.sha256
 ```
 
 将最后一条结果与 Release 页面旁的 `.sha256` 文件比较。不要全局关闭 PowerShell 执行策略或 Windows 安全功能。
@@ -42,7 +42,7 @@ Get-Content ..\CodexWallpaperSkin-v0.8.0-portable-win-x64.zip.sha256
 
 ## Beta 已知限制
 
-- 仅支持 Windows 11 x64 和官方 x64 `OpenAI.Codex` Store/MSIX 桌面包。
+- 仅支持 Windows 11 x64 和官方 x64 `OpenAI.Codex` Store/MSIX 桌面包；macOS、Linux、Windows ARM64 和 Windows x86 均不支持。
 - Scene 与大型 Wallpaper Engine Video 需要用户已安装 Wallpaper Engine；动态背景要求本控制器保持在托盘运行。
 - 如果 Codex 已普通启动，请手动关闭后再点击 **Start / reconnect Codex**；本软件不会自动关闭 Codex。
 - `60 FPS` 是目标而非保证。实际清晰度、帧率和资源占用取决于壁纸、Wallpaper Engine、显卡、分辨率和系统负载；Doctor 数据用于诊断。
