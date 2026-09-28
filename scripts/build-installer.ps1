@@ -67,30 +67,49 @@ if ($signingRequested) {
 
 function Resolve-Iscc {
   param([string]$ExplicitPath)
+
+  function Test-Iscc7WithChineseMessages {
+    param([string]$Candidate)
+    if (-not (Test-Path -LiteralPath $Candidate -PathType Leaf)) { return $false }
+    $compilerDirectory = Split-Path -Parent $Candidate
+    $chineseMessages = Join-Path $compilerDirectory 'Languages\ChineseSimplified.isl'
+    if (-not (Test-Path -LiteralPath $chineseMessages -PathType Leaf)) { return $false }
+    $versionBanner = (& $Candidate '/?' 2>&1 | Out-String)
+    return $versionBanner -match '(?m)^Inno Setup 7 Command-Line Compiler\s*$'
+  }
+
   if ($ExplicitPath) {
     $resolved = [IO.Path]::GetFullPath($ExplicitPath)
     if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) {
       throw "Inno Setup compiler was not found: $resolved"
     }
+    if (-not (Test-Iscc7WithChineseMessages -Candidate $resolved)) {
+      throw "Inno Setup 7 with the Simplified Chinese messages file is required: $resolved"
+    }
     return $resolved
   }
 
+  $candidates = [Collections.Generic.List[string]]::new()
   $command = Get-Command ISCC.exe -ErrorAction SilentlyContinue
-  if ($command) { return $command.Source }
+  if ($command) { $candidates.Add($command.Source) }
 
   $candidateRoots = @(
     ${env:ProgramFiles(x86)},
     $env:ProgramFiles,
     (Join-Path $env:LOCALAPPDATA 'Programs')
   ) | Where-Object { $_ }
-  foreach ($root in $candidateRoots) {
-    foreach ($relative in @('Inno Setup 7\ISCC.exe', 'Inno Setup 7 x64\ISCC.exe',
-        'Inno Setup 6\ISCC.exe', 'Inno Setup\ISCC.exe')) {
+  foreach ($relative in @('Inno Setup 7\ISCC.exe', 'Inno Setup 7 x64\ISCC.exe')) {
+    foreach ($root in $candidateRoots) {
       $candidate = Join-Path $root $relative
-      if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+      if (Test-Path -LiteralPath $candidate -PathType Leaf) { $candidates.Add($candidate) }
     }
   }
-  throw 'Inno Setup 7 was not found. Install JRSoftware.InnoSetup.7 or pass -IsccPath.'
+  foreach ($candidate in $candidates | Select-Object -Unique) {
+    if (Test-Iscc7WithChineseMessages -Candidate $candidate) {
+      return $candidate
+    }
+  }
+  throw 'Inno Setup 7 with Languages\ChineseSimplified.isl was not found. Install JRSoftware.InnoSetup.7 or pass -IsccPath.'
 }
 
 $iscc = Resolve-Iscc -ExplicitPath $IsccPath
