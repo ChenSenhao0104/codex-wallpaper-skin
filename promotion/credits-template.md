@@ -5,6 +5,7 @@ Complete this table before the first public export. “Permission basis” must 
 | Asset/shot | Creator | Source URL | Permission basis/license | Required attribution | Approved for Bilibili | Approved for GitHub/Reddit |
 |---|---|---|---|---|---|---|
 | Project logo | Silas Chenery | `assets/CWS-logo-v3.0.png` | Project-owned, Apache-2.0 | Codex Wallpaper Skin | Yes | Yes |
+| Campaign brand cards | Codex Wallpaper Skin contributors | `scripts/build-promotion-assets.ps1` | Project-owned generated geometry; no third-party wallpaper | None | Yes | Yes |
 | Music |  |  |  |  |  |  |
 | Static wallpaper |  |  |  |  |  |  |
 | Video wallpaper |  |  |  |  |  |  |

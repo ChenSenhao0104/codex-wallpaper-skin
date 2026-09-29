@@ -36,4 +36,4 @@ Run from the repository root:
 pwsh -NoProfile -File .\scripts\build-promotion-assets.ps1
 ```
 
-The script only reads the checked-in logo and showcase screenshot and regenerates the JPEG files in `promotion/assets/`.
+The script reads the checked-in project logo and generates the remaining geometry and gradients itself. It regenerates the rights-safe JPEG files in `promotion/assets/` without embedding a third-party wallpaper or product-interface screenshot.

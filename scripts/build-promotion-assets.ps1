@@ -7,11 +7,10 @@ Set-StrictMode -Version Latest
 Add-Type -AssemblyName System.Drawing
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
-$backgroundPath = Join-Path $repositoryRoot 'docs\images\showcase\workspace-background.png'
 $logoPath = Join-Path $repositoryRoot 'assets\CWS-logo-v3.0.png'
 $outputDirectory = Join-Path $repositoryRoot 'promotion\assets'
 
-foreach ($requiredPath in @($backgroundPath, $logoPath)) {
+foreach ($requiredPath in @($logoPath)) {
     if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
         throw "Required promotion asset not found: $requiredPath"
     }
@@ -35,66 +34,84 @@ function New-RoundedRectanglePath {
     return $path
 }
 
-function Draw-CoverImage {
-    param(
-        [System.Drawing.Graphics]$Graphics,
-        [System.Drawing.Image]$Image,
-        [int]$Width,
-        [int]$Height,
-        [float]$FocusX = 0.5,
-        [float]$FocusY = 0.5
-    )
-
-    $sourceRatio = $Image.Width / $Image.Height
-    $targetRatio = $Width / $Height
-    if ($sourceRatio -gt $targetRatio) {
-        $sourceHeight = $Image.Height
-        $sourceWidth = [int]($sourceHeight * $targetRatio)
-        $sourceX = [int](($Image.Width - $sourceWidth) * $FocusX)
-        $sourceY = 0
-    }
-    else {
-        $sourceWidth = $Image.Width
-        $sourceHeight = [int]($sourceWidth / $targetRatio)
-        $sourceX = 0
-        $sourceY = [int](($Image.Height - $sourceHeight) * $FocusY)
-    }
-
-    $sourceX = [Math]::Max(0, [Math]::Min($sourceX, $Image.Width - $sourceWidth))
-    $sourceY = [Math]::Max(0, [Math]::Min($sourceY, $Image.Height - $sourceHeight))
-    $destination = [System.Drawing.Rectangle]::new(0, 0, $Width, $Height)
-    $source = [System.Drawing.Rectangle]::new($sourceX, $sourceY, $sourceWidth, $sourceHeight)
-    $Graphics.DrawImage($Image, $destination, $source, [System.Drawing.GraphicsUnit]::Pixel)
-}
-
-function Draw-GradientOverlay {
+function Draw-BrandedBackdrop {
     param(
         [System.Drawing.Graphics]$Graphics,
         [int]$Width,
-        [int]$Height,
-        [int]$OpaqueWidthPercent = 58
+        [int]$Height
     )
 
-    $brush = [System.Drawing.Drawing2D.LinearGradientBrush]::new(
+    $baseBrush = [System.Drawing.Drawing2D.LinearGradientBrush]::new(
         [System.Drawing.Point]::new(0, 0),
-        [System.Drawing.Point]::new($Width, 0),
-        [System.Drawing.Color]::FromArgb(247, 10, 16, 30),
-        [System.Drawing.Color]::FromArgb(40, 10, 16, 30)
+        [System.Drawing.Point]::new($Width, $Height),
+        [System.Drawing.Color]::FromArgb(255, 6, 12, 25),
+        [System.Drawing.Color]::FromArgb(255, 16, 92, 176)
     )
     try {
-        $blend = [System.Drawing.Drawing2D.ColorBlend]::new(4)
-        $blend.Positions = [single[]]@(0.0, ($OpaqueWidthPercent / 100.0), 0.82, 1.0)
+        $blend = [System.Drawing.Drawing2D.ColorBlend]::new(5)
+        $blend.Positions = [single[]]@(0.0, 0.42, 0.66, 0.84, 1.0)
         $blend.Colors = [System.Drawing.Color[]]@(
-            [System.Drawing.Color]::FromArgb(249, 10, 16, 30),
-            [System.Drawing.Color]::FromArgb(232, 10, 16, 30),
-            [System.Drawing.Color]::FromArgb(105, 10, 16, 30),
-            [System.Drawing.Color]::FromArgb(30, 10, 16, 30)
+            [System.Drawing.Color]::FromArgb(255, 5, 10, 22),
+            [System.Drawing.Color]::FromArgb(255, 10, 20, 45),
+            [System.Drawing.Color]::FromArgb(255, 23, 42, 105),
+            [System.Drawing.Color]::FromArgb(255, 49, 76, 191),
+            [System.Drawing.Color]::FromArgb(255, 8, 158, 172)
         )
-        $brush.InterpolationColors = $blend
-        $Graphics.FillRectangle($brush, 0, 0, $Width, $Height)
+        $baseBrush.InterpolationColors = $blend
+        $Graphics.FillRectangle($baseBrush, 0, 0, $Width, $Height)
     }
     finally {
-        $brush.Dispose()
+        $baseBrush.Dispose()
+    }
+
+    $splitPoints = [System.Drawing.PointF[]]@(
+        [System.Drawing.PointF]::new($Width * 0.64, 0),
+        [System.Drawing.PointF]::new($Width, 0),
+        [System.Drawing.PointF]::new($Width, $Height),
+        [System.Drawing.PointF]::new($Width * 0.48, $Height)
+    )
+    $splitBrush = [System.Drawing.Drawing2D.LinearGradientBrush]::new(
+        [System.Drawing.Point]::new([int]($Width * 0.54), 0),
+        [System.Drawing.Point]::new($Width, $Height),
+        [System.Drawing.Color]::FromArgb(110, 108, 71, 255),
+        [System.Drawing.Color]::FromArgb(90, 20, 214, 188)
+    )
+    try {
+        $Graphics.FillPolygon($splitBrush, $splitPoints)
+    }
+    finally {
+        $splitBrush.Dispose()
+    }
+
+    $gridPen = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(34, 214, 229, 255), [Math]::Max(1, $Width / 1280))
+    try {
+        $step = [Math]::Max(48, [int]($Width / 22))
+        for ($x = [int]($Width * 0.55); $x -lt $Width; $x += $step) {
+            $Graphics.DrawLine($gridPen, $x, 0, $x, $Height)
+        }
+        for ($y = 0; $y -lt $Height; $y += $step) {
+            $Graphics.DrawLine($gridPen, [int]($Width * 0.55), $y, $Width, $y)
+        }
+    }
+    finally {
+        $gridPen.Dispose()
+    }
+
+    $ringPen = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(95, 224, 238, 255), [Math]::Max(3, $Width / 420))
+    $accentPen = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(170, 94, 234, 212), [Math]::Max(5, $Width / 260))
+    try {
+        $centerX = $Width * 0.83
+        $centerY = $Height * 0.47
+        foreach ($scale in @(0.28, 0.44, 0.62, 0.82)) {
+            $ellipseWidth = $Width * $scale
+            $ellipseHeight = $Height * $scale
+            $Graphics.DrawEllipse($ringPen, $centerX - ($ellipseWidth / 2), $centerY - ($ellipseHeight / 2), $ellipseWidth, $ellipseHeight)
+        }
+        $Graphics.DrawArc($accentPen, $Width * 0.58, $Height * 0.17, $Width * 0.5, $Height * 0.72, 205, 138)
+    }
+    finally {
+        $accentPen.Dispose()
+        $ringPen.Dispose()
     }
 }
 
@@ -166,12 +183,9 @@ function New-CampaignImage {
         [float]$SubtitleSize,
         [float]$Left,
         [float]$Top,
-        [float]$LogoSize,
-        [float]$FocusX = 0.5,
-        [float]$FocusY = 0.5
+        [float]$LogoSize
     )
 
-    $background = [System.Drawing.Image]::FromFile($backgroundPath)
     $logo = [System.Drawing.Image]::FromFile($logoPath)
     $bitmap = [System.Drawing.Bitmap]::new($Width, $Height, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
@@ -181,8 +195,7 @@ function New-CampaignImage {
         $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
         $graphics.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
 
-        Draw-CoverImage -Graphics $graphics -Image $background -Width $Width -Height $Height -FocusX $FocusX -FocusY $FocusY
-        Draw-GradientOverlay -Graphics $graphics -Width $Width -Height $Height
+        Draw-BrandedBackdrop -Graphics $graphics -Width $Width -Height $Height
 
         $graphics.DrawImage($logo, $Left, $Top, $LogoSize, $LogoSize)
 
@@ -221,7 +234,6 @@ function New-CampaignImage {
         $graphics.Dispose()
         $bitmap.Dispose()
         $logo.Dispose()
-        $background.Dispose()
     }
 }
 
@@ -232,8 +244,7 @@ New-CampaignImage `
     -Subtitle "Images · Video · Wallpaper Engine scenes" `
     -Kicker 'MAKE YOUR WORKSPACE YOURS' `
     -TitleSize 64 -SubtitleSize 27 `
-    -Left 62 -Top 44 -LogoSize 92 `
-    -FocusX 0.68 -FocusY 0.48
+    -Left 62 -Top 44 -LogoSize 92
 
 New-CampaignImage `
     -Width 1920 -Height 1080 `
@@ -242,8 +253,7 @@ New-CampaignImage `
     -Subtitle "图片 · 视频 · Wallpaper Engine Scene" `
     -Kicker 'CODEX × WALLPAPER ENGINE' `
     -TitleSize 102 -SubtitleSize 40 `
-    -Left 92 -Top 72 -LogoSize 138 `
-    -FocusX 0.68 -FocusY 0.48
+    -Left 92 -Top 72 -LogoSize 138
 
 New-CampaignImage `
     -Width 1080 -Height 1920 `
@@ -252,8 +262,7 @@ New-CampaignImage `
     -Subtitle "图片 · 视频 · 动态场景" `
     -Kicker 'CODEX WALLPAPER SKIN' `
     -TitleSize 78 -SubtitleSize 34 `
-    -Left 62 -Top 130 -LogoSize 126 `
-    -FocusX 0.62 -FocusY 0.48
+    -Left 62 -Top 130 -LogoSize 126
 
 New-CampaignImage `
     -Width 1920 -Height 1080 `
@@ -262,8 +271,7 @@ New-CampaignImage `
     -Subtitle "Windows 11 x64`n官方 x64 OpenAI.Codex Store / MSIX`nPublic Beta · 安装包暂未签名" `
     -Kicker 'BEFORE YOU DOWNLOAD' `
     -TitleSize 88 -SubtitleSize 42 `
-    -Left 92 -Top 72 -LogoSize 138 `
-    -FocusX 0.68 -FocusY 0.48
+    -Left 92 -Top 72 -LogoSize 138
 
 New-CampaignImage `
     -Width 1920 -Height 1080 `
@@ -272,8 +280,7 @@ New-CampaignImage `
     -Subtitle "github.com/ChenSenhao0104/codex-wallpaper-skin`n有用的话，欢迎 Star" `
     -Kicker 'CODEX WALLPAPER SKIN' `
     -TitleSize 92 -SubtitleSize 39 `
-    -Left 92 -Top 72 -LogoSize 138 `
-    -FocusX 0.68 -FocusY 0.48
+    -Left 92 -Top 72 -LogoSize 138
 
 Get-ChildItem -LiteralPath $outputDirectory -Filter '*.jpg' |
     Sort-Object Name |
