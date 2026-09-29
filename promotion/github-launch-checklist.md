@@ -9,10 +9,10 @@
 
 ## Repository settings
 
-- [ ] Description: `Open-source Windows app that brings local images, videos, and Wallpaper Engine scenes into Codex Desktop—with adaptive colors, presets, and one-click restore.`
-- [ ] Homepage: `https://chensenhao0104.github.io/codex-wallpaper-skin/demos/wallpaper-engine-live-scene.html`
-- [ ] Topics: `codex`, `codex-desktop`, `wallpaper-engine`, `live-wallpaper`, `windows-11`, `desktop-customization`, `csharp`, `wpf`, `dynamic-wallpaper`, `open-source`.
-- [ ] Discussions enabled.
+- [x] Description: `Open-source Windows app that brings local images, videos, and Wallpaper Engine scenes into Codex Desktop—with adaptive colors, presets, and one-click restore.`
+- [x] Homepage: `https://chensenhao0104.github.io/codex-wallpaper-skin/demos/wallpaper-engine-live-scene.html`
+- [x] Topics: `codex`, `codex-desktop`, `wallpaper-engine`, `live-wallpaper`, `windows-11`, `desktop-customization`, `csharp`, `wpf`, `dynamic-wallpaper`, `open-source`.
+- [x] Discussions enabled.
 - [ ] Upload `promotion/assets/social-preview.jpg` under Settings → General → Social preview.
 - [ ] Pin the repository on the owner's public GitHub profile.
 
