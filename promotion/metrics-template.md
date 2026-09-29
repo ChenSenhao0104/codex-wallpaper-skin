@@ -2,14 +2,16 @@
 
 Record the baseline immediately before the first public video. GitHub Traffic retains a rolling 14-day view, so capture screenshots or values on schedule.
 
+Day 0 was captured on 2026-09-29 before the first campaign post. GitHub's rolling 14-day totals at capture time were 23 views from 1 unique visitor and 10 clones from 2 unique cloners.
+
 | Metric | Day 0 | Day 3 | Day 7 | Day 14 |
 |---|---:|---:|---:|---:|
-| GitHub stars |  |  |  |  |
-| Unique repository visitors |  |  |  |  |
-| Repository views |  |  |  |  |
-| Unique clones |  |  |  |  |
-| Installer downloads |  |  |  |  |
-| Portable ZIP downloads |  |  |  |  |
+| GitHub stars | 2 |  |  |  |
+| Unique repository visitors | 1 |  |  |  |
+| Repository views | 23 |  |  |  |
+| Unique clones | 2 |  |  |  |
+| Installer downloads | 0 |  |  |  |
+| Portable ZIP downloads | 0 |  |  |  |
 | New issues/discussions with actionable feedback |  |  |  |  |
 | Bilibili views |  |  |  |  |
 | Bilibili completion rate |  |  |  |  |

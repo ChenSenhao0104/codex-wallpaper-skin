@@ -20,9 +20,9 @@ The first four settings can be updated through the GitHub repository API. Social
 
 ## Release gate
 
-- [ ] v0.8.1 Release page opens while signed out.
-- [ ] Installer, portable ZIP, matching SHA-256 files, and release manifest are present.
-- [ ] Both web demo pages open without starting a download.
+- [x] v0.8.1 Release page opens while signed out.
+- [x] Installer, portable ZIP, matching SHA-256 files, and release manifest are present.
+- [x] Both web demo pages open without starting a download.
 - [ ] Final video description states the supported platform, unsigned Beta status, optional Wallpaper Engine dependency, and unofficial-project disclaimer.
 - [ ] Every wallpaper and audio asset used in the video is present in `credits-template.md` with an approved permission basis.
 - [ ] All published URLs were clicked from the final description/comment rather than copied from a draft.
