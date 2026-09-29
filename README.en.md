@@ -1,6 +1,27 @@
-# Codex Wallpaper Skin
+<p align="center">
+  <img src="assets/CWS-logo-v3.0.png" width="112" alt="Codex Wallpaper Skin logo">
+</p>
 
-English | [简体中文](README.md)
+<h1 align="center">Codex Wallpaper Skin</h1>
+
+<p align="center"><strong>Bring local images, videos, and Wallpaper Engine scenes into Codex Desktop.</strong></p>
+
+<p align="center">
+  <img alt="Version" src="https://img.shields.io/badge/Beta-v0.8.1-2563eb">
+  <img alt="Platform" src="https://img.shields.io/badge/Windows_11-x64-0ea5e9">
+  <img alt="License" src="https://img.shields.io/badge/License-Apache--2.0-22c55e">
+</p>
+
+<p align="center">
+  <a href="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/tag/v0.8.1"><strong>Download v0.8.1 Beta</strong></a>
+  · <a href="https://chensenhao0104.github.io/codex-wallpaper-skin/demos/wallpaper-engine-live-scene.html">Watch the live demo</a>
+  · <a href="PORTABLE-README.en.md">Setup guide</a>
+  · <a href="README.md">简体中文</a>
+</p>
+
+<p align="center">
+  <img src="docs/images/showcase/overview.png" width="100%" alt="Codex Wallpaper Skin background overview">
+</p>
 
 An independent Windows 11 x64 desktop application that adds local images, videos, and installed Wallpaper Engine projects as Codex Desktop backgrounds. The current public Beta is `0.8.1` and requires the official x64 `OpenAI.Codex` Store/MSIX package.
 
@@ -14,10 +35,6 @@ The application uses a loopback-only Chrome DevTools Protocol (CDP) session to a
 See the [v0.8.1 Release Notes](docs/releases/V0.8.1-BETA.md) for the current Beta's changes, download guidance, and limitations.
 
 ## Showcase
-
-<p align="center">
-  <img src="docs/images/showcase/overview.png" width="100%" alt="Codex Wallpaper Skin background overview">
-</p>
 
 ### Background adaptation across visual styles
 

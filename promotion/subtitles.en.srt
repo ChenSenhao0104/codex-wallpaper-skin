@@ -1,0 +1,84 @@
+1
+00:00:00,000 --> 00:00:08,000
+Why should every Codex workspace have to look the same?
+
+2
+00:00:08,000 --> 00:00:15,000
+I started by trying to change one background.
+It grew into a controller for live Wallpaper Engine scenes.
+
+3
+00:00:15,000 --> 00:00:22,000
+It is called Codex Wallpaper Skin,
+an open-source Windows companion.
+
+4
+00:00:22,000 --> 00:00:30,000
+Local images, videos, and Wallpaper Engine scenes
+can become backgrounds inside Codex itself.
+
+5
+00:00:30,000 --> 00:00:38,000
+This is not the desktop showing through.
+Codex and the desktop can use different wallpapers independently.
+
+6
+00:00:38,000 --> 00:00:47,000
+The workflow has three steps: connect Codex,
+scan Wallpaper Engine or add local media,
+
+7
+00:00:47,000 --> 00:01:00,000
+then choose Apply selected.
+End users do not need Node.js, Python, or a separate .NET runtime.
+
+8
+00:01:00,000 --> 00:01:08,000
+Images and ordinary videos load directly.
+
+9
+00:01:08,000 --> 00:01:25,000
+Complex scenes are rendered by the installed Wallpaper Engine
+and delivered to Codex through a local GPU path.
+
+10
+00:01:25,000 --> 00:01:37,000
+Every wallpaper has different framing, brightness, and color,
+so the app provides adaptive colors, focus, and opacity controls,
+
+11
+00:01:37,000 --> 00:01:47,000
+readability controls, and visual presets that can be saved and assigned.
+
+12
+00:01:47,000 --> 00:01:55,000
+Live backgrounds can pause or throttle while Codex is hidden.
+
+13
+00:01:55,000 --> 00:02:02,000
+A watchdog verifies that frames remain visible,
+and Doctor provides privacy-redacted diagnostics.
+
+14
+00:02:02,000 --> 00:02:08,000
+It does not patch official files, chats, or sign-in data,
+and the stock background is one click away.
+
+15
+00:02:08,000 --> 00:02:16,000
+The public Beta supports Windows 11 x64
+and the official x64 OpenAI Codex Store/MSIX desktop package.
+
+16
+00:02:16,000 --> 00:02:22,000
+Wallpaper Engine is optional unless you use its live scenes
+or large video projects.
+
+17
+00:02:22,000 --> 00:02:30,000
+The project is open source.
+If you want a more personal workspace, give it a try.
+
+18
+00:02:30,000 --> 00:02:35,000
+If it helps, consider starring the project on GitHub.

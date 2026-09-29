@@ -1,6 +1,27 @@
-# Codex Wallpaper Skin
+<p align="center">
+  <img src="assets/CWS-logo-v3.0.png" width="112" alt="Codex Wallpaper Skin logo">
+</p>
 
-[English](README.en.md) | 简体中文
+<h1 align="center">Codex Wallpaper Skin</h1>
+
+<p align="center"><strong>让图片、视频和 Wallpaper Engine 动态场景成为 Codex 自己的背景。</strong></p>
+
+<p align="center">
+  <img alt="Version" src="https://img.shields.io/badge/Beta-v0.8.1-2563eb">
+  <img alt="Platform" src="https://img.shields.io/badge/Windows_11-x64-0ea5e9">
+  <img alt="License" src="https://img.shields.io/badge/License-Apache--2.0-22c55e">
+</p>
+
+<p align="center">
+  <a href="https://github.com/ChenSenhao0104/codex-wallpaper-skin/releases/tag/v0.8.1"><strong>下载 v0.8.1 Beta</strong></a>
+  · <a href="https://chensenhao0104.github.io/codex-wallpaper-skin/demos/wallpaper-engine-live-scene.html">观看动态演示</a>
+  · <a href="usage-process.md">使用教程</a>
+  · <a href="README.en.md">English</a>
+</p>
+
+<p align="center">
+  <img src="docs/images/showcase/overview.png" width="100%" alt="Codex Wallpaper Skin 背景效果概览">
+</p>
 
 一个独立运行的 Windows 11 x64 桌面程序，用本地图片、视频和已安装的 Wallpaper Engine 项目为 Codex Desktop 更换背景。当前公开 Beta 版本为 `0.8.1`，要求官方 x64 `OpenAI.Codex` Store/MSIX 桌面包。
 
@@ -14,10 +35,6 @@
 当前 Beta 的变更、下载说明和限制见 [v0.8.1 Release Notes](docs/releases/V0.8.1-BETA.md)。
 
 ## 效果展示
-
-<p align="center">
-  <img src="docs/images/showcase/overview.png" width="100%" alt="Codex Wallpaper Skin 背景效果概览">
-</p>
 
 ### 跨风格背景适配效果
 

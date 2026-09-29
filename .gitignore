@@ -20,6 +20,10 @@ TestResults/
 /local-state/
 /local-test-data/
 
+# Local promotion recordings and video renders
+/promotion/raw/
+/promotion/renders/
+
 # Local Wallpaper Engine rendering experiments
 /scene-smoke-*/
 /scene-isolate-*/

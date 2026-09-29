@@ -1,0 +1,26 @@
+1
+00:00:00,000 --> 00:00:05,000
+I turned the stock Codex workspace into a live canvas.
+
+2
+00:00:05,000 --> 00:00:12,000
+Images, videos, and Wallpaper Engine scenes
+can run inside Codex itself.
+
+3
+00:00:12,000 --> 00:00:22,000
+Connect Codex, scan or add media, and choose Apply selected.
+Three steps.
+
+4
+00:00:22,000 --> 00:00:32,000
+Codex and the desktop can use completely different wallpapers.
+
+5
+00:00:32,000 --> 00:00:39,000
+Adaptive colors, visual presets, and one-click restore.
+
+6
+00:00:39,000 --> 00:00:45,000
+Codex Wallpaper Skin is open source.
+Download the Windows 11 x64 Beta on GitHub.
